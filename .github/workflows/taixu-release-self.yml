@@ -1,0 +1,86 @@
+name: Build TaiXu Release (Self-Signed)
+
+# 自签正式版：applicationId=top.wkbin.taixu（不设 TAIXU_DEV_BUILD），
+# 用 fork secret RELEASE_KEYSTORE（自签 keystore）签名，可长期同 key 无缝升级。
+# 首次安装需先卸载官方 TaiXu（同包名不同签名无法共存），之后覆盖升级保留数据。
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional Release Tag (e.g. v0.14.0-self)'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    name: Build & Sign TaiXu Release (self)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Grant Execute Permission for Gradlew
+        run: chmod +x gradlew
+
+      - name: Decode self-signed keystore
+        run: |
+          echo "${{ secrets.RELEASE_KEYSTORE }}" | base64 -d > release-keystore.jks
+          ls -la release-keystore.jks
+
+      - name: Build release APK (正式 applicationId + 自签)
+        env:
+          # 不设 TAIXU_DEV_BUILD → applicationId = top.wkbin.taixu（正式，非 .dev）
+          TAIXU_RELEASE_STORE_FILE: release-keystore.jks
+          TAIXU_RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+          TAIXU_RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          TAIXU_RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Identify and Rename Output APK
+        run: |
+          mkdir -p output
+          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" 2>/dev/null | head -n 1)
+          [ -z "$APK_PATH" ] && APK_PATH=$(find app/build/outputs/apk -name "*.apk" | head -n 1)
+          if [ -f "$APK_PATH" ]; then
+            cp "$APK_PATH" output/TaiXu-arm64-release-self.apk
+            sha256sum output/TaiXu-arm64-release-self.apk > output/TaiXu-arm64-release-self.apk.sha256
+            echo "APK ready: output/TaiXu-arm64-release-self.apk"
+          else
+            echo "Error: No release APK generated!" && exit 1
+          fi
+
+      - name: Verify Signature (apksigner)
+        run: |
+          APK=output/TaiXu-arm64-release-self.apk
+          BT_DIR=$(ls -d /usr/local/lib/android/sdk/build-tools/*/ 2>/dev/null | sort -V | tail -n 1)
+          echo "build-tools dir: $BT_DIR"
+          if [ -n "$BT_DIR" ] && [ -x "$BT_DIR/apksigner" ]; then
+            "$BT_DIR/apksigner" verify --print-certs "$APK" && echo "SIGNATURE OK (自签 keystore)"
+          else
+            echo "apksigner 不可用，跳过签名校验（仍出包）"
+          fi
+
+      - name: Upload TaiXu Release APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: taixu-release-self
+          path: output/*
+          retention-days: 7
