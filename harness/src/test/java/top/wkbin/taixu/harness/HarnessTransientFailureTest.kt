@@ -46,8 +46,12 @@ class HarnessTransientFailureTest {
 
     @Test
     fun `self referencing cause terminates`() {
-        val looping = IOException("loop").also { it.initCause(it) }
-        assertFalse(HarnessProviderRunner.isTransientFailure(looping))
+        // Java 禁止自引用 cause（initCause 自引用会抛 IllegalArgumentException），
+        // 这里改用一个实际可达的环形链：a.cause = b，b.cause = a。
+        val a = IOException("a")
+        val b = IOException("b", a)
+        a.initCause(b)
+        assertFalse(HarnessProviderRunner.isTransientFailure(a))
     }
 
     @Test

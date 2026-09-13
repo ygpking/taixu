@@ -269,7 +269,7 @@ class ChatApiTest {
     }
 
     @Test
-    fun `propagates other stream errors without retry`() = runBlocking {
+    fun `stream http 500 surfaces as transient failure so caller can retry`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(500).setBody("""{"error":"server exploded"}"""))
         var thrown: Throwable? = null
         try {
@@ -277,7 +277,10 @@ class ChatApiTest {
         } catch (t: Throwable) {
             thrown = t
         }
-        assertTrue(thrown is IllegalStateException)
+        // 5xx 是上游临时故障，必须包成 TransientHttpException 交给 Harness 统一重试；
+        // 若在此处退回 IllegalStateException，Harness 的瞬态重试判定就认不出来。
+        assertTrue(thrown is TransientHttpException)
+        assertEquals(500, (thrown as TransientHttpException).httpCode)
         assertEquals(1, server.requestCount)
     }
 
