@@ -477,6 +477,24 @@ class ChatViewModel @Inject constructor(
     val models: StateFlow<List<AiModelEntity>> = aiModelDao.observeAll()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    /**
+     * 当前**实际生效**的模型档案：与聊天页顶栏 (ChatScreen.activeModel) 完全同源。
+     *
+     * 解析优先级：会话绑定模型 → 全局 isActive 模型。
+     * 修复「顶栏显示 A 模型（100 万），上下文面板却按 B 模型（50 万）折算」的两张皮：
+     * 此前 contextUsage 只读 `models.firstOrNull { it.isActive }`，会话绑定被完全忽略。
+     *
+     * 注意：必须声明在 [models] / [sessions] / [currentSessionId] 之后，
+     * Kotlin 属性按声明顺序初始化，前置引用会拿到未初始化值。
+     */
+    private val effectiveActiveModel: StateFlow<AiModelEntity?> = combine(
+        models, sessions, currentSessionId,
+    ) { currentModels, currentSessions, sessionId ->
+        val boundId = currentSessions.firstOrNull { it.id == sessionId }?.modelId
+        boundId?.let { id -> currentModels.firstOrNull { it.id == id } }
+            ?: currentModels.firstOrNull { it.isActive }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     val workspaces: StateFlow<List<WorkspaceProject>> = workspaceManager.observeProjects()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -513,14 +531,15 @@ class ChatViewModel @Inject constructor(
      */
     val contextUsage: StateFlow<ContextUsage> = combine(
         messages,
-        models,
+        effectiveActiveModel,
         allSkills,
         mcpServers,
         settingsDataStore.contextBudgetTokens,
-    ) { currentMessages, currentModels, skills, mcps, defaultBudget ->
+    ) { currentMessages, activeModel, skills, mcps, defaultBudget ->
         ContextUsageInputs(
             currentMessages = currentMessages,
-            activeModel = currentModels.firstOrNull { it.isActive },
+            // 与顶栏同源：会话绑定模型优先，回退全局 isActive（详见 effectiveActiveModel）。
+            activeModel = activeModel,
             skills = skills,
             mcps = mcps,
             defaultBudget = defaultBudget,
@@ -565,9 +584,10 @@ class ChatViewModel @Inject constructor(
 
         ContextUsage(
             usedTokens = effectiveUsage.totalTokens,
-            // 分母显示「真实折叠线」而非原始设置的标称值：用户填 100 万，面板就显示
-            // 实际会按 ~99 万折叠，杜绝「显示 500K、实际按 96K 折叠」两张皮。
+            // 分母 = 折叠触发线；与 usedTokens 同源同尺度，保证「已用/分母=百分比」自洽。
             limitTokens = ContextWindowPolicy.foldingLimitFor(budget),
+            // 标称上限：用户在模型档案里填的值，供面板标注「模型上限 X」，不参与比例计算。
+            declaredTokens = budget,
             systemTokens = totalSystemTokens,
             toolTokens = effectiveUsage.toolTokens,
             conversationTokens = effectiveUsage.conversationTokens,
@@ -1334,7 +1354,17 @@ private data class ContextUsageInputs(
 
 data class ContextUsage(
     val usedTokens: Int = 0,
+    /**
+     * 折叠触发线（分母）：= 标称上限 - 输出预留 - 工具 schema 预留。
+     * 面板的百分比与分子分母均以此为准，保证「已用 / 分母 = 显示百分比」自洽。
+     */
     val limitTokens: Int = 128_000,
+    /**
+     * 模型标称上下文上限（用户在该模型档案里填的 contextTokens）。
+     * 仅用于在面板上标注「模型上限 X」，不参与比例计算——避免「填 100 万却按 98.8 万折叠」
+     * 造成分母与百分比对不上（两张皮）。
+     */
+    val declaredTokens: Int = 128_000,
     val systemTokens: Int = 0,
     val toolTokens: Int = 0,
     val conversationTokens: Int = 0,

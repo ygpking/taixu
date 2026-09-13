@@ -156,6 +156,21 @@ fun ContextUsageDialog(
                             .height(8.dp),
                     )
 
+                    // 3b. 标称上限标注：分母是折叠线（参与比例计算、保证数字自洽），
+                    //     这里补一行说明「模型档案里填的上限是多少」，避免用户以为设置没生效。
+                    if (usage.declaredTokens > usage.limitTokens) {
+                        Text(
+                            text = stringResource(
+                                R.string.chat_context_declared_limit,
+                                formatLimitTokens(usage.declaredTokens),
+                            ),
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontSize = 11.sp,
+                                color = if (isDark) Color(0xFF6B7280) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                            ),
+                        )
+                    }
+
                     // 4. Breakdown legend rows
                     Column(
                         modifier = Modifier

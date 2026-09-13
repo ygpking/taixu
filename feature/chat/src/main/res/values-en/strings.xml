@@ -50,6 +50,7 @@
     <string name="chat_context_title">Context Usage</string>
     <string name="chat_context_full">%1$d%% Full</string>
     <string name="chat_context_tokens_summary">~%1$s / %2$s Tokens</string>
+    <string name="chat_context_declared_limit">Model limit %1$s</string>
     <string name="chat_context_system_prompt">System prompt</string>
     <string name="chat_context_tool_definitions">Tool definitions</string>
     <string name="chat_context_rules">Rules</string>

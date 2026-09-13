@@ -57,6 +57,7 @@
     <string name="chat_context_title">上下文用量</string>
     <string name="chat_context_full">%1$d%% 已用</string>
     <string name="chat_context_tokens_summary">~%1$s / %2$s Tokens</string>
+    <string name="chat_context_declared_limit">模型上限 %1$s</string>
     <string name="chat_context_system_prompt">系统提示词</string>
     <string name="chat_context_tool_definitions">工具定义</string>
     <string name="chat_context_rules">规则规范</string>
