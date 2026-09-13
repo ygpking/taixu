@@ -119,12 +119,21 @@ class CompactionManager @Inject constructor(
         if (old.isBlank()) return newest.takeLast(MAX_SUMMARY_CHARS)
         if (newest.isBlank()) return old.take(MAX_SUMMARY_CHARS)
 
-        val marker = "\n\n[较早摘要中段已省略]\n\n"
+        val marker = "\n\n[较早摘要中段已省略，保留其首尾]\n\n"
         val newestBudget = minOf(newest.length, MAX_SUMMARY_CHARS / 2)
         val oldBudget = (MAX_SUMMARY_CHARS - marker.length - newestBudget).coerceAtLeast(0)
         val oldHead = old.take((oldBudget + 1) / 2)
         val oldTail = old.takeLast(oldBudget / 2)
-        return (oldHead + marker + oldTail + "\n\n" + newest.takeLast(newestBudget)).takeLast(MAX_SUMMARY_CHARS)
+        // 最新增量同样保首 + 保尾：头部含初始目标与硬约束，尾部含最新状态与阶段结论。
+        // 末尾不再统一 takeLast，否则最早的初始目标与约束会被整段丢弃。
+        val newestKept = if (newest.length <= newestBudget) {
+            newest
+        } else {
+            val head = newest.take(newestBudget / 2)
+            val tail = newest.takeLast(newestBudget - head.length - 16)
+            head + "\n[…]\n" + tail
+        }
+        return oldHead + marker + oldTail + "\n\n" + newestKept
     }
 
     companion object {

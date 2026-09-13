@@ -230,9 +230,15 @@ class ProotCommandBuilder private constructor(
                 skipped.add(path)
             }
         }
-        // 缺失绑定会导致沙箱内 Android 二进制无法执行；同一进程只告警一次，避免刷屏。
-        if (skipped.isNotEmpty() && hostBindingsWarningLogged.compareAndSet(false, true)) {
-            logWarning("HostSystemBindings: ${skipped.size} path(s) skipped (not exist/unreadable): $skipped")
+        // 这些宿主路径在部分机型/系统版本上对本应用 UID 天然不可读（Android 16 上 /apex、
+        // /data/app、/data/dalvik-cache、/plat_property_contexts、/property_contexts 均如此），
+        // 跳过属预期行为：真正缺失会导致执行失败的，会在后续 exec 失败路径上显式暴露。
+        // 因此此处不再为常态跳过写持久告警——旧实现虽做了进程内去重，实测仍每秒刷出十几条 [W]，
+        // 单这一项就占 runtime.log 近半体积（2032 条 / ~264KB）。
+        // 只有致命路径缺失才告警，且按进程去重，保留真实故障的可观测性。
+        val criticalSkipped = skipped.filterTo(mutableListOf()) { it in CRITICAL_HOST_BINDINGS }
+        if (criticalSkipped.isNotEmpty() && hostBindingsWarningLogged.compareAndSet(false, true)) {
+            logWarning("HostSystemBindings: critical path(s) skipped: $criticalSkipped")
         }
     }
 
@@ -286,6 +292,9 @@ class ProotCommandBuilder private constructor(
         val ENVIRONMENT_KEY = Regex("[A-Za-z_][A-Za-z0-9_]*")
         const val SHARED_STORAGE_ROOT = "/storage/emulated/0"
         val ALLOWED_GUEST_MOUNT_ROOTS = setOf("/mnt", "/sdcard")
+
+        /** 缺失即会导致沙箱内 Android 二进制无法执行的致命路径。 */
+        val CRITICAL_HOST_BINDINGS = setOf("/system", "/system_ext", "/vendor", "/product", "/odm")
         private val hostBindingsWarningLogged = AtomicBoolean(false)
     }
 }

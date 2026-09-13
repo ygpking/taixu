@@ -261,15 +261,29 @@ fun ChatScreen(
     // 🌟 1. 消息发送与流式输出跟随滚动
     // 仅当用户本来就停在底部附近时才跟随输出滚动；上滑阅读历史时不打扰，
     // 重新滑回底部（或新发消息）后恢复自动跟随。
+    val stickThrottleMs = 240L
+    val lastStickAtMs = remember { LongArray(1) }
+    val trackedMessageCount = remember { IntArray(1) }
     LaunchedEffect(messages.size, lastMessageSignature) {
         if (messages.isNotEmpty()) {
+            val sessionSwitched = initialPositionedSessionKey != currentSessionKey
+            val countChanged = messages.size != trackedMessageCount[0]
+            trackedMessageCount[0] = messages.size
+            // 流式增量会高频命中这里：仅"内容变长"时按 240ms 节流贴底，
+            // 避免每个发布块都跳底造成闪烁；新会话定位与新消息仍立即响应。
+            if (!sessionSwitched && !countChanged &&
+                System.currentTimeMillis() - lastStickAtMs[0] < stickThrottleMs
+            ) {
+                return@LaunchedEffect
+            }
             delay(30)
             val totalCount = listState.layoutInfo.totalItemsCount
             if (totalCount > 0) {
-                if (initialPositionedSessionKey != currentSessionKey) {
+                if (sessionSwitched) {
                     initialPositionedSessionKey = currentSessionKey
                     listState.scrollToItem(totalCount - 1)
                 } else {
+                    lastStickAtMs[0] = System.currentTimeMillis()
                     val layoutInfo = listState.layoutInfo
                     val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()
                     val isNearBottom = lastVisible == null || lastVisible.index >= totalCount - 3

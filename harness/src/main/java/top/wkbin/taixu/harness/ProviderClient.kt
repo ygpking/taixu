@@ -904,8 +904,9 @@ class ProviderClient @Inject constructor(
          */
         const val MAX_STREAM_REASONING_CHARS = 128 * 1024
 
-        /** 流式增量上屏的发布间隔：SSE chunk 频率远高于帧率，逐 chunk 全量发布是 O(n²) 分配。 */
-        const val STREAM_PUBLISH_INTERVAL_MS = 100L
+        /** 流式增量上屏的发布间隔：SSE chunk 频率远高于帧率，逐 chunk 全量发布是 O(n²) 分配。
+         *  放宽到 150ms 与 ChatScreen 的贴底节流对齐，降低高频重组造成的界面闪烁。 */
+        const val STREAM_PUBLISH_INTERVAL_MS = 150L
 
         /** Room 实体 → 运行配置：推理参数原样透传，协议按 Base URL / 厂商名自动推断。 */
         private suspend fun top.wkbin.taixu.core.database.AiModelEntity.toModelConfig(

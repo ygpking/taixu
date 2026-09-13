@@ -392,8 +392,17 @@ object ContextWindowPolicy {
             if (files.isNotEmpty()) appendLine("涉及文件：${files.joinToString(" | ")}")
             if (recentRequests.isNotEmpty()) appendLine("近期用户要求（新→旧）：${recentRequests.asReversed().joinToString(" | ")}")
             if (unresolved.isNotEmpty()) appendLine("未解决事项：${unresolved.joinToString(" | ")}")
-            lastAssistant?.takeIf { it.isNotBlank() }?.let { append("最近阶段结论：$it") }
-        }.take(MAX_INCREMENTAL_SUMMARY_CHARS)
+            lastAssistant?.takeIf { it.isNotBlank() }?.let { appendLine("最近阶段结论：$it") }
+        }.let { summary ->
+            // 超长时保头 + 保尾：头部是初始目标与硬约束，尾部是最新工具状态与阶段结论，
+            // 只省略中段冗余；原先的整体 take 会把最新的阶段结论整段砍掉。
+            if (summary.length <= MAX_INCREMENTAL_SUMMARY_CHARS) summary
+            else {
+                val headBudget = MAX_INCREMENTAL_SUMMARY_CHARS / 2
+                val tailBudget = MAX_INCREMENTAL_SUMMARY_CHARS - headBudget - 32
+                summary.take(headBudget) + "\n[…中段省略…]\n" + summary.takeLast(tailBudget)
+            }
+        }
     }
 
     /**
