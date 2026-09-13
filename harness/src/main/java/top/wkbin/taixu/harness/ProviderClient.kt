@@ -50,10 +50,14 @@ class TransientHttpException(
 internal class ChatApi(
     private val okHttpClient: OkHttpClient,
     private val json: Json,
+    private val requestCache: LlmRequestCache,
 ) {
     suspend fun chat(model: ModelConfig, messages: List<ApiMessage>): ChatResult =
         withContext(Dispatchers.IO) {
-            okHttpClient.newCall(buildRequest(model, messages, stream = false)).execute().use { response ->
+            // 非流式请求缓存：相同请求在 TTL 内命中直接复用（省 token、更快）；只缓存成功结果，失败不落缓存
+            val cacheKey = requestCacheKey(model, messages)
+            requestCache.get(cacheKey)?.let { cached -> return@withContext cached }
+            val result = okHttpClient.newCall(buildRequest(model, messages, stream = false)).execute().use { response ->
                 val body = response.body.string()
                 if (!response.isSuccessful) {
                     if (response.code == 429) {
@@ -88,7 +92,13 @@ internal class ChatApi(
                     usage = parsed.usage?.toChatUsage() ?: ChatUsage(),
                 )
             }
+            requestCache.put(cacheKey, result)
+            result
         }
+
+    /** 缓存 key：模型 + 消息内容哈希（ModelConfig/ApiMessage 均为 data class，hashCode 基于内容）。 */
+    private fun requestCacheKey(model: ModelConfig, messages: List<ApiMessage>): String =
+        "${model.hashCode()}|${messages.hashCode()}"
 
     /**
      * 流式调用：逐行读取 SSE（data: ...），每个内容增量立即通过 [onDelta] 回调
@@ -700,6 +710,8 @@ class ProviderClient @Inject constructor(
         .callTimeout(CALL_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .readTimeout(READ_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .build()
+    /** 非流式请求缓存：常驻于 @Singleton 的 ProviderClient，跨请求共享（命中率才不为 0）。 */
+    private val requestCache = LlmRequestCache()
 
     suspend fun resolveModel(): ModelConfig = withContext(Dispatchers.IO) {
         val active = modelDao.activeModel()
@@ -831,7 +843,7 @@ class ProviderClient @Inject constructor(
                 // 用户显式开启 Responses API 时优先走该协议（仅对 OpenAI 兼容端点有意义）
                 selected.responseApiEnabled -> ResponsesApi(httpClient, json).chat(selected, sanitized)
                 selected.protocol == ApiProtocol.ANTHROPIC -> AnthropicApi(httpClient, json).chat(selected, sanitized)
-                else -> ChatApi(httpClient, json).chat(selected, sanitized)
+                else -> ChatApi(httpClient, json, requestCache).chat(selected, sanitized)
             }
         }
 
@@ -859,7 +871,7 @@ class ProviderClient @Inject constructor(
                 onToolProgress,
                 onDelta,
             )
-            else -> ChatApi(httpClient, json).chatStream(
+            else -> ChatApi(httpClient, json, requestCache).chatStream(
                 selected,
                 sanitized,
                 onReasoning,

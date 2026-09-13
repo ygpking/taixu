@@ -38,8 +38,16 @@ class SettingsDataStore @Inject constructor(
     private val workshopToolDirKey = stringPreferencesKey("workshop_tool_dir")
     private val workshopAndroidScriptKey = stringPreferencesKey("workshop_android_script")
     private val workshopFlutterScriptKey = stringPreferencesKey("workshop_flutter_script")
+    // 沙箱内置代理（in-app 设置），形如 http://host:port 或 socks5://host:port，空表示关闭（第4项 SandboxProxySync 依赖）
+    private val sandboxHttpProxyKey = stringPreferencesKey("sandbox_http_proxy")
+    val sandboxHttpProxy: Flow<String> = context.settingsDataStore.data.map { it[sandboxHttpProxyKey].orEmpty() }
+    suspend fun setSandboxHttpProxy(value: String) { context.settingsDataStore.edit { it[sandboxHttpProxyKey] = value.trim() } }
     // 工坊 Android 签名（keystore）注册表；整表 JSON 密文存储，口令不落明文。
     private val workshopKeystoresKey = stringPreferencesKey("workshop_keystores_ciphertext")
+    // Git HTTPS 凭据（PAT）整表加密存储（第3项 Git 工作台 · 凭据持久化）
+    private val gitCredentialsKey = stringPreferencesKey("git_credentials_ciphertext")
+    // 最近 5 条克隆过的仓库 URL（新→旧），clone 对话框下拉快速选。明文（URL 不敏感）。
+    private val gitRecentCloneUrlsKey = stringPreferencesKey("git_recent_clone_urls")
     // ===== 内置浏览器偏好：数据源（datastore key 集中放在 BrowserPreferencesKeys） =====
     private val browserDefaultFamilyKey = BrowserPreferencesKeys.DefaultFamily
     private val browserHomeUrlKey = BrowserPreferencesKeys.HomeUrl
@@ -116,6 +124,41 @@ class SettingsDataStore @Inject constructor(
             } else {
                 prefs[workshopKeystoresKey] = secretManager.encrypt(WorkshopKeystoreCodec.encode(value))
             }
+        }
+    }
+
+    /** Git 凭据列表（解密后的明文记录，仅本机内存中使用）。解密失败视为空表。 */
+    val gitCredentials: Flow<List<GitCredential>> = context.settingsDataStore.data.map { prefs ->
+        val ciphertext = prefs[gitCredentialsKey]
+        if (ciphertext.isNullOrBlank()) {
+            emptyList()
+        } else {
+            GitCredentialCodec.decode(secretManager.decrypt(ciphertext))
+        }
+    }
+
+    suspend fun setGitCredentials(value: List<GitCredential>) {
+        context.settingsDataStore.edit { prefs ->
+            if (value.isEmpty()) {
+                prefs.remove(gitCredentialsKey)
+            } else {
+                prefs[gitCredentialsKey] = secretManager.encrypt(GitCredentialCodec.encode(value))
+            }
+        }
+    }
+
+    /** 最近 5 条克隆过的仓库 URL（新→旧），clone 对话框下拉快速选。明文（URL 不敏感）。 */
+    val gitRecentCloneUrls: Flow<List<String>> = context.settingsDataStore.data.map { p ->
+        p[gitRecentCloneUrlsKey]?.split("\n")?.filter { it.isNotBlank() } ?: emptyList()
+    }
+
+    suspend fun pushRecentCloneUrl(url: String) {
+        val trimmed = url.trim()
+        if (trimmed.isBlank()) return
+        context.settingsDataStore.edit { p ->
+            val cur = p[gitRecentCloneUrlsKey]?.split("\n")?.filter { it.isNotBlank() }.orEmpty()
+            val updated = (listOf(trimmed) + cur.filter { it != trimmed }).take(5)
+            p[gitRecentCloneUrlsKey] = updated.joinToString("\n")
         }
     }
 

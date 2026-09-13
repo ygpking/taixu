@@ -34,6 +34,7 @@ class TaiXuApplication : Application() {
     @Inject lateinit var pathManagerLazy: Lazy<top.wkbin.taixu.runtime.RuntimePathManager>
     @Inject lateinit var privilegeManager: PrivilegeManager
     @Inject lateinit var browserMcpBootstrap: BrowserMcpBootstrap
+    @Inject lateinit var sandboxProxySync: top.wkbin.taixu.runtime.sandbox.SandboxProxySync
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -51,6 +52,8 @@ class TaiXuApplication : Application() {
                 launch { runCatching { privilegeManager.reconcilePersistedMode() } }
                 // 启动进程内 MCP HTTP server（loopback 127.0.0.1:8787）供 harness / 外部 IDE 接入浏览器工具
                 launch { runCatching { browserMcpBootstrap.bootstrap() } }
+                // 沙箱内置代理：把设置里的 sandboxHttpProxy 持续同步到 EnvironmentResolver.overrideProxy（第4项）
+                launch { runCatching { sandboxProxySync.start() } }
                 launch {
                     runCatching {
                         val skillRepository = agentSkillRepositoryLazy.get()

@@ -22,6 +22,8 @@ enum class RuntimeIconName {
     Brain, Sparkles, Vibrate, FolderDownload, Document, SdCard, Server, Compress,
     Prompt, Wrench, Model, Network, Community, FolderOpen, Speed, Cable, Admin, Link,
     Reverse, PowerSettingsNew, Visibility, VisibilityOff, Sponsor, Mail,
+    // Git 工作台（第 3 项搬运，2026-09-13）：GitPanel 依赖的 5 个图标
+    Activity, GitBranch, GitCommit, Tag, Cloud,
 }
 
 /**
@@ -124,6 +126,11 @@ fun RuntimeIcon(
         RuntimeIconName.VisibilityOff -> R.drawable.components_ic_visibilityoff
         RuntimeIconName.Sponsor -> R.drawable.components_ic_sponsor
         RuntimeIconName.Mail -> R.drawable.components_ic_mail
+        RuntimeIconName.Activity -> R.drawable.components_ic_activity
+        RuntimeIconName.GitBranch -> R.drawable.components_ic_gitbranch
+        RuntimeIconName.GitCommit -> R.drawable.components_ic_gitcommit
+        RuntimeIconName.Tag -> R.drawable.components_ic_tag
+        RuntimeIconName.Cloud -> R.drawable.components_ic_cloud
     }
 
     // 彩色品牌 Logo 保持原色；单色图标跟随内容色，可被显式 tint 覆盖

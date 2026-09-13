@@ -469,4 +469,11 @@
     <string name="chat_floating_idle">就绪</string>
     <string name="chat_floating_thinking">🧠 思考中…</string>
     <string name="chat_floating_running">⚡ 执行中…</string>
+    <!-- Git 可视化工作台（第 3 项搬运） -->
+    <string name="chat_git_panel_title">Git · 当前会话</string>
+    <string name="chat_git_loading">正在读取 Git 状态…</string>
+    <string name="chat_git_no_repo">当前会话未绑定 Git 仓库</string>
+    <string name="chat_git_no_changes">工作区干净，没有改动</string>
+    <string name="chat_git_branch_label">分支</string>
+    <string name="chat_open_git">Git</string>
 </resources>

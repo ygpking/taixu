@@ -3,6 +3,16 @@ package top.wkbin.taixu.core.datastore
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/** Git HTTPS 凭证仓库（GitHub / Gitee / GitLab 私有仓库 PAT 等），整表加密。 */
+@Singleton
+class GitPreferences @Inject constructor(private val store: SettingsDataStore) {
+    val credentials get() = store.gitCredentials
+    suspend fun setCredentials(value: List<GitCredential>) = store.setGitCredentials(value)
+    /** 最近 5 条克隆 URL（clone 对话框下拉）。 */
+    val recentCloneUrls get() = store.gitRecentCloneUrls
+    suspend fun pushRecentCloneUrl(url: String) = store.pushRecentCloneUrl(url)
+}
+
 /** Narrow preference views keep consumers from depending on the complete settings schema. */
 @Singleton
 class AppearancePreferences @Inject constructor(private val store: SettingsDataStore) {

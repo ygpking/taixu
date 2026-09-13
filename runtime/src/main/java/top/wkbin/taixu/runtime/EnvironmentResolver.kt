@@ -6,6 +6,13 @@ import javax.inject.Singleton
 /** Single source of truth for the environment visible inside Debian. */
 @Singleton
 class EnvironmentResolver @Inject constructor() {
+
+    /**
+     * 用户在 in-app 设置里配的「沙箱内置代理」（`http://host:port` / `socks5://host:port`）。
+     * 由 SandboxProxySync 从 SettingsDataStore.sandboxHttpProxy 持续同步；非空时 baseEnvironment 注入代理。默认 null 不注入。
+     */
+    @Volatile var overrideProxy: String? = null
+
     fun runtimePath(): String = listOf(
         "/root/.local/bin",
         "/opt/taixu/bin",
@@ -22,6 +29,13 @@ class EnvironmentResolver @Inject constructor() {
         put("LANG", "C.UTF-8")
         put("TMPDIR", "/tmp")
         put("PATH", runtimePath())
+        // 沙箱内置代理（overrideProxy 非空时注入，让沙箱内 git/curl 走代理）
+        overrideProxy?.trim()?.takeIf { it.isNotEmpty() }?.let { proxyUrl ->
+            put("http_proxy", proxyUrl)
+            put("https_proxy", proxyUrl)
+            put("HTTP_PROXY", proxyUrl)
+            put("HTTPS_PROXY", proxyUrl)
+        }
         // HostBridge — 沙箱通过 localhost HTTP 桥接触发宿主侧操作（APK 安装、Shell 执行）
         put("TAIXU_BRIDGE_URL", "http://127.0.0.1:7980")
         put("TAIXU_BRIDGE_PORT", "7980")

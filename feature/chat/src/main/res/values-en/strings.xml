@@ -423,4 +423,11 @@
     <string name="chat_floating_idle">Ready</string>
     <string name="chat_floating_thinking">🧠 Thinking…</string>
     <string name="chat_floating_running">⚡ Executing…</string>
+    <!-- Git workbench (ported, item 3) -->
+    <string name="chat_git_panel_title">Git · Current session</string>
+    <string name="chat_git_loading">Reading Git status…</string>
+    <string name="chat_git_no_repo">No Git repository bound to this session</string>
+    <string name="chat_git_no_changes">Working tree clean, no changes</string>
+    <string name="chat_git_branch_label">Branch</string>
+    <string name="chat_open_git">Git</string>
 </resources>

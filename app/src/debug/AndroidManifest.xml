@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Debug 专属：adb 广播入口，端到端验证 git / 沙箱动作（消费端在 ChatViewModel，随 Git 工作台接线） -->
+        <receiver
+            android:name="top.wkbin.taixu.debug.DebugReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="top.wkbin.taixu.DEBUG_CLONE" />
+                <action android:name="top.wkbin.taixu.DEBUG_DIAG" />
+                <action android:name="top.wkbin.taixu.DEBUG_GIT" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

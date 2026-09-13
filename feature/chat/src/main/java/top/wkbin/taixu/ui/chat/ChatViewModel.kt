@@ -15,6 +15,11 @@ import top.wkbin.taixu.core.database.McpServerRepository
 import top.wkbin.taixu.core.database.AgentApprovalRepository
 import top.wkbin.taixu.core.database.AgentApprovalRequestEntity
 import top.wkbin.taixu.core.datastore.AgentPreferences
+import top.wkbin.taixu.core.datastore.GitPreferences
+import top.wkbin.taixu.core.datastore.SettingsDataStore
+import top.wkbin.taixu.runtime.debug.DebugActionBus
+import top.wkbin.taixu.runtime.sandbox.SandboxTextExtractor
+import top.wkbin.taixu.ui.chat.git.GitPanelController
 import top.wkbin.taixu.harness.HarnessLoop
 import top.wkbin.taixu.harness.HarnessMessage
 import top.wkbin.taixu.harness.UserMessage
@@ -120,6 +125,11 @@ class ChatViewModel @Inject constructor(
     private val privilegeManager: top.wkbin.taixu.runtime.privilege.PrivilegeManager,
     private val pathManager: top.wkbin.taixu.runtime.RuntimePathManager,
     private val workflowRepository: top.wkbin.taixu.core.database.WorkflowRepository,
+    private val providerClient: top.wkbin.taixu.harness.ProviderClient,
+    private val gitPreferences: top.wkbin.taixu.core.datastore.GitPreferences,
+    private val debugActionBus: top.wkbin.taixu.runtime.debug.DebugActionBus,
+    private val textExtractor: top.wkbin.taixu.runtime.sandbox.SandboxTextExtractor,
+    private val settingsDataStore: top.wkbin.taixu.core.datastore.SettingsDataStore,
 ) : ViewModel() {
     private val _workflowLaunchRequests = kotlinx.coroutines.flow.MutableSharedFlow<WorkflowLaunchRequest>(extraBufferCapacity = 2)
     val workflowLaunchRequests: kotlinx.coroutines.flow.SharedFlow<WorkflowLaunchRequest> = _workflowLaunchRequests
@@ -178,6 +188,103 @@ class ChatViewModel @Inject constructor(
                 }
             }
         }
+        // Debug 广播总线（adb 广播 E2E 验证链路，第3项 Git 工作台）：DebugReceiver 只 emit，
+        // 真正执行在这里。历史轮 DebugActionBus 建好但无人消费 → 本轮补齐，否则 adb 验证全空转。
+        viewModelScope.launch {
+            debugActionBus.flow.collect { action ->
+                when (action) {
+                    is top.wkbin.taixu.runtime.debug.DebugActionBus.Action.CloneRepo -> git.gitClone(action.url)
+                    is top.wkbin.taixu.runtime.debug.DebugActionBus.Action.Diagnostic -> {
+                        viewModelScope.launch(Dispatchers.IO) {
+                            val r = runCatching {
+                                linuxRuntime.execute(
+                                    top.wkbin.taixu.runtime.shell.ShellCommand(
+                                        commandLine = action.command + " 2>&1",
+                                        workingDirectory = "/root",
+                                        timeoutMs = 300_000L,
+                                    ),
+                                )
+                            }.getOrNull()
+                            val out = ((r?.stdout ?: "") + "\n" + (r?.stderr ?: "")).trim().take(2000)
+                            android.util.Log.i("TaixuDiag", "CMD=${action.command} → EXIT=${r?.exitCode} OUT=$out")
+                            git.reportDebug("诊断：exit=${r?.exitCode}\n$out")
+                        }
+                    }
+                    is top.wkbin.taixu.runtime.debug.DebugActionBus.Action.SwitchWorkspace -> {
+                        harnessLoop.debugSetWorkspace(action.path)
+                        git.reportDebug("已切工作区到 ${action.path}")
+                        git.refreshGitStatus()
+                    }
+                    top.wkbin.taixu.runtime.debug.DebugActionBus.Action.RefreshStatus -> git.refreshGitStatus()
+                    is top.wkbin.taixu.runtime.debug.DebugActionBus.Action.AddCred ->
+                        git.addGitCredential(action.name, action.host, action.user, action.token)
+                    top.wkbin.taixu.runtime.debug.DebugActionBus.Action.ClearCreds -> git.clearCredentials()
+                    is top.wkbin.taixu.runtime.debug.DebugActionBus.Action.VerifyCred ->
+                        git.verifyGitCredential(action.id)
+                    is top.wkbin.taixu.runtime.debug.DebugActionBus.Action.FetchRepos ->
+                        git.fetchUserRepos(action.host)
+                    top.wkbin.taixu.runtime.debug.DebugActionBus.Action.AiGenerateCommit ->
+                        git.aiGenerateCommitMessage()
+                    top.wkbin.taixu.runtime.debug.DebugActionBus.Action.GitPull -> git.gitPull()
+                    top.wkbin.taixu.runtime.debug.DebugActionBus.Action.GitPush -> git.gitPush()
+                    top.wkbin.taixu.runtime.debug.DebugActionBus.Action.GitStash -> git.gitStash()
+                    top.wkbin.taixu.runtime.debug.DebugActionBus.Action.GitStashPop -> git.gitStashPop()
+                    top.wkbin.taixu.runtime.debug.DebugActionBus.Action.GitRevertAll -> git.gitRevertAllUnstaged()
+                    is top.wkbin.taixu.runtime.debug.DebugActionBus.Action.GitRenameBranch ->
+                        git.gitRenameBranch(action.old, action.new)
+                    is top.wkbin.taixu.runtime.debug.DebugActionBus.Action.GitDeleteRemote ->
+                        git.gitDeleteRemoteBranch(action.name)
+                    is top.wkbin.taixu.runtime.debug.DebugActionBus.Action.GitCheckout ->
+                        git.gitCheckout(action.branch)
+                    is top.wkbin.taixu.runtime.debug.DebugActionBus.Action.GitStageAll ->
+                        if (action.on) git.gitStageAll() else git.gitUnstageAll()
+                    is top.wkbin.taixu.runtime.debug.DebugActionBus.Action.GitCommit ->
+                        git.gitCommit(action.message)
+                    is top.wkbin.taixu.runtime.debug.DebugActionBus.Action.GitCreateTag ->
+                        git.gitCreateTag(action.name)
+                    is top.wkbin.taixu.runtime.debug.DebugActionBus.Action.GitPushTag ->
+                        git.gitPushTag(action.name)
+                    is top.wkbin.taixu.runtime.debug.DebugActionBus.Action.GitDeleteTagLocal ->
+                        git.gitDeleteTag(action.name)
+                    is top.wkbin.taixu.runtime.debug.DebugActionBus.Action.GitDeleteTagRemote ->
+                        git.gitDeleteRemoteTag(action.name)
+                    is top.wkbin.taixu.runtime.debug.DebugActionBus.Action.GitRaw -> {
+                        viewModelScope.launch(Dispatchers.IO) {
+                            val out = git.rawRead(action.cmd)
+                            android.util.Log.i("TaixuDiag", "GitRaw '${action.cmd}' → $out")
+                            git.reportDebug("GitRaw:\n$out")
+                        }
+                    }
+                    is top.wkbin.taixu.runtime.debug.DebugActionBus.Action.ExtractText -> {
+                        viewModelScope.launch(Dispatchers.IO) {
+                            val r = runCatching { textExtractor.extract(action.guestPath, action.name) }
+                            val msg = when (val res = r.getOrNull()) {
+                                is top.wkbin.taixu.runtime.sandbox.SandboxTextExtractor.Result.Ok ->
+                                    "OK len=${res.text.length} truncated=${res.truncated} 前 200: ${res.text.take(200)}"
+                                is top.wkbin.taixu.runtime.sandbox.SandboxTextExtractor.Result.Skipped -> "SKIP ${res.reason}"
+                                is top.wkbin.taixu.runtime.sandbox.SandboxTextExtractor.Result.Failed -> "FAIL ${res.error}"
+                                null -> "EXC ${r.exceptionOrNull()?.message}"
+                            }
+                            android.util.Log.i("TaixuDiag", "extract ${action.name} → $msg")
+                            git.reportDebug("抽取 ${action.name}: $msg")
+                        }
+                    }
+                    is top.wkbin.taixu.runtime.debug.DebugActionBus.Action.SetProxy -> {
+                        viewModelScope.launch(Dispatchers.IO) {
+                            settingsDataStore.setSandboxHttpProxy(action.value)
+                            android.util.Log.i("TaixuDiag", "SetProxy = '${action.value}'")
+                        }
+                    }
+                    // SimulateAttachment / CreateProject 暂不接线：
+                    // · SimulateAttachment 要求附件有「解析中→✓N字符」状态机，fork 的 ChatAttachment 无该字段
+                    //   （fork 走"把路径写进 prompt 让 agent 自己读"的模型），硬接需先改附件模型，超出本轮范围；
+                    // · CreateProject 参数（templateId/templateVariables）与 fork WorkspaceManager.createProject
+                    //   签名差异较大，且与「Git 可视化工作台」无关，留给工坊任务单独接。
+                    is top.wkbin.taixu.runtime.debug.DebugActionBus.Action.SimulateAttachment,
+                    is top.wkbin.taixu.runtime.debug.DebugActionBus.Action.CreateProject -> Unit
+                }
+            }
+        }
     }
 
     val quickPhrases: StateFlow<List<top.wkbin.taixu.core.model.QuickPhrase>> = quickPhraseRepository.observeAll()
@@ -201,6 +308,20 @@ class ChatViewModel @Inject constructor(
     val thinkingLive: StateFlow<Boolean> = harnessLoop.thinkingLive
     val workspace: StateFlow<String> = harnessLoop.workspace
     val projectType: StateFlow<String> = harnessLoop.projectType
+
+    /**
+     * Git 可视化工作台控制器（第 3 项搬运）。
+     * 逻辑来自万象 Wanxiang `ChatViewModel` 内嵌 git 子系统，抽为独立类以隔离风险；
+     * UI 通过 `viewModel.git.xxx` 访问，行为与 Wanxiang 版一致。
+     */
+    val git: GitPanelController = GitPanelController(
+        linuxRuntime = linuxRuntime,
+        gitPreferences = gitPreferences,
+        providerClient = providerClient,
+        scope = viewModelScope,
+        workspaceProvider = { harnessLoop.workspace.value },
+        onSwitchWorkspace = { path -> harnessLoop.debugSetWorkspace(path) },
+    )
     /** 基于当前工作区内容自动推荐的 MCP 预设（已启用的已过滤），仅提示不自动启用。 */
     val mcpRecommendations: StateFlow<List<top.wkbin.taixu.harness.mcp.McpWorkspaceRecommender.Recommendation>> =
         harnessLoop.mcpRecommendations

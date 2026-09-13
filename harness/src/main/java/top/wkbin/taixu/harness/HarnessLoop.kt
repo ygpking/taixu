@@ -141,6 +141,15 @@ class HarnessLoop @Inject constructor(
     /** 当前会话关联的工作区 Linux 路径（"" = 未关联）。 */
     val workspace: StateFlow<String> = _workspace.asStateFlow()
 
+    /**
+     * 只改内存 StateFlow 的 workspace（不落库、不新建会话），让 Git 面板里的操作指向别的目录。
+     * 来源：万象 Wanxiang `HarnessLoop.debugSetWorkspace`，2026-09-13 搬运（Git 工作台 clone 完成后切工作区用）。
+     */
+    fun debugSetWorkspace(path: String) {
+        _workspace.value = path
+        refreshMcpRecommendations(path)
+    }
+
     private val _projectType = MutableStateFlow("")
     /** 当前会话显式选择的工程类型；空值表示由工作区内容自动识别。 */
     val projectType: StateFlow<String> = _projectType.asStateFlow()

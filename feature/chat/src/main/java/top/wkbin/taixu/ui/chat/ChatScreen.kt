@@ -175,6 +175,17 @@ fun ChatScreen(
     val attachmentsProcessing by viewModel.attachmentsProcessing.collectAsStateWithLifecycle()
     val notice by viewModel.notice.collectAsStateWithLifecycle()
     val subagentResult by viewModel.subagentResult.collectAsStateWithLifecycle()
+    // ↓ Git 可视化工作台（第 3 项搬运）：全部状态挂在 viewModel.git 控制器上，不跨会话共享
+    val gitPanelState by viewModel.git.gitPanelState.collectAsStateWithLifecycle()
+    val gitCredentials by viewModel.git.gitCredentials.collectAsStateWithLifecycle()
+    val matchedCredId by viewModel.git.matchedCredentialId.collectAsStateWithLifecycle()
+    val gitUncommittedCount = gitPanelState.let { s -> s.staged.size + s.unstaged.size + s.untracked.size }
+    val gitAiCommit by viewModel.git.aiCommit.collectAsStateWithLifecycle()
+    val gitCredHealth by viewModel.git.credHealth.collectAsStateWithLifecycle()
+    val gitRepoList by viewModel.git.repoList.collectAsStateWithLifecycle()
+    val gitProgress by viewModel.git.gitProgress.collectAsStateWithLifecycle()
+    val gitOp by viewModel.git.gitOpMessage.collectAsStateWithLifecycle()
+    val recentCloneUrls by viewModel.git.recentCloneUrls.collectAsStateWithLifecycle()
 
     // 弹窗开关与编辑目标：用 rememberSaveable 保存，旋转 / 进程重建后不丢失
     var showSessions by rememberSaveable { mutableStateOf(false) }
@@ -186,6 +197,7 @@ fun ChatScreen(
     var showRuntimeTimeline by rememberSaveable { mutableStateOf(false) }
     var showMemorySheet by rememberSaveable { mutableStateOf(false) }
     var showFloatingPermissionDialog by rememberSaveable { mutableStateOf(false) }
+    var showGitPanel by rememberSaveable { mutableStateOf(false) }
     var branchFromMessageId by rememberSaveable { mutableStateOf<String?>(null) }
     // 编辑目标消息只保存 id，避免把不可保存的实体放进状态保存器
     var editTargetMessageId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -306,6 +318,69 @@ fun ChatScreen(
 
     val snackbarHostState = remember { SnackbarHostState() }
     val appContext = LocalContext.current.applicationContext
+    // Git 操作结果（克隆/拉取/推送）Snackbar 反馈：面板打开时由面板内嵌 Snackbar 呈现，聊天层不抢。
+    LaunchedEffect(gitOp, showGitPanel) {
+        if (showGitPanel) return@LaunchedEffect
+        val snapshot = gitOp
+        when (snapshot) {
+            is GitOpMessage.Ok -> {
+                val actionLabel = when (snapshot.action) {
+                    is GitOpAction.SwitchWorkspaceTo -> "切过去"
+                    is GitOpAction.RetryWithClean -> "清空再试"
+                    is GitOpAction.UndoRename -> "撤销"
+                    is GitOpAction.StashPop -> "还原 stash"
+                    is GitOpAction.CopyError -> "复制"
+                    is GitOpAction.RetrySame -> "重试"
+                    null -> null
+                }
+                val result = if (actionLabel != null) {
+                    snackbarHostState.showSnackbar(snapshot.message, actionLabel = actionLabel, duration = SnackbarDuration.Long)
+                } else {
+                    snackbarHostState.showSnackbar(snapshot.message, duration = SnackbarDuration.Long)
+                }
+                if (result == SnackbarResult.ActionPerformed) {
+                    when (val a = snapshot.action) {
+                        is GitOpAction.SwitchWorkspaceTo -> viewModel.git.switchWorkspace(a.path)
+                        is GitOpAction.RetryWithClean -> viewModel.git.retryCloneAfterClean(a.url, a.targetDir)
+                        is GitOpAction.UndoRename -> viewModel.git.gitRenameBranch(a.newName, a.oldName)
+                        is GitOpAction.StashPop -> viewModel.git.gitStashPop()
+                        else -> {}
+                    }
+                }
+                viewModel.git.consumeGitOpMessage()
+            }
+            is GitOpMessage.Error -> {
+                val actionLabel = when (snapshot.action) {
+                    is GitOpAction.RetryWithClean -> "清空再试"
+                    is GitOpAction.SwitchWorkspaceTo -> "切过去"
+                    is GitOpAction.UndoRename -> "撤销"
+                    is GitOpAction.StashPop -> "还原 stash"
+                    is GitOpAction.CopyError -> "复制错误"
+                    is GitOpAction.RetrySame -> null
+                    null -> "复制错误"
+                }
+                val result = if (actionLabel != null) {
+                    snackbarHostState.showSnackbar(snapshot.message, actionLabel = actionLabel, duration = SnackbarDuration.Long)
+                } else {
+                    snackbarHostState.showSnackbar(snapshot.message, duration = SnackbarDuration.Long)
+                }
+                if (result == SnackbarResult.ActionPerformed) {
+                    when (val a = snapshot.action) {
+                        is GitOpAction.RetryWithClean -> viewModel.git.retryCloneAfterClean(a.url, a.targetDir)
+                        is GitOpAction.UndoRename -> viewModel.git.gitRenameBranch(a.newName, a.oldName)
+                        is GitOpAction.StashPop -> viewModel.git.gitStashPop()
+                        else -> { /* CopyError 走下面 */ }
+                    }
+                    if (snapshot.action == null || snapshot.action is GitOpAction.CopyError) {
+                        val cm = appContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("git-error", snapshot.message))
+                    }
+                }
+                viewModel.git.consumeGitOpMessage()
+            }
+            else -> {}
+        }
+    }
     val grantLabel = stringResource(R.string.chat_snackbar_grant)
     val gotItLabel = stringResource(R.string.chat_snackbar_got_it)
     LaunchedEffect(Unit) {
@@ -366,7 +441,13 @@ fun ChatScreen(
                 onOpenRuntime = { showRuntimeTimeline = true },
                 onOpenBrowser = onOpenBrowser,
                 browserHighlight = browserHighlight,
+                onOpenGit = { viewModel.git.refreshGitStatus(); showGitPanel = true },
+                gitUncommittedCount = gitUncommittedCount,
             )
+            // Git 流式进度横幅（clone/pull/push 时可见）
+            gitProgress?.let { p ->
+                GitProgressBanner(progress = p, onCancel = { viewModel.git.cancelGitOp() })
+            }
         }
 
     // 模型回复里的 /workspace、/attachments 等沙箱路径在此翻译为宿主真实文件，
@@ -622,6 +703,69 @@ fun ChatScreen(
                 viewModel.editAndResend(target.id, newText)
                 editTargetMessageId = null
             },
+        )
+    }
+
+    // Git 可视化工作台（全屏面板，第 3 项搬运）
+    if (showGitPanel) {
+        GitPanel(
+            state = gitPanelState,
+            onRefresh = viewModel.git::refreshGitStatus,
+            onDismiss = { showGitPanel = false },
+            onFileDiff = viewModel.git::loadFileDiff,
+            onClearDiff = viewModel.git::clearDiff,
+            onStage = viewModel.git::gitStage,
+            onUnstage = viewModel.git::gitUnstage,
+            onStageAll = viewModel.git::gitStageAll,
+            onUnstageAll = viewModel.git::gitUnstageAll,
+            onCommit = viewModel.git::gitCommit,
+            onPull = viewModel.git::gitPull,
+            onPush = viewModel.git::gitPush,
+            onCheckout = viewModel.git::gitCheckout,
+            onCreateBranch = viewModel.git::gitCreateBranch,
+            onDeleteBranch = viewModel.git::gitDeleteBranch,
+            onRenameBranch = viewModel.git::gitRenameBranch,
+            onDeleteRemoteBranch = viewModel.git::gitDeleteRemoteBranch,
+            onInitRepo = viewModel.git::gitInit,
+            onClone = viewModel.git::gitClone,
+            credentials = gitCredentials,
+            matchedCredentialId = matchedCredId,
+            onAddCredential = viewModel.git::addGitCredential,
+            onDeleteCredential = viewModel.git::deleteGitCredential,
+            onProbeCredential = viewModel.git::probeCredential,
+            onPullNow = viewModel.git::gitPullNow,
+            onDismissPullDirty = viewModel.git::dismissPullDirtyConfirm,
+            onConfirmCheckoutDirty = viewModel.git::confirmCheckoutDirty,
+            onDismissCheckoutConfirm = viewModel.git::dismissCheckoutConfirm,
+            onStash = { viewModel.git.gitStash() },
+            onStashPop = viewModel.git::gitStashPop,
+            aiCommit = gitAiCommit,
+            onAiGenerate = viewModel.git::aiGenerateCommitMessage,
+            credentialHealth = gitCredHealth,
+            onVerifyCredential = viewModel.git::verifyGitCredential,
+            onVerifyAllCredentials = viewModel.git::verifyAllCredentials,
+            repoListState = gitRepoList,
+            onFetchRepos = viewModel.git::fetchUserRepos,
+            onClearRepoList = viewModel.git::clearRepoList,
+            progress = gitProgress,
+            onCancelProgress = viewModel.git::cancelGitOp,
+            recentCloneUrls = recentCloneUrls,
+            onLoadMoreCommits = viewModel.git::loadMoreCommits,
+            onUnshallow = viewModel.git::unshallowRepo,
+            onCommitFileDiff = viewModel.git::loadCommitFileDiff,
+            gitOp = gitOp,
+            onSwitchWorkspace = viewModel.git::switchWorkspace,
+            onRetryCloneClean = viewModel.git::retryCloneAfterClean,
+            onUndoRename = viewModel.git::gitRenameBranch,
+            onConsumeGitOp = viewModel.git::consumeGitOpMessage,
+            onConfigIdentity = viewModel.git::gitConfigIdentity,
+            onRevert = viewModel.git::gitRevert,
+            onRevertAll = viewModel.git::gitRevertAllUnstaged,
+            onDeleteUntracked = viewModel.git::gitDeleteUntracked,
+            onCreateTag = viewModel.git::gitCreateTag,
+            onDeleteTag = viewModel.git::gitDeleteTag,
+            onCommitDetail = viewModel.git::loadCommitDetail,
+            onClearCommitDetail = viewModel.git::clearCommitDetail,
         )
     }
 
