@@ -146,7 +146,7 @@ class ToolExecutorTest {
             put("timeout_seconds", 3601)
         }))
         assertFalse(invalid.success)
-        assertTrue(invalid.output.contains("1-3600"))
+        assertTrue(invalid.output.contains("1-900"))
     }
 
     @Test
