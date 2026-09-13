@@ -1,7 +1,11 @@
 package top.wkbin.taixu.harness
 
 import top.wkbin.taixu.core.database.HarnessSessionEntity
+import java.io.EOFException
 import java.io.IOException
+import java.io.InterruptedIOException
+import java.net.SocketException
+import javax.net.ssl.SSLException
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
@@ -177,11 +181,19 @@ class HarnessProviderRunner @Inject constructor(
             } catch (io: IOException) {
                 currentCoroutineContext().ensureActive()
                 netRetry++
-                agentEventLogger.log(sessId, "NetworkRetry", "网络中断重试 $netRetry/$maxNetworkRetries: ${io.message}", io)
-                if (netRetry > maxNetworkRetries) throw io
+                // 连接被对端中止 / 读超时 / TLS 中断属于瞬态传输故障，与上下文规模无关。
+                // 大上下文把重试预算压到 1 次会让一次 abort 就整轮失败，用户只能手动「接续」；
+                // OkHttp 的 retryOnConnectionFailure 不覆盖已建立连接的中途断开，只能在应用层放宽。
+                val retryBudget = if (isTransientConnectionFailure(io)) {
+                    maxOf(maxNetworkRetries, TRANSIENT_MAX_RETRIES)
+                } else {
+                    maxNetworkRetries
+                }
+                agentEventLogger.log(sessId, "NetworkRetry", "网络中断重试 $netRetry/$retryBudget: ${io.message}", io)
+                if (netRetry > retryBudget) throw io
                 metrics.streamRetry()
                 stateMirrors.setThinkingLive(sessId, false)
-                stateMirrors.setStatus(sessId, "网络中断，重试中（$netRetry/$maxNetworkRetries）")
+                stateMirrors.setStatus(sessId, "网络中断，自动重发中（$netRetry/$retryBudget）")
                 streamText.clear()
                 streamReasoning.clear()
                 messageProjector.remove(sessId, assistantId)
@@ -319,9 +331,29 @@ class HarnessProviderRunner @Inject constructor(
     private fun friendly(throwable: Throwable): String =
         throwable.message?.take(200) ?: throwable::class.simpleName.orEmpty()
 
+    /**
+     * 判断是否为「原样重发同一请求即可安全恢复」的瞬态传输故障：连接被对端中止、读超时、
+     * TLS 层中断、流意外结束。沿 cause 链最多上溯 10 层，避免自引用造成死循环。
+     */
+    private fun isTransientConnectionFailure(throwable: Throwable): Boolean {
+        var cause: Throwable? = throwable
+        var depth = 0
+        while (cause != null && depth < 10) {
+            when (cause) {
+                is SocketException, is InterruptedIOException, is SSLException, is EOFException -> return true
+            }
+            cause = cause.cause
+            depth++
+        }
+        return false
+    }
+
     companion object {
         private const val LARGE_REQUEST_TOKEN_THRESHOLD = 64_000
         private const val LARGE_REQUEST_MAX_RETRIES = 1
+
+        /** 瞬态连接故障（断线 / 读超时 / TLS 中断）的最低重试预算，不受大上下文降级影响。 */
+        private const val TRANSIENT_MAX_RETRIES = 3
         private const val ESTIMATED_IMAGE_TOKENS = 1_000
 
         internal fun maxNetworkRetriesFor(estimatedRequestTokens: Int, configuredRetries: Int): Int =

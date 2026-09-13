@@ -347,9 +347,12 @@ object ContextWindowPolicy {
             "$name:${if (result.success) "成功" else "失败"} " +
                 command.orEmpty().take(480) + " " + output.replace('\n', ' ').take(720)
         }
+        // 模型调用失败时 HarnessLoop 会写入 "❌ …" 文本，它是故障现场而非阶段结论，
+        // 原样输出会误导后续轮次；真正的失败信息由「失败根因线索」字段承载。
         val lastAssistant = messages.filterIsInstance<AssistantText>().lastOrNull()?.text
             ?.let(::assistantTextForContext)
             ?.replace('\n', ' ')?.take(600)
+            ?.takeUnless { text -> EXECUTION_FAILURE_MARKERS.any { marker -> text.startsWith(marker) } }
         val textMessages = messages.mapNotNull {
             when (it) {
                 is UserMessage -> it.text
@@ -381,7 +384,15 @@ object ContextWindowPolicy {
         val failures = messages.filterIsInstance<ToolResult>().filter { !it.success }
             .takeLast(12)
             .map { it.output.replace('\n', ' ').take(480) }
-        val unresolved = recentRequests.takeLast(4)
+        // 原先是 recentRequests.takeLast(4)，与「近期用户要求」逐字重复，白占预算并挤掉真实细节。
+        // 改为只取尾部尚未被任何助手输出/工具动作回应的用户消息——即真正待处理的事项。
+        val unresolved = messages.asReversed()
+            .takeWhile { it !is AssistantText && it !is ToolCall && it !is ToolResult }
+            .filterIsInstance<UserMessage>()
+            .map { it.text.replace('\n', ' ').take(320) }
+            .distinct()
+            .reversed()
+            .takeLast(4)
         return buildString {
             appendLine("[早期历史摘要，共折叠 ${messages.size} 条消息]")
             firstRequest?.takeIf { it.isNotBlank() }?.let { appendLine("初始目标：$it") }
@@ -449,6 +460,8 @@ object ContextWindowPolicy {
         return issues
     }
 
+    /** 失败时写入助手消息的前缀，属于故障现场而非阶段结论，不能当作「最近阶段结论」注入。 */
+    private val EXECUTION_FAILURE_MARKERS = listOf("\u274c 执行异常", "\u274c 模型调用失败", "\u274c ")
     private val CONSTRAINT_MARKERS = listOf("必须", "不得", "禁止", "不能", "严禁", "要求", "must", "never", "should not")
     private val DECISION_MARKERS = listOf("决定", "采用", "改为", "选择", "方案", "decision", "use", "采用")
     private val WHITESPACE_REGEX = Regex("\\s+")

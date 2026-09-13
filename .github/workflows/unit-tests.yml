@@ -1,0 +1,51 @@
+name: Unit Tests
+
+# 仓库此前没有任何跑测试的 workflow（taixudev-build 只 assembleDebug、release 只 assembleRelease），
+# 导致 harness/runtime/feature 的 JVM 单测从未在 CI 上真实执行过。
+# TaiXu 的 PRoot 沙箱内 gradle 完全不可用，单测只能在这里（云端）验证。
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Run JVM unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Grant Execute Permission for Gradlew
+        run: chmod +x gradlew
+
+      - name: Run unit tests
+        run: ./gradlew testDebugUnitTest --no-daemon --stacktrace --continue
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports
+          path: |
+            **/build/reports/tests
+            **/build/test-results
+          if-no-files-found: warn
+          retention-days: 14
