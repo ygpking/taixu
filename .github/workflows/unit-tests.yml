@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
-      contents: read
+      contents: write
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -44,12 +44,23 @@ jobs:
       - name: Publish failure summary
         if: failure()
         run: |
+          echo "## 单测/编译失败摘要"
           {
-            echo "## 单测/编译失败摘要"
-            echo '```'
-            grep -nE '^e: |error:|FAILED|What went wrong|> Task .* FAILED' /tmp/unit-test.log | head -60 || true
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+            echo "=== 编译/测试错误（前 80 行）==="
+            grep -nE '^e: |error:|FAILED|What went wrong|> Task .* FAILED|Execution failed' /tmp/unit-test.log | head -80 || true
+            echo
+            echo "=== 全文尾部 150 行 ==="
+            tail -150 /tmp/unit-test.log || true
+          } > /tmp/failure-report.txt
+          cat /tmp/failure-report.txt
+          # 把报告提交回仓库（独立分支），供无 token 环境 git 读取
+          git config user.name "taixu-ci-bot"
+          git config user.email "ci@taixu.local"
+          git checkout -B ci-failure-report
+          cp /tmp/failure-report.txt ci-failure-report.txt
+          git add -f ci-failure-report.txt
+          git commit -m "ci: 失败报告 ${GITHUB_SHA::8}" || true
+          git push -f origin ci-failure-report || true
 
       - name: Upload test reports
         if: always()
