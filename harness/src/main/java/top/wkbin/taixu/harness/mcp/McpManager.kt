@@ -1,6 +1,7 @@
 package top.wkbin.taixu.harness.mcp
 
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
@@ -89,12 +90,17 @@ class McpManager @Inject constructor(
         val enabledServers = servers.filter { it.isEnabled }
         if (enabledServers.isEmpty()) return@withContext emptyList()
 
+        // Linux 运行时未就绪属确定性不可恢复故障：同一批发现里其余服务必然同因失败，
+        // 逐路重试只会把同一段堆栈刷 N 遍（实测 5 路失败刷出 102 行）。命中即整批短路。
+        val runtimeUnavailable = AtomicBoolean(false)
         coroutineScope {
             enabledServers.map { server ->
-                async {
+                async<List<McpToolInfo>> {
+                    if (runtimeUnavailable.get()) return@async emptyList()
                     val fingerprint = fingerprint(server)
                     cache[server.id]?.takeIf { it.fingerprint == fingerprint }?.tools
                         ?: discoveryMutexes.getOrPut(server.id) { Mutex() }.withLock {
+                            if (runtimeUnavailable.get()) return@withLock emptyList<McpToolInfo>()
                             cache[server.id]?.takeIf { it.fingerprint == fingerprint }?.tools ?: run {
                                 // 总超时兜底：沙箱会话拉起或 MCP 进程挂起时不能阻塞每轮对话（挂起是无日志的），
                                 // 超时按失败处理，本轮不注入该服务工具，下一轮重试。
@@ -107,11 +113,14 @@ class McpManager @Inject constructor(
                                         "MCP[${server.name}] 发现 ${it.size} 个工具，耗时 ${System.currentTimeMillis() - startedAt}ms",
                                     )
                                 }.onFailure {
+                                    // 确定性不可恢复故障（运行时未就绪）会在同一批里逐路重复，
+                                    // 只记一行、不带堆栈；未知故障保留堆栈以便排查。
+                                    val deterministic = isDeterministicUnavailable(it)
                                     agentEventLogger.log(
                                         DISCOVERY_LOG_SESSION,
                                         "McpDiscovery",
                                         "MCP[${server.name}] 工具发现失败，耗时 ${System.currentTimeMillis() - startedAt}ms：${it.message ?: it::class.simpleName}",
-                                        it,
+                                        if (deterministic) null else it,
                                     )
                                 }
                             }.onSuccess {
@@ -122,11 +131,13 @@ class McpManager @Inject constructor(
                                 val msg = it.message ?: "工具发现异常"
                                 lastErrors[server.id] = msg
                                 // 静默失败会让"模型不调用 MCP 工具"无从排查，这里必须留下线索；
-                                // 冷却期内的重复失败只记一行，不再打整段堆栈刷屏。
+                                // 冷却期内 / 确定性不可恢复的重复失败只记一行，不再打整段堆栈刷屏。
                                 val inCooldown = msg.contains("冷却中")
+                                val deterministic = isDeterministicUnavailable(it)
+                                if (deterministic) runtimeUnavailable.set(true)
                                 logger.w(
                                     "MCP[${server.name}] 工具发现失败，本轮对话不注入该服务的工具: $msg",
-                                    if (inCooldown) null else it,
+                                    if (inCooldown || deterministic) null else it,
                                 )
                                 cache.remove(server.id)
                                 state(server.id, McpConnectionState.OFFLINE)
@@ -169,6 +180,25 @@ class McpManager @Inject constructor(
     private suspend fun discoverWithTimeout(server: McpServerConfig): List<McpToolInfo> =
         withTimeoutOrNull(DISCOVERY_TIMEOUT_MS.milliseconds) { transport(server).discover(server) }
             ?: error("工具发现超时（${DISCOVERY_TIMEOUT_MS / 1000}s）：沙箱会话或 MCP 进程可能已挂起")
+
+    /**
+     * 确定性不可恢复故障（Linux 运行时未初始化，`LinuxRuntimeImpl.ensureReady()` 抛出）：
+     * 重试无意义，且同一批发现里其余服务必然同因失败。命中后本轮整批短路、只留一行日志不打堆栈。
+     * 沿 cause 链最多上溯 10 层，避免自引用造成死循环。
+     */
+    private fun isDeterministicUnavailable(throwable: Throwable): Boolean {
+        var cause: Throwable? = throwable
+        var depth = 0
+        while (cause != null && depth < 10) {
+            val message = cause.message.orEmpty()
+            if (message.contains("Linux runtime is not ready") || message.contains("Call initialize() first")) {
+                return true
+            }
+            cause = cause.cause
+            depth++
+        }
+        return false
+    }
 
     private suspend fun <T> cancellableResult(block: suspend () -> T): Result<T> = try {
         Result.success(block())

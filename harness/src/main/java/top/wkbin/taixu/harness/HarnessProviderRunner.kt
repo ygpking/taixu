@@ -184,16 +184,21 @@ class HarnessProviderRunner @Inject constructor(
                 // 连接被对端中止 / 读超时 / TLS 中断属于瞬态传输故障，与上下文规模无关。
                 // 大上下文把重试预算压到 1 次会让一次 abort 就整轮失败，用户只能手动「接续」；
                 // OkHttp 的 retryOnConnectionFailure 不覆盖已建立连接的中途断开，只能在应用层放宽。
-                val retryBudget = if (isTransientConnectionFailure(io)) {
-                    maxOf(maxNetworkRetries, TRANSIENT_MAX_RETRIES)
-                } else {
-                    maxNetworkRetries
-                }
-                agentEventLogger.log(sessId, "NetworkRetry", "网络中断重试 $netRetry/$retryBudget: ${io.message}", io)
+                val transient = isTransientFailure(io)
+                val retryBudget = effectiveRetryBudget(maxNetworkRetries, io)
+                // netRetry 表示「这是第几次失败」；净重试预算为 retryBudget 次，故第 retryBudget+1 次失败即放弃。
+                // 原写法 "重试 $netRetry/$retryBudget" 会被误读成「已执行第 retryBudget 次重试、仍在继续」。
+                agentEventLogger.log(
+                    sessId,
+                    "NetworkRetry",
+                    "网络中断，第 $netRetry 次失败（重试上限 $retryBudget 次" +
+                        (if (transient) "，瞬态故障不受大上下文降级" else "") + "）：${io.message}",
+                    io,
+                )
                 if (netRetry > retryBudget) throw io
                 metrics.streamRetry()
                 stateMirrors.setThinkingLive(sessId, false)
-                stateMirrors.setStatus(sessId, "网络中断，自动重发中（$netRetry/$retryBudget）")
+                stateMirrors.setStatus(sessId, "网络中断，自动重发中（第 $netRetry 次失败，上限 $retryBudget）")
                 streamText.clear()
                 streamReasoning.clear()
                 messageProjector.remove(sessId, assistantId)
@@ -331,23 +336,6 @@ class HarnessProviderRunner @Inject constructor(
     private fun friendly(throwable: Throwable): String =
         throwable.message?.take(200) ?: throwable::class.simpleName.orEmpty()
 
-    /**
-     * 判断是否为「原样重发同一请求即可安全恢复」的瞬态传输故障：连接被对端中止、读超时、
-     * TLS 层中断、流意外结束。沿 cause 链最多上溯 10 层，避免自引用造成死循环。
-     */
-    private fun isTransientConnectionFailure(throwable: Throwable): Boolean {
-        var cause: Throwable? = throwable
-        var depth = 0
-        while (cause != null && depth < 10) {
-            when (cause) {
-                is SocketException, is InterruptedIOException, is SSLException, is EOFException -> return true
-            }
-            cause = cause.cause
-            depth++
-        }
-        return false
-    }
-
     companion object {
         private const val LARGE_REQUEST_TOKEN_THRESHOLD = 64_000
         private const val LARGE_REQUEST_MAX_RETRIES = 1
@@ -362,6 +350,43 @@ class HarnessProviderRunner @Inject constructor(
             } else {
                 configuredRetries
             }
+
+        /**
+         * 实际重试预算 = 大上下文降级后的预算，但瞬态故障（断线 / 超时 / TLS 中断 / 上游 5xx）
+         * 至少保留 [TRANSIENT_MAX_RETRIES] 次，不被降级到 1 次。
+         */
+        internal fun effectiveRetryBudget(largeContextRetries: Int, throwable: Throwable): Int =
+            if (isTransientFailure(throwable)) {
+                maxOf(largeContextRetries, TRANSIENT_MAX_RETRIES)
+            } else {
+                largeContextRetries
+            }
+
+        /**
+         * 判断是否为「原样重发同一请求即可安全恢复」的瞬态故障：连接被对端中止、读超时、
+         * TLS 层中断、流意外结束，以及上游 5xx（[TransientHttpException]，如 Cloudflare 524 / 503）。
+         *
+         * 这些故障与请求体大小、上下文规模无关，因此不受大上下文重试降级影响（见 [effectiveRetryBudget]）；
+         * 否则一次 503 就会让长会话整轮失败，用户只能手动接续。
+         * 沿 cause 链最多上溯 10 层，避免自引用造成死循环。
+         */
+        internal fun isTransientFailure(throwable: Throwable): Boolean {
+            var cause: Throwable? = throwable
+            var depth = 0
+            while (cause != null && depth < 10) {
+                if (cause is SocketException ||
+                    cause is InterruptedIOException ||
+                    cause is SSLException ||
+                    cause is EOFException ||
+                    cause is TransientHttpException
+                ) {
+                    return true
+                }
+                cause = cause.cause
+                depth++
+            }
+            return false
+        }
         const val RETRY_BACKOFF_MS = 1_000L
         const val RETRY_BACKOFF_SEC = 2L
 
