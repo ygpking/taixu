@@ -27,11 +27,29 @@ class ContextWindowPolicyTest {
             UserMessage("3", 3, "recent"),
         )
 
-        // Budget must leave room after the input-fraction + output/schema reserves.
+        // 新契约：预算充足（消息数 < MIN_KEEP_MESSAGES=10 且未超折叠线）时，保留最近 10 条
+        // → 3 条全部保留（keepFrom=0），保证「填多少、保多少」，不再只留 1~2 条导致失忆。
+        val keepFrom = ContextWindowPolicy.computeKeepFromIndex(messages, budget = 18_000, systemTokens = 10)
+        assertEquals(0, keepFrom)
+        assertTrue(messages[keepFrom] is UserMessage)
+    }
+
+    @Test
+    fun `oversized history collapses to the most recent MIN_KEEP_MESSAGES turns`() {
+        // 新契约的另一面：历史远超保留下限且预算紧张时，必须收敛到最近 MIN_KEEP_MESSAGES 条，
+        // 不能把整段历史都塞进上下文撑爆模型。
+        val big = "x".repeat(20_000)
+        val messages = (1..30).map { index ->
+            if (index % 2 == 0) AssistantText("a$index", index, big) else UserMessage("u$index", index, big)
+        }
+
         val keepFrom = ContextWindowPolicy.computeKeepFromIndex(messages, budget = 18_000, systemTokens = 10)
 
-        assertEquals(2, keepFrom)
-        assertTrue(messages[keepFrom] is UserMessage)
+        // 保留下来的条数不应超过 MIN_KEEP_MESSAGES（允许对齐工具对/用户轮而略少），
+        // 且必须留住最后一条。
+        val kept = messages.size - keepFrom
+        assertTrue("保留条数 $kept 应 <= ${ContextWindowPolicy.MIN_KEEP_MESSAGES}", kept <= ContextWindowPolicy.MIN_KEEP_MESSAGES)
+        assertTrue("必须保留最后一条消息", keepFrom < messages.size)
     }
 
     @Test
@@ -126,7 +144,7 @@ class ContextWindowPolicyTest {
     }
 
     @Test
-    fun `token boundary advances to the next complete user turn`() {
+    fun `budget-constrained windows still start on a complete user turn`() {
         val call = ToolCall(
             "call",
             2,
@@ -141,10 +159,46 @@ class ContextWindowPolicyTest {
             UserMessage("latest", 4, "now"),
         )
 
+        // 新契约：本例消息数 4 < 10 且未超折叠线 → 全部保留。
         val keepFrom = ContextWindowPolicy.computeKeepFromIndex(messages, budget = 18_000, systemTokens = 10)
 
-        assertEquals(3, keepFrom)
+        assertEquals(0, keepFrom)
         assertTrue(messages[keepFrom] is UserMessage)
+    }
+
+    @Test
+    fun `budget-constrained window never starts mid tool-pair`() {
+        // 构造一段超长历史，强制触发折叠，验证窗口边界仍落在 user 轮上，
+        // 且不会把 ToolResult 切离它的 ToolCall。
+        val filler = "y".repeat(30_000)
+        val messages = buildList {
+            for (i in 1..20) {
+                add(UserMessage("u$i", i, filler))
+                add(AssistantText("a$i", i, filler))
+            }
+            add(UserMessage("old", 41, "old turn"))
+            add(
+                ToolCall(
+                    "call",
+                    42,
+                    HarnessTool.BASE,
+                    kotlinx.serialization.json.buildJsonObject {},
+                    reasoning = "x".repeat(4_000),
+                )
+            )
+            add(ToolResult("result", 43, "call", true, "ok"))
+            add(UserMessage("latest", 44, "now"))
+        }
+
+        val keepFrom = ContextWindowPolicy.computeKeepFromIndex(messages, budget = 18_000, systemTokens = 10)
+        val kept = messages.drop(keepFrom)
+
+        assertTrue("窗口首条应为 user 轮", kept.first() is UserMessage)
+        val keptCallIds = kept.filterIsInstance<ToolCall>().mapTo(mutableSetOf()) { it.id }
+        assertTrue(
+            "被保留的 ToolResult 必须能对上同窗口内的 ToolCall",
+            kept.filterIsInstance<ToolResult>().all { it.toolCallId in keptCallIds }
+        )
     }
 
     @Test
@@ -167,11 +221,12 @@ class ContextWindowPolicyTest {
             UserMessage("latest-user", 7, "latest request"),
         )
 
+        // 新契约：消息数 7 < MIN_KEEP_MESSAGES=10 且未超折叠线 → 全部保留，工具对天然闭合。
         val keepFrom = ContextWindowPolicy.computeKeepFromIndex(messages, budget = 18_000, systemTokens = 10)
         val kept = messages.drop(keepFrom)
         val keptCallIds = kept.filterIsInstance<ToolCall>().mapTo(mutableSetOf()) { it.id }
 
-        assertEquals(6, keepFrom)
+        assertEquals(0, keepFrom)
         assertTrue(kept.first() is UserMessage)
         assertTrue(kept.filterIsInstance<ToolResult>().all { it.toolCallId in keptCallIds })
     }

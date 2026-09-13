@@ -388,7 +388,7 @@ class ChatViewModel @Inject constructor(
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val activePlan: StateFlow<top.wkbin.taixu.core.database.AgentPlanEntity?> =
         harnessLoop.currentSessionId
-            .distinctUntilChanged()
+            // StateFlow 本身已按值去重，无需再调 distinctUntilChanged（Kotlin 弃用警告，且本项目按 error 处理）。
             .flatMapLatest { sessionId ->
                 if (sessionId.isBlank()) {
                     kotlinx.coroutines.flow.flowOf(null)
