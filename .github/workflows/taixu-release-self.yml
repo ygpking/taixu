@@ -56,7 +56,18 @@ jobs:
           TAIXU_RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           TAIXU_RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: |
-          ./gradlew assembleRelease --no-daemon --stacktrace
+          set -o pipefail
+          ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tee /tmp/assemble.log
+
+      - name: Publish build failure summary
+        if: failure()
+        run: |
+          {
+            echo "## 编译失败摘要"
+            echo '```'
+            grep -nE '^e: |error:|FAILED|What went wrong|> Task .* FAILED|Execution failed' /tmp/assemble.log | head -80 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Identify and Rename Output APK
         run: |

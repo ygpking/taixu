@@ -37,7 +37,19 @@ jobs:
         run: chmod +x gradlew
 
       - name: Run unit tests
-        run: ./gradlew testDebugUnitTest --no-daemon --stacktrace --continue
+        run: |
+          set -o pipefail
+          ./gradlew testDebugUnitTest --no-daemon --stacktrace --continue 2>&1 | tee /tmp/unit-test.log
+
+      - name: Publish failure summary
+        if: failure()
+        run: |
+          {
+            echo "## 单测/编译失败摘要"
+            echo '```'
+            grep -nE '^e: |error:|FAILED|What went wrong|> Task .* FAILED' /tmp/unit-test.log | head -60 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload test reports
         if: always()
