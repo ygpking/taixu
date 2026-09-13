@@ -117,6 +117,15 @@ interface AgentContextDao {
     @Query("SELECT * FROM agent_scratchpads WHERE sessionId = :sessionId ORDER BY updatedAt DESC")
     suspend fun listScratchpads(sessionId: String): List<AgentScratchpadEntity>
 
+    /**
+     * 订阅式查询：agent_scratchpads 表任何写入/删除都会触发重新发射。
+     *
+     * 供 UI 实时刷新，避免此前「combine 后 distinctUntilChanged 把 scratchpadRefresh
+     * 增量信号吞掉」导致删除草稿后界面不重绘的问题（与 observeActivePlan 同因同治）。
+     */
+    @Query("SELECT * FROM agent_scratchpads WHERE sessionId = :sessionId ORDER BY updatedAt DESC")
+    fun observeScratchpads(sessionId: String): kotlinx.coroutines.flow.Flow<List<AgentScratchpadEntity>>
+
     @Query("DELETE FROM agent_scratchpads WHERE sessionId = :sessionId AND `key` = :key")
     suspend fun deleteScratchpad(sessionId: String, key: String)
 

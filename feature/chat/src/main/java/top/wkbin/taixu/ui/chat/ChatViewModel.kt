@@ -64,6 +64,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.map
@@ -419,20 +420,22 @@ class ChatViewModel @Inject constructor(
         agentContextDao.observeAllMemories()
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    private val scratchpadRefresh = MutableStateFlow(0)
-
-    /** 当前会话的草稿便签；随运行状态变化与手动刷新重建。 */
+    /**
+     * 当前会话的草稿便签：直接订阅 Room 的 observeScratchpads，
+     * agent_scratchpads 表任何写入/删除都会触发重新发射，UI 实时刷新。
+     *
+     * 修复：此前用 combine(currentSessionId, status, scratchpadRefresh){ s,_,_ -> s } + distinctUntilChanged，
+     * 后两个流被 lambda 丢弃 → status 变化与 deleteScratchpad/clearScratchpads 的 refresh 增量
+     * 全被 distinctUntilChanged 吞掉，删除后界面不重绘（与看板不刷新同一病根）。
+     */
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val scratchpads: StateFlow<List<top.wkbin.taixu.core.database.AgentScratchpadEntity>> =
-        combine(
-            harnessLoop.currentSessionId,
-            harnessLoop.status,
-            scratchpadRefresh,
-        ) { sessionId, _, _ -> sessionId }
-            .distinctUntilChanged()
+        currentSessionId
             .flatMapLatest { sessionId ->
-                flow {
-                    emit(if (sessionId.isBlank()) emptyList() else agentContextDao.listScratchpads(sessionId))
+                if (sessionId.isBlank()) {
+                    flowOf(emptyList())
+                } else {
+                    agentContextDao.observeScratchpads(sessionId)
                 }
             }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -445,8 +448,8 @@ class ChatViewModel @Inject constructor(
         val sessionId = currentSessionId.value
         if (sessionId.isBlank()) return
         viewModelScope.launch {
+            // 删除后无需手动通知：scratchpads 已订阅 Room，表变更会自动触发 UI 重绘。
             agentContextDao.deleteScratchpad(sessionId, key)
-            scratchpadRefresh.value++
         }
     }
 
@@ -455,7 +458,6 @@ class ChatViewModel @Inject constructor(
         if (sessionId.isBlank()) return
         viewModelScope.launch {
             agentContextDao.clearScratchpads(sessionId)
-            scratchpadRefresh.value++
         }
     }
 

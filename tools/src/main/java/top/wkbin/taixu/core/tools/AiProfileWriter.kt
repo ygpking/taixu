@@ -17,6 +17,23 @@ class AiProfileWriter @Inject constructor(
     private val providerRepository: ProviderRepository,
 ) {
 
+    companion object {
+        /**
+         * 模型档案 contextTokens 的可接受区间。
+         *
+         * 必须与 harness 模块 ContextWindowPolicy 的 MIN_CONTEXT_BUDGET / MAX_CONTEXT_BUDGET
+         * **保持同值**：tools 模块不依赖 harness，无法直接引用，故此处镜像定义。
+         * 引擎侧 resolveEffectiveBudget 用同区间钳制，两处一致才能保证
+         * 「填多少 / 存多少 / 显示多少 / 按多少折叠」四处闭环。
+         */
+        const val MIN_CONTEXT_TOKENS = 4_000
+        const val MAX_CONTEXT_TOKENS = 2_000_000
+
+        /** 与 ContextWindowPolicy.resolveEffectiveBudget 同语义的写入侧规范化。 */
+        fun normalizeContextTokens(value: Int?): Int? =
+            value?.coerceIn(MIN_CONTEXT_TOKENS, MAX_CONTEXT_TOKENS)
+    }
+
     /** 解析多行 Key 文本为去重的 Key 列表 */
     fun parseApiKeys(raw: String): List<String> = raw
         .lineSequence()
@@ -74,7 +91,9 @@ class AiProfileWriter @Inject constructor(
                 reasoningMode = request.reasoningMode?.ifBlank { null },
                 reasoningEffort = request.reasoningEffort?.ifBlank { null },
                 toolCallMode = request.toolCallMode?.ifBlank { null },
-                contextTokens = request.contextTokens,
+                // 写入侧规范化：此前原样落库，用户填 0 或 999999999 会出现在模型档案卡片上
+                // （「0k / 999999k 上下文」），与引擎 resolveEffectiveBudget 的实际取值不一致。
+                contextTokens = normalizeContextTokens(request.contextTokens),
                 customHeaders = request.customHeaders.trim(),
                 pureChatMode = request.pureChatMode,
                 visionEnabled = request.visionEnabled,

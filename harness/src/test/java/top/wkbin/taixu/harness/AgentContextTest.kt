@@ -454,6 +454,15 @@ private class FakeAgentContextDao : AgentContextRepository {
     override suspend fun listScratchpads(sessionId: String): List<AgentScratchpadEntity> =
         scratchpads.values.filter { it.sessionId == sessionId }.sortedByDescending { it.updatedAt }
 
+    /**
+     * 注意：此处是一次性快照，只为满足接口（真实实现在 RoomAgentContextRepository）。
+     * "表写入触发重发"属 Room 行为，单测 fake 覆盖不到，故本方法不参与 Flow 语义断言。
+     */
+    override fun observeScratchpads(sessionId: String): kotlinx.coroutines.flow.Flow<List<AgentScratchpadEntity>> =
+        kotlinx.coroutines.flow.flowOf(
+            scratchpads.values.filter { it.sessionId == sessionId }.sortedByDescending { it.updatedAt }
+        )
+
     override suspend fun deleteScratchpad(sessionId: String, key: String) {
         scratchpads.remove("${sessionId}__${key}")
     }

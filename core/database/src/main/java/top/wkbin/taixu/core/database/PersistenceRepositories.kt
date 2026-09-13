@@ -174,6 +174,7 @@ interface AgentContextRepository {
     suspend fun saveScratchpad(scratchpad: AgentScratchpadEntity)
     suspend fun getScratchpad(sessionId: String, key: String): AgentScratchpadEntity?
     suspend fun listScratchpads(sessionId: String): List<AgentScratchpadEntity>
+    fun observeScratchpads(sessionId: String): Flow<List<AgentScratchpadEntity>>
     suspend fun deleteScratchpad(sessionId: String, key: String)
     suspend fun clearScratchpads(sessionId: String)
 }
@@ -253,6 +254,7 @@ class RoomAgentContextRepository @Inject constructor(private val dao: AgentConte
     override suspend fun saveScratchpad(scratchpad: AgentScratchpadEntity) = dao.saveScratchpad(scratchpad)
     override suspend fun getScratchpad(sessionId: String, key: String) = dao.getScratchpad(sessionId, key)
     override suspend fun listScratchpads(sessionId: String) = dao.listScratchpads(sessionId)
+    override fun observeScratchpads(sessionId: String) = dao.observeScratchpads(sessionId)
     override suspend fun deleteScratchpad(sessionId: String, key: String) = dao.deleteScratchpad(sessionId, key)
     override suspend fun clearScratchpads(sessionId: String) = dao.clearScratchpads(sessionId)
 }
