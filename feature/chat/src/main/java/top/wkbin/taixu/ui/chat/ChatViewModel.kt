@@ -129,7 +129,7 @@ class ChatViewModel @Inject constructor(
     private val gitPreferences: top.wkbin.taixu.core.datastore.GitPreferences,
     private val debugActionBus: top.wkbin.taixu.runtime.debug.DebugActionBus,
     private val textExtractor: top.wkbin.taixu.runtime.sandbox.SandboxTextExtractor,
-    private val settingsDataStore: top.wkbin.taixu.core.datastore.SettingsDataStore,
+    private val fullSettingsStore: top.wkbin.taixu.core.datastore.SettingsDataStore,
 ) : ViewModel() {
     private val _workflowLaunchRequests = kotlinx.coroutines.flow.MutableSharedFlow<WorkflowLaunchRequest>(extraBufferCapacity = 2)
     val workflowLaunchRequests: kotlinx.coroutines.flow.SharedFlow<WorkflowLaunchRequest> = _workflowLaunchRequests
@@ -271,7 +271,7 @@ class ChatViewModel @Inject constructor(
                     }
                     is top.wkbin.taixu.runtime.debug.DebugActionBus.Action.SetProxy -> {
                         viewModelScope.launch(Dispatchers.IO) {
-                            settingsDataStore.setSandboxHttpProxy(action.value)
+                            fullSettingsStore.setSandboxHttpProxy(action.value)
                             android.util.Log.i("TaixuDiag", "SetProxy = '${action.value}'")
                         }
                     }
