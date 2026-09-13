@@ -21,7 +21,7 @@ class ChatApiTest {
     fun setUp() {
         server = MockWebServer()
         server.start()
-        api = ChatApi(OkHttpClient(), Json { ignoreUnknownKeys = true })
+        api = ChatApi(OkHttpClient(), Json { ignoreUnknownKeys = true }, LlmRequestCache())
     }
 
     @After
