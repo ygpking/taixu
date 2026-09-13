@@ -133,6 +133,44 @@ class AgentContextTest {
     }
 
     @Test
+    fun `plan advance with stepId only updates that step and keeps the rest`() = runBlocking {
+        val createArgs = buildJsonObject {
+            put("action", "replace_active")
+            put("goal", "验证单步推进")
+            put(
+                "steps",
+                json.parseToJsonElement(
+                    """[{"id":"1","title":"第一步","status":"completed"},{"id":"2","title":"第二步","status":"in_progress"},{"id":"3","title":"第三步","status":"pending"}]"""
+                )
+            )
+        }
+        assertTrue(executor.executePlan(createArgs, "session-step").first)
+
+        // 只传 stepId + stepStatus，不重传 steps
+        val advanceArgs = buildJsonObject {
+            put("action", "advance")
+            put("stepId", "3")
+            put("stepStatus", "completed")
+        }
+        val (ok, msg) = executor.executePlan(advanceArgs, "session-step")
+        assertTrue(ok)
+        // 第三步已更新
+        assertTrue("stepId=3 未被更新：$msg", msg.contains("\"id\":\"3\"") && msg.contains("\"status\":\"completed\""))
+        // 其余步骤原样保留（第二步仍是 in_progress，第一步仍 completed）
+        assertTrue("第二步被误改：$msg", msg.contains("\"id\":\"2\"") && msg.contains("\"status\":\"in_progress\""))
+        assertTrue("第一步被误改：$msg", msg.contains("\"id\":\"1\""))
+
+        // 找不到的 stepId 必须报错而非静默成功
+        val badArgs = buildJsonObject {
+            put("action", "advance")
+            put("stepId", "not-exist")
+            put("stepStatus", "completed")
+        }
+        val (badOk, _) = executor.executePlan(badArgs, "session-step")
+        assertFalse("不存在的 stepId 不应返回成功", badOk)
+    }
+
+    @Test
     fun `plan advance ignores natural language status so active plan stays findable`() = runBlocking {
         val (createOk, _) = executor.executePlan(
             buildJsonObject {
@@ -396,6 +434,11 @@ private class FakeAgentContextDao : AgentContextRepository {
 
     override suspend fun getActivePlan(sessionId: String): AgentPlanEntity? =
         plans[sessionId]?.takeIf { it.status == "active" }
+
+    override fun observeActivePlan(sessionId: String): kotlinx.coroutines.flow.Flow<AgentPlanEntity?> =
+        kotlinx.coroutines.flow.MutableStateFlow(
+            plans[sessionId]?.takeIf { it.status == "active" }
+        )
 
     override suspend fun deletePlanBySession(sessionId: String) {
         plans.remove(sessionId)
