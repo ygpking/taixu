@@ -40,7 +40,11 @@ class ContextWindowPolicyTest {
         // 不能把整段历史都塞进上下文撑爆模型。
         val big = "x".repeat(20_000)
         val messages = (1..30).map { index ->
-            if (index % 2 == 0) AssistantText("a$index", index, big) else UserMessage("u$index", index, big)
+            if (index % 2 == 0) {
+                AssistantText("a$index", index.toLong(), big)
+            } else {
+                UserMessage("u$index", index.toLong(), big)
+            }
         }
 
         val keepFrom = ContextWindowPolicy.computeKeepFromIndex(messages, budget = 18_000, systemTokens = 10)
@@ -173,8 +177,8 @@ class ContextWindowPolicyTest {
         val filler = "y".repeat(30_000)
         val messages = buildList {
             for (i in 1..20) {
-                add(UserMessage("u$i", i, filler))
-                add(AssistantText("a$i", i, filler))
+                add(UserMessage("u$i", i.toLong(), filler))
+                add(AssistantText("a$i", i.toLong(), filler))
             }
             add(UserMessage("old", 41, "old turn"))
             add(
