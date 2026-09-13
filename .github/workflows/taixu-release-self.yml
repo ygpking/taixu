@@ -10,6 +10,10 @@ on:
         description: 'Optional Release Tag (e.g. v0.14.0-self)'
         required: false
         default: ''
+  # 打 tag（形如 v0.13.3-self）即自动构建自签正式版，无需 token 手动 dispatch。
+  push:
+    tags:
+      - 'v*-self'
 
 jobs:
   build:
