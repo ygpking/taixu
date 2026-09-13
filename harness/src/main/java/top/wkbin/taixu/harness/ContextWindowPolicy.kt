@@ -8,18 +8,52 @@ import kotlinx.serialization.json.jsonPrimitive
 object ContextWindowPolicy {
     // Input budget reserves headroom for system prompt, tool/MCP schemas, completion
     // tokens and provider overhead instead of spending the whole model window on history.
-    private const val INPUT_BUDGET_FRACTION = 0.75
-    private const val RESERVED_OUTPUT_TOKENS = 8_192
-    private const val TOOL_SCHEMA_RESERVE_TOKENS = 4_096
     private const val MAX_SYSTEM_PROMPT_FRACTION = 0.60
     private const val MIN_SYSTEM_PROMPT_TOKENS = 512
     /**
-     * 历史消息占用的绝对安全上限（token）。无论模型标称窗口多高，
-     * 压缩触发线都不超过此值，避免 flash 级模型在超高 token 下参数生成崩塌。
+     * 上下文预算的单一真相源（single source of truth）。
+     *
+     * 语义约定（用户可见、可预期）：
+     *  - `declaredTokens` 是用户为该模型填写的「上下文上限」，即用户对模型实际能力的声明。
+     *  - 系统唯一会做的是「预留」：给 completion 输出与工具 schema 腾出空间，
+     *    这部分占用是协议的硬需求，与模型档位无关。
+     *  - 系统**不再**设置任何与模型脱钩的固定硬帽（旧的 SAFE_GENERATION_CAP / MAX_CONTEXT_BUDGET=200000
+     *    会把用户填的 100 万静默砍到 20 万再砍到 9.6 万，导致「面板显示 / 折叠决策」两张皮）。
+     *
+     * 折叠触发线由 [foldingLimitFor] 基于此预算减去预留后得出，保证「填多少、显示多少、按多少折叠」三处一致。
      */
-    const val SAFE_GENERATION_CAP = 96_000
-    /** 预算上限：防止标称窗口过大导致系统提示词完全不截断。 */
-    const val MAX_CONTEXT_BUDGET = 200_000
+    fun resolveEffectiveBudget(declaredTokens: Int?): Int {
+        val declared = declaredTokens ?: DEFAULT_CONTEXT_BUDGET
+        return declared.coerceIn(MIN_CONTEXT_BUDGET, MAX_CONTEXT_BUDGET)
+    }
+
+    /**
+     * 历史折叠触发线（token）：由有效预算减去协议预留得出，不再叠加任何与模型脱钩的固定上限。
+     * 面板应显示此值，使用户「填多少、看到多少、实际按多少折叠」三处一致。
+     */
+    fun foldingLimitFor(budget: Int): Int {
+        if (budget <= 0) return 0
+        val reserved = RESERVED_OUTPUT_TOKENS + TOOL_SCHEMA_RESERVE_TOKENS
+        return (budget - reserved).coerceAtLeast(MIN_CONTEXT_BUDGET)
+    }
+
+    /** 预留：completion 输出空间（协议硬需求，与模型档位无关）。 */
+    private const val RESERVED_OUTPUT_TOKENS = 8_192
+    /** 预留：工具/MCP schema 空间（协议硬需求，与模型档位无关）。 */
+    private const val TOOL_SCHEMA_RESERVE_TOKENS = 4_096
+    /** 兜底预算（模型未单独配置 contextTokens 且全局设置未生效时使用）。 */
+    const val DEFAULT_CONTEXT_BUDGET = 128_000
+    /** 预算下界：低于此值连系统提示词都放不下，属无效配置。 */
+    const val MIN_CONTEXT_BUDGET = 4_000
+    /** 预算上界：仅作为「明显异常输入」的护栏（如手误多打几个零），非模型能力限制。 */
+    const val MAX_CONTEXT_BUDGET = 2_000_000
+    /**
+     * 折叠时强制保留的最近消息条数下限。
+     * 取 10 条：一轮完整交互（用户提问 / 工具调用 / 工具结果 / 助手回复）通常 2~4 条，
+     * 10 条可覆盖最近 3 轮左右，避免「只留 2 条」导致模型记不住前因。
+     * 该下限受预算约束：小窗口模型会自动少保，但至少保住最近一轮。
+     */
+    const val MIN_KEEP_MESSAGES = 10
     private const val APPROX_CHARS_PER_TOKEN = 4
 
     /**
@@ -200,18 +234,15 @@ object ContextWindowPolicy {
         if (budget <= 0) {
             return alignKeepFromIndex(messages, minimalKeepFromIndex(messages))
         }
-        val rawLimit = (budget * INPUT_BUDGET_FRACTION).toInt() -
-            systemTokens - RESERVED_OUTPUT_TOKENS - TOOL_SCHEMA_RESERVE_TOKENS
+        val rawLimit = foldingLimitFor(budget) - systemTokens
         // 预算耗尽（rawLimit<=0）时只保留最小近轮。
-        // 原先 MIN_HISTORY_TOKENS 地板会把 limit 抬到 8000 使下方分支永久不可达，
-        // 并强制小窗口模型保留 8000 token 历史，挤掉系统提示/输出预留 → 总量超预算、provider 400 或生成崩塌。
-        // 「防失忆」职责已由 alignKeepFromIndex 的强制保留最近 2 条 + 工具对闭合覆盖。
+        // 「防失忆」职责由 MIN_KEEP_MESSAGES 强制保留最近若干条 + alignKeepFromIndex 的工具对闭合共同覆盖。
         if (rawLimit <= 0) {
             return alignKeepFromIndex(messages, minimalKeepFromIndex(messages))
         }
-        // 安全上限：标称窗口再大，历史也最多占 SAFE_GENERATION_CAP，
-        // 防止超大 contextTokens 把折叠触发线撑到永不生效。
-        val limit = minOf(rawLimit, SAFE_GENERATION_CAP)
+        // 折叠触发线直接来自预算；不再叠加与模型脱钩的固定上限，
+        // 使用户填写的「上下文上限」成为唯一决定因素（面板显示与之同源）。
+        val limit = rawLimit
         var used = 0
         for (index in messages.indices.reversed()) {
             val tokens = when (val message = messages[index]) {
@@ -223,9 +254,10 @@ object ContextWindowPolicy {
                 is ToolCall -> estimateTokens(message.args.toString()) + estimateTokens(message.reasoning.orEmpty())
             }
             if (used + tokens > limit) {
-                // 强制保留最近 2 条（即使某条自身超 limit），避免全折叠导致失忆
-                val candidate = (index + 1).coerceIn(0, messages.lastIndex)
-                    .coerceAtMost((messages.size - 2).coerceAtLeast(0))
+                // 强制保留最近 MIN_KEEP_MESSAGES 条（即使已超 limit），避免「只留 2 条」导致
+                // 模型记不住前因。上限受预算约束：小窗口模型自动少保，但至少保住最近一轮。
+                val forcedFloor = ((messages.size - MIN_KEEP_MESSAGES).coerceAtLeast(0))
+                val candidate = (index + 1).coerceIn(0, messages.lastIndex).coerceAtMost(forcedFloor)
                 val tokenBoundary = alignKeepFromIndex(messages, candidate)
                 return tokenBoundary
             }

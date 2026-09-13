@@ -168,6 +168,8 @@ interface AgentContextRepository {
     suspend fun savePlan(plan: AgentPlanEntity)
     suspend fun getPlanBySession(sessionId: String): AgentPlanEntity?
     suspend fun getActivePlan(sessionId: String): AgentPlanEntity?
+    /** 响应式订阅活跃计划：表写入即触发，供看板实时刷新。 */
+    fun observeActivePlan(sessionId: String): Flow<AgentPlanEntity?>
     suspend fun deletePlanBySession(sessionId: String)
     suspend fun saveScratchpad(scratchpad: AgentScratchpadEntity)
     suspend fun getScratchpad(sessionId: String, key: String): AgentScratchpadEntity?
@@ -246,6 +248,7 @@ class RoomAgentContextRepository @Inject constructor(private val dao: AgentConte
     override suspend fun savePlan(plan: AgentPlanEntity) = dao.savePlan(plan)
     override suspend fun getPlanBySession(sessionId: String) = dao.getPlanBySession(sessionId)
     override suspend fun getActivePlan(sessionId: String) = dao.getActivePlan(sessionId)
+    override fun observeActivePlan(sessionId: String) = dao.observeActivePlan(sessionId)
     override suspend fun deletePlanBySession(sessionId: String) = dao.deletePlanBySession(sessionId)
     override suspend fun saveScratchpad(scratchpad: AgentScratchpadEntity) = dao.saveScratchpad(scratchpad)
     override suspend fun getScratchpad(sessionId: String, key: String) = dao.getScratchpad(sessionId, key)

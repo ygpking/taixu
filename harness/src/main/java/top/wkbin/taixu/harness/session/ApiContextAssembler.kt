@@ -42,9 +42,11 @@ class ApiContextAssembler @Inject constructor(
         thinkingMode: Boolean = false,
     ): List<ApiMessage> {
         val compactionEnabled = runCatching { settingsDataStore.contextCompactionEnabled.first() }.getOrDefault(true)
-        val budgetTokens = (model.contextTokens
-            ?: runCatching { settingsDataStore.contextBudgetTokens.first() }.getOrDefault(128_000))
-            .coerceIn(0, ContextWindowPolicy.MAX_CONTEXT_BUDGET)
+        // 单一真相源：用户为该模型填写的「上下文上限」即预算，不再静默砍到 200000。
+        // 仅在模型未单独配置时回退到全局设置，再兜底 DEFAULT_CONTEXT_BUDGET。
+        val declaredTokens = model.contextTokens
+            ?: runCatching { settingsDataStore.contextBudgetTokens.first() }.getOrDefault(ContextWindowPolicy.DEFAULT_CONTEXT_BUDGET)
+        val budgetTokens = ContextWindowPolicy.resolveEffectiveBudget(declaredTokens)
         val toolCallMode = if (model.pureChatMode) ToolCallMode.DISABLED else model.toolCallMode
 
         var compactedContext = compactionManager.project(sessId)

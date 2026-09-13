@@ -96,6 +96,13 @@ interface AgentContextDao {
     @Query("SELECT * FROM agent_plans WHERE sessionId = :sessionId AND status = 'active' LIMIT 1")
     suspend fun getActivePlan(sessionId: String): AgentPlanEntity?
 
+    /**
+     * 活跃计划的响应式查询：agent_plans 表任何写入（含步骤更新）都会触发重新发射，
+     * 供看板实时刷新，避免此前"只在切换会话时读一次、DB 更新后界面不重绘"的问题。
+     */
+    @Query("SELECT * FROM agent_plans WHERE sessionId = :sessionId AND status = 'active' LIMIT 1")
+    fun observeActivePlan(sessionId: String): kotlinx.coroutines.flow.Flow<AgentPlanEntity?>
+
     @Query("DELETE FROM agent_plans WHERE sessionId = :sessionId")
     suspend fun deletePlanBySession(sessionId: String)
 

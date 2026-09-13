@@ -382,16 +382,19 @@ class ChatViewModel @Inject constructor(
 
     /**
      * 当前会话的活跃结构化任务规划（模型通过 plan 工具写入的 AgentPlanEntity）。
-     * 以 currentSessionId + 运行状态为键重新读取：一轮执行内状态多次变化，
-     * 借此近似实时刷新看板进度；无规划或非活跃时为 null。
+     * 改为直接订阅 Room 的 observeActivePlan：agent_plans 表任何写入（含步骤状态更新）
+     * 都会触发重新发射，看板实时刷新；无规划或非活跃时为 null。
      */
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val activePlan: StateFlow<top.wkbin.taixu.core.database.AgentPlanEntity?> =
-        combine(harnessLoop.currentSessionId, harnessLoop.status) { sessionId, _ -> sessionId }
+        harnessLoop.currentSessionId
             .distinctUntilChanged()
             .flatMapLatest { sessionId ->
-                kotlinx.coroutines.flow.flow {
-                    emit(if (sessionId.isBlank()) null else agentContextDao.getActivePlan(sessionId)?.takeIf { it.status == "active" })
+                if (sessionId.isBlank()) {
+                    kotlinx.coroutines.flow.flowOf(null)
+                } else {
+                    agentContextDao.observeActivePlan(sessionId)
+                        .map { plan -> plan?.takeIf { it.status == "active" } }
                 }
             }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
@@ -539,7 +542,8 @@ class ChatViewModel @Inject constructor(
         val subagentTokens = if (toolDisabled) 0 else ContextWindowPolicy.DEFAULT_SUBAGENT_TOKENS
 
         val totalSystemTokens = systemPromptTokens + toolDefinitionTokens + rulesTokens + skillTokens + mcpTokens + subagentTokens
-        val budget = (activeModel?.contextTokens ?: inputs.defaultBudget).coerceAtLeast(1)
+        // 与引擎同源：面板显示的预算 = resolveEffectiveBudget(用户设置)，杜绝「显示 500K、实际按 96K 折叠」两张皮。
+        val budget = ContextWindowPolicy.resolveEffectiveBudget(activeModel?.contextTokens ?: inputs.defaultBudget)
 
         val effectiveUsage = ContextWindowPolicy.estimateEffectiveUsage(
             messages = inputs.currentMessages,
@@ -561,7 +565,9 @@ class ChatViewModel @Inject constructor(
 
         ContextUsage(
             usedTokens = effectiveUsage.totalTokens,
-            limitTokens = budget,
+            // 分母显示「真实折叠线」而非原始设置的标称值：用户填 100 万，面板就显示
+            // 实际会按 ~99 万折叠，杜绝「显示 500K、实际按 96K 折叠」两张皮。
+            limitTokens = ContextWindowPolicy.foldingLimitFor(budget),
             systemTokens = totalSystemTokens,
             toolTokens = effectiveUsage.toolTokens,
             conversationTokens = effectiveUsage.conversationTokens,
