@@ -31,6 +31,7 @@ class ProotCommandBuilder private constructor(
         optDir: File = File(rootfsDir.parentFile, "opt/taixu"),
         tmpDir: File = File(rootfsDir.parentFile, "tmp"),
         attachmentsDir: File = File(rootfsDir.parentFile, "attachments"),
+        ipcDir: File = File(workspaceDir.parentFile ?: rootfsDir.parentFile!!, "git-ipc"),
         command: ShellCommand,
         mounts: List<top.wkbin.taixu.core.model.StorageMountBinding> = emptyList(),
         emulatorBinary: File? = null,
@@ -63,6 +64,10 @@ class ProotCommandBuilder private constructor(
         attachmentsDir.mkdirs()
         add("-b")
         add("${attachmentsDir.absolutePath}:/attachments")
+        // Git 凭证 IPC 桥接目录：跨发行版共享；沙箱内 credential.helper 与 app 通过这里做文件 IPC。
+        ipcDir.mkdirs()
+        add("-b")
+        add("${ipcDir.absolutePath}:/wanxiang-ipc")
         addHostSystemBindings()
         addStorageMountBindings(mounts)
         add("-w")
@@ -84,6 +89,7 @@ class ProotCommandBuilder private constructor(
         optDir: File = File(rootfsDir.parentFile, "opt/taixu"),
         tmpDir: File = File(rootfsDir.parentFile, "tmp"),
         attachmentsDir: File = File(rootfsDir.parentFile, "attachments"),
+        ipcDir: File = File(workspaceDir.parentFile ?: rootfsDir.parentFile!!, "git-ipc"),
         config: top.wkbin.taixu.runtime.shell.SessionConfig,
         ptyMarker: String? = null,
         nativePty: Boolean = false,
@@ -120,6 +126,10 @@ class ProotCommandBuilder private constructor(
         attachmentsDir.mkdirs()
         add("-b")
         add("${attachmentsDir.absolutePath}:/attachments")
+        // Git 凭证 IPC 桥接目录：跨发行版共享；沙箱内 credential.helper 与 app 通过这里做文件 IPC。
+        ipcDir.mkdirs()
+        add("-b")
+        add("${ipcDir.absolutePath}:/wanxiang-ipc")
         addHostSystemBindings()
         addStorageMountBindings(mounts)
         add("-w")
