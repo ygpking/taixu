@@ -1135,9 +1135,9 @@ class ProviderClient @Inject constructor(
             ApiToolDefinition(
                 function = ApiFunctionDefinition(
                     name = "base",
-                    description = "在 Debian Linux 沙箱中执行前台 shell 命令，返回退出码/stdout/stderr。用于安装软件、运行脚本、检查状态和执行构建。默认超时由用户在 Agent 设置中配置；可用 timeout_seconds 为单次调用指定 1-3600 秒。常驻服务不要使用 nohup 或 &，应改用 process 工具。",
+                    description = "在 Debian Linux 沙箱中执行前台 shell 命令，返回退出码/stdout/stderr。用于安装软件、运行脚本、检查状态和执行构建。默认超时由用户在 Agent 设置中配置；可用 timeout_seconds 为单次调用指定 1-900 秒。常驻服务不要使用 nohup 或 &，应改用 process 工具。",
                     parameters = Json.parseToJsonElement(
-                        """{"type":"object","properties":{"command":{"type":"string","description":"要执行的 shell 命令"},"cwd":{"type":"string","description":"工作目录；关联工作区时默认使用工作区，否则为 /root"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":3600,"description":"可选的单次超时秒数；省略时使用用户设置的默认值"}},"required":["command"]}""",
+                        """{"type":"object","properties":{"command":{"type":"string","description":"要执行的 shell 命令"},"cwd":{"type":"string","description":"工作目录；关联工作区时默认使用工作区，否则为 /root"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":900,"description":"可选的单次超时秒数；省略时使用用户设置的默认值"}},"required":["command"]}""",
                     ).jsonObject,
                 ),
             ),

@@ -28,7 +28,7 @@ class BuiltinToolContractTest {
 
         assertNotNull(timeout)
         assertEquals("1", timeout?.get("minimum")?.toString())
-        assertEquals("3600", timeout?.get("maximum")?.toString())
+        assertEquals("900", timeout?.get("maximum")?.toString())
     }
 
     @Test

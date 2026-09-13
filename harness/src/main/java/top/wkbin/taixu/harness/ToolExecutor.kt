@@ -949,7 +949,9 @@ class ToolExecutor @Inject constructor(
 
     companion object {
         const val MIN_BASE_TIMEOUT_SECONDS = 1L
-        const val MAX_BASE_TIMEOUT_SECONDS = 60L * 60L
+        // 前台单命令上限 15min：防模型把 timeout_seconds 拉到 1h 导致界面长时间"像卡死"；
+        // 超过 15min 的全量编译/长构建应走后台 process（其 Long.MAX_VALUE 有 stop 管理，属合理设计）。
+        const val MAX_BASE_TIMEOUT_SECONDS = 900L
         const val MAX_OUTPUT_LENGTH = 64 * 1024
         const val TRUNCATE_KEEP_LENGTH = 60 * 1024
         const val MAX_COMMAND_LENGTH = 32 * 1024
