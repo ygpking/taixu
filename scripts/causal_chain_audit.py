@@ -59,9 +59,14 @@ def rel(root, path):
 
 # ---------------------------------------------------------------- R1
 def rule_duplicate_constants(root, files):
-    """R1 同名单字面量在多个文件定义且值不同（单一真相源缺失）。"""
+    """R1 同名单字面量在多个文件定义且值不同（单一真相源缺失）。
+
+    精度说明：不同类各自持有的 private const（如各通知用不同 NOTIFICATION_ID、
+    各服务各自的 READ_TIMEOUT_MS）是常见且合理的，不算缺陷。
+    因此仅当这些同名常量分布在 **不同 Gradle 模块**（路径首段不同）且取值不同时上报，
+    提示可能存在跨模块语义漂移；同模块内一律不报。
+    """
     findings = []
-    # 形如: (private )?const val NAME = 123  或  val NAME = 123
     pat = re.compile(
         r'^\s*(?:private\s+|internal\s+|public\s+)*const\s+val\s+([A-Z][A-Z0-9_]*)\s*[:=]\s*'
         r'(?:Int|Long|Float|Double)?\s*[=]?\s*([0-9][0-9_]*|[0-9_]*[0-9])\b',
@@ -71,53 +76,85 @@ def rule_duplicate_constants(root, files):
         src = strip_comments(read(path))
         for m in pat.finditer(src):
             name, value = m.group(1), m.group(2).replace('_', '')
-            by_name[name].append((rel(root, path), value))
+            r = rel(root, path)
+            by_name[name].append((r, value))
     for name, occurrences in sorted(by_name.items()):
         values = {v for _, v in occurrences}
-        if len(values) > 1:
-            findings.append({
-                'rule': 'R1_duplicate_constant',
-                'symbol': name,
-                'values': sorted(values),
-                'locations': [f'{f}:{v}' for f, v in occurrences],
-                'severity': 'P1',
-                'note': f'同名常量 {name} 在多处定义且取值不同，可能违反单一真相源',
-            })
+        if len(values) <= 1:
+            continue
+        # 模块即路径首段（如 harness/、runtime/、feature/）
+        modules = {r.split(os.sep)[0] for r, _ in occurrences}
+        if len(modules) <= 1:
+            continue  # 同模块内的重名常量不视为缺陷
+        findings.append({
+            'rule': 'R1_duplicate_constant',
+            'symbol': name,
+            'values': sorted(values),
+            'modules': sorted(modules),
+            'locations': [f'{f}={v}' for f, v in occurrences],
+            'severity': 'P1',
+            'note': f'常量 {name} 跨模块重名且取值不同（{" vs ".join(sorted(values))}），'
+                    f'可能存在语义漂移；建议收敛到单一真相源',
+        })
     return findings
 
 
 # ---------------------------------------------------------------- R2
 def rule_stateflow_distinct(root, files):
-    """R2 对 StateFlow 调 distinctUntilChanged（本项目 allWarningsAsErrors → 编译失败）。"""
+    """R2 对 StateFlow 调 distinctUntilChanged（本项目 allWarningsAsErrors → 编译失败）。
+
+    精度说明：`combine(...)` / `map {}` / `flow {}` / DAO 返回的 Flow 上调用
+    distinctUntilChanged 是**合法且常见**的；只有上游确实是 StateFlow（属性声明的
+    `: StateFlow<...>`、`MutableStateFlow(...)`、`.asStateFlow()`）时才构成缺陷。
+    因此本规则只在能确证上游为 StateFlow 时判 P0，其余仅作为待人工确认的提示（P2）。
+    """
     findings = []
     for path in files:
         src = strip_comments(read(path))
         lines = src.split('\n')
+
+        # 先收集本文件中所有 StateFlow 类型的属性/变量名
+        stateflow_names = set()
+        for m in re.finditer(
+            r'(?:val|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*StateFlow<[^>]*>)?\s*=\s*'
+            r'(?:[A-Za-z0-9_.]*\.)?(?:MutableStateFlow\(|asStateFlow\(\))', src):
+            stateflow_names.add(m.group(1))
+        for m in re.finditer(r'(?:val|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*StateFlow<', src):
+            stateflow_names.add(m.group(1))
+
         for i, line in enumerate(lines):
             if '.distinctUntilChanged()' not in line:
                 continue
-            # 往上找最近 12 行，看上游是否 StateFlow 类型的标识符
-            window = lines[max(0, i - 12):i + 1]
-            upstream = ' '.join(window)
-            # 收线：本行/上一行直接以 StateFlow 变量结尾，或上游出现 ": StateFlow<" 声明
-            tail = ' '.join(lines[max(0, i - 3):i + 1])
-            direct = re.search(
-                r'([A-Za-z_][A-Za-z0-9_]*)\s*(?:\.\s*value)?\s*$', tail.replace('.distinctUntilChanged()', ''))
-            typed = re.findall(r'val\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*StateFlow<', upstream)
-            suspect = None
-            if direct and direct.group(1) in typed:
-                suspect = direct.group(1)
-            findings.append({
-                'rule': 'R2_stateflow_distinct',
-                'file': rel(root, path),
-                'line': i + 1,
-                'symbol': suspect or '(需人工确认上游类型)',
-                'severity': 'P0' if suspect else 'P2',
-                'note': ('对 StateFlow 调用 distinctUntilChanged：既无效果又会被当作 error，'
-                         '必须删除' if suspect else
-                         '存在 distinctUntilChanged，请人工确认上游是否为 StateFlow'),
-                'code': line.strip()[:160],
-            })
+            # 取本行去掉该调用后的尾部，以及往上 4 行的表达式尾部
+            head = line.replace('.distinctUntilChanged()', '')
+            tail = ' '.join(lines[max(0, i - 4):i + 1]).replace('.distinctUntilChanged()', '')
+            # 上游是否 combine/map/flow 等 Flow 构造（那样就是合法的）
+            legal_source = re.search(
+                r'(combine\s*\(|\.map\s*\{|\.mapLatest\s*\{|flow\s*\{|flowOf\s*\(|'
+                r'\.flatMapLatest\s*\{|\.transform\s*\{|\.filter\s*\{)', tail)
+            # 直接调用对象名
+            ident = re.search(r'([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*$', head.strip())
+            name = ident.group(1) if ident else None
+            if name and name in stateflow_names:
+                findings.append({
+                    'rule': 'R2_stateflow_distinct',
+                    'file': rel(root, path),
+                    'line': i + 1,
+                    'symbol': name,
+                    'severity': 'P0',
+                    'note': f'对 StateFlow 变量 {name} 调用 distinctUntilChanged：无效果且本项目按 error，必须删除',
+                    'code': line.strip()[:160],
+                })
+            elif not legal_source and not name:
+                findings.append({
+                    'rule': 'R2_stateflow_distinct',
+                    'file': rel(root, path),
+                    'line': i + 1,
+                    'symbol': '(需人工确认上游类型)',
+                    'severity': 'P2',
+                    'note': '存在 distinctUntilChanged，但无法自动判定上游类型（非本文件声明的 StateFlow），请人工确认',
+                    'code': line.strip()[:160],
+                })
     return findings
 
 
