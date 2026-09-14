@@ -240,10 +240,20 @@ fun ChatScreen(
             .getOrDefault(activeDistroId)
     }
 
-    val toolResults = remember(messages) {
+    // 性能：不再直接依赖 `messages` 整个 list 引用（流式输出时每个 token 块都会换新引用，
+    // 导致这几处 O(n) 派生每帧重算）。改为依赖「由消息列表推导出的、真正影响结果的稳定键」。
+    val toolResults = remember(
+        // ToolResult 的数量 + 末条内容长度：只要没有新增/更新工具结果，就不需要重算映射。
+        messages.count { it is ToolResult },
+        messages.lastOrNull { it is ToolResult }?.let { (it as ToolResult).output.length },
+    ) {
         messages.filterIsInstance<ToolResult>().associateBy { it.toolCallId }
     }
-    val lastAssistantMessageId = remember(messages) {
+    val lastAssistantMessageId = remember(
+        // 只有「新增了一条 AssistantText」才会改变结果，故依赖其数量与末条 id。
+        messages.count { it is AssistantText },
+        messages.lastOrNull { it is AssistantText }?.id,
+    ) {
         messages.filterIsInstance<AssistantText>().lastOrNull()?.id
     }
     // 两者语义不同（实时思考高亮 vs 重新生成定位），但取值一致，复用同一计算结果
@@ -257,7 +267,8 @@ fun ChatScreen(
     // entry so returning to 智枢 does not perform a second, redundant scrollToItem during the
     // tab transition.
     var initialPositionedSessionKey by rememberSaveable { mutableStateOf<String?>(null) }
-    val currentSessionKey = remember(messages) { messages.firstOrNull()?.id ?: "" }
+    // 会话键只需首条消息 id，依赖单值而非整个 list。
+    val currentSessionKey = remember(messages.firstOrNull()?.id) { messages.firstOrNull()?.id ?: "" }
 
     val lastMessageSignature = remember(messages) {
         val last = messages.lastOrNull()

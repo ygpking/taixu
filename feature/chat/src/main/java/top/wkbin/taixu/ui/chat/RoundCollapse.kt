@@ -12,6 +12,14 @@ sealed interface ChatRenderItem {
 
     data class MessageItem(
         val message: HarnessMessage,
+        /**
+         * 该消息在**原始 messages 列表**中的下标。
+         *
+         * 由投影阶段一次性算出（O(n) 一次），供组合期内 O(1) 使用。
+         * 此前组合期用 `messages.indexOfFirst { it.id == message.id }` 现算，
+         * 每个可见项一次 O(n)，多张工具卡同时可见时为 O(n²)，滚动/流式时明显掉帧。
+         */
+        val rawIndex: Int = -1,
     ) : ChatRenderItem {
         override val stableKey: String get() = message.id
     }
@@ -41,8 +49,11 @@ fun projectChatMessages(
 ): List<ChatRenderItem> {
     if (messages.isEmpty()) return emptyList()
 
-    // 过滤掉已被 ToolCard 内部独立消费渲染的 ToolResult，所有思考过程与工具调用按自然单行流呈现
+    // 过滤掉已被 ToolCard 内部独立消费渲染的 ToolResult，所有思考过程与工具调用按自然单行流呈现。
+    // 同时把「原始下标」一次性算入渲染项：组合期据此做 O(1) 读取，
+    // 免除在 Lazy 项内对 messages 反复 indexOfFirst 造成的 O(n²) 扫描。
     return messages
-        .filter { it !is ToolResult }
-        .map { ChatRenderItem.MessageItem(it) }
+        .mapIndexedNotNull { index, message ->
+            if (message is ToolResult) null else ChatRenderItem.MessageItem(message, rawIndex = index)
+        }
 }

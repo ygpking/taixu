@@ -350,10 +350,15 @@ class ChatViewModel @Inject constructor(
     val runtimeEvents: StateFlow<List<HarnessEvent>> = combine(
         harnessLoop.currentSessionId,
         _eventHistory,
-        messages,
-    ) { sessionId, history, msgList ->
+        // 把「消息列表」打包成 (revision, list) 再 distinctUntilChanged by revision：
+        // revision = 数量 + 末条 id，流式 token 增量不会改变它，因此上游发射被压缩为
+        // 「真正新增/替换了一条消息」才触发，避免每帧全量重合成上千条事件（聊久了变卡的主因）。
+        // 用 Pair 一起传下去，避免在 lambda 里读 messages.value 拿到过期值的时序问题。
+        messages.map { list -> (list.size to list.lastOrNull()?.id) to list }
+            .distinctUntilChanged { a, b -> a.first == b.first },
+    ) { sessionId, history, revisionAndList ->
         val live = history[sessionId].orEmpty()
-        mergeHistoricalAndLiveEvents(sessionId, msgList, live)
+        mergeHistoricalAndLiveEvents(sessionId, revisionAndList.second, live)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     private val _branchRefresh = MutableStateFlow(0)
@@ -554,14 +559,32 @@ class ChatViewModel @Inject constructor(
      * 因此这里明确是预估值，而不是 provider 返回的精确 tokenizer 计数。
      */
     val contextUsage: StateFlow<ContextUsage> = combine(
-        messages,
+        // 用 revision（消息数量 + 末条 id + 末条内容长度）压缩上游：
+        // contextUsage 的计算含 estimateEffectiveUsage（遍历全部消息）与两次 filterIsInstance 求和，
+        // 都是 O(n)。流式期间 messages 每个 token 块都换新引用，若不压缩会每帧全量重算，
+        // 叠加列表渲染开销后表现为「聊久了明显变卡」。
+        // 末条内容长度必须计入：流式时末条长度持续变化，是 contextUsage 真正需要更新的信号。
+        messages.map { list ->
+            Triple(
+                list.size,
+                list.lastOrNull()?.id,
+                list.lastOrNull()?.let { m ->
+                    when (m) {
+                        is AssistantText -> m.text.length
+                        is ToolResult -> m.output.length
+                        is UserMessage -> m.text.length
+                        else -> 0
+                    }
+                },
+            ) to list
+        }.distinctUntilChanged { a, b -> a.first == b.first },
         effectiveActiveModel,
         allSkills,
         mcpServers,
         settingsDataStore.contextBudgetTokens,
-    ) { currentMessages, activeModel, skills, mcps, defaultBudget ->
+    ) { revisionAndMessages, activeModel, skills, mcps, defaultBudget ->
         ContextUsageInputs(
-            currentMessages = currentMessages,
+            currentMessages = revisionAndMessages.second,
             // 与顶栏同源：会话绑定模型优先，回退全局 isActive（详见 effectiveActiveModel）。
             activeModel = activeModel,
             skills = skills,
