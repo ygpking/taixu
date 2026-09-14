@@ -8,7 +8,7 @@
 #
 # 检测规则：
 #   R1 单一名常量跨模块重名且取值不同（单一真相源缺失，可能语义漂移）
-#   R2 对 StateFlow 调用 distinctUntilChanged（本项目 allWarningsAsErrors → 编译失败）
+#   R2 对 StateFlow 调用 distinctUntilChanged（Kotlin 标注为 ERROR 级 deprecation → 编译失败）
 #   R3 combine 输出被压缩为恒定值 + 下游去重 → 其余上游变化被吞（UI 不刷新）
 #   R4 同一偏好键的默认值在多处不一致
 #   R5 偏好键只写不读（僵尸设置：UI 可调，引擎不读）
@@ -118,7 +118,7 @@ def rule_duplicate_constants(root, files):
 
 
 def rule_stateflow_distinct(root, files):
-    """R2 对 StateFlow 调 distinctUntilChanged（本项目按 error）。
+    """R2 对 StateFlow 调 distinctUntilChanged（Kotlin 标为 ERROR 级 deprecation → 编译失败）。
 
     精度：combine/map/flow 返回的 Flow 上调用是合法的，仅当上游确为本文件声明的
     StateFlow（属性声明 / MutableStateFlow / asStateFlow）时才判 P0。
@@ -156,7 +156,9 @@ def rule_stateflow_distinct(root, files):
                     "line": i + 1,
                     "symbol": name,
                     "code": line.strip()[:160],
-                    "note": "对 StateFlow 变量 {} 调用 distinctUntilChanged：无效果且本项目按 error，必须删除".format(name),
+                    "note": "对 StateFlow 变量 {} 调用 distinctUntilChanged：StateFlow 已按值去重，该调用无效果，"
+                             "且 Kotlin 将其标注为 ERROR 级 deprecation（非普通 warning，无法通过 allWarningsAsErrors 开关规避），"
+                             "会导致编译失败，必须删除。".format(name),
                 })
             elif not legal and not name:
                 findings.append({
@@ -427,6 +429,180 @@ def rule_flatmap_once_snapshot(root, files):
     return findings
 
 
+# ---------------------------------------------------------------- R9
+ASSERT_WITH_ARGS = re.compile(r"\bassert(True|False)\s*\((.+)\)\s*$")
+
+
+def rule_assert_argument_order(root, files):
+    """R9 JUnit4 断言参数顺序写反：assertTrue(条件, "消息") → 编译期报 Int/Long 类型不匹配。
+
+    本项目单测用 JUnit 4（org.junit.Assert），消息版签名为 assertTrue(String, boolean)，
+    消息在前。若写成 (condition, "msg")，编译器找不到匹配重载，会报出难以理解的
+    「Argument type mismatch: actual type is 'Int', but 'Long' was expected」之类错误，
+    而报错位置指向断言行却不点明参数顺序——实测排查成本高。
+
+    本规则只在「第一个实参不是字符串、第二个实参是字符串」时报，零误报。
+    """
+    findings = []
+    for path in files:
+        src = strip_comments(read(path))
+        for i, line in enumerate(src.split("\n"), 1):
+            m = ASSERT_WITH_ARGS.search(line)
+            if not m:
+                continue
+            args = m.group(2)
+            depth, parts, cur = 0, [], ""
+            for ch in args:
+                if ch in "([{":
+                    depth += 1
+                elif ch in ")]}":
+                    depth -= 1
+                if ch == "," and depth == 0:
+                    parts.append(cur)
+                    cur = ""
+                else:
+                    cur += ch
+            parts.append(cur)
+            if len(parts) != 2:
+                continue
+            first, second = parts[0].strip(), parts[1].strip()
+            first_is_msg = first.startswith('"')
+            second_is_msg = second.startswith('"')
+            if not first_is_msg and second_is_msg:
+                findings.append({
+                    "rule": "R9_assert_argument_order",
+                    "severity": "P1",
+                    "file": os.path.relpath(path, root),
+                    "line": i,
+                    "code": line.strip()[:150],
+                    "note": ("JUnit4 的 assertTrue/assertFalse 消息版签名为 (message, condition)，"
+                             "此处写成 (condition, message) 会编译失败并报出难以定位的类型不匹配；"
+                             "请把消息字符串移到第一个参数。"),
+                })
+    return findings
+
+
+# ---------------------------------------------------------------- R10
+UNUSED_IMPORT = re.compile(r"^import\s+([\w.]+)(?:\s+as\s+(\w+))?\s*$", re.M)
+# `by` 委托所需的运算符 import：名字不出现在代码里但必须有 import。
+DELEGATE_WHITELIST = {"getValue", "setValue", "provideDelegate", "getValue0"}
+
+
+def rule_unused_import(root, files):
+    """R10 未使用的 import（卫生问题，非编译失败）。
+
+    更正前提：本项目**并未**开启 allWarningsAsErrors（已 grep 确认无该配置），
+    因此未使用的 import 只是 warning，不会导致编译失败——此前把它写成 P1「会编译失败」
+    是错误判断。现降级为 P2 提示，仅用于清理冗余 import。
+
+    已知白名单：Compose 属性委托所需的 getValue/setValue（`by` 语法必需，名字不出现）。
+    """
+    findings = []
+    for path in files:
+        raw = read(path)
+        body = strip_comments(raw)
+        for m in UNUSED_IMPORT.finditer(body):
+            full, alias = m.group(1), m.group(2)
+            name = alias or full.split(".")[-1]
+            if name in DELEGATE_WHITELIST:
+                continue
+            # 去掉该 import 行之后，检查名字是否在文件其余位置出现
+            rest = body[:m.start()] + body[m.end():]
+            rest = re.sub(r"^import\s+.*$", "", rest, flags=re.M)
+            if re.search(r"\b" + re.escape(name) + r"\b", rest):
+                continue
+            line_no = body[:m.start()].count("\n") + 1
+            findings.append({
+                "rule": "R10_unused_import",
+                "severity": "P2",
+                "file": os.path.relpath(path, root),
+                "line": line_no,
+                "symbol": full,
+                "note": "import {} 在文件中未被使用，可删除（仅卫生问题，不影响编译）。".format(full),
+            })
+    return findings
+
+
+# ---------------------------------------------------------------- R11
+DAO_FUN = re.compile(r"^\s*(?:suspend\s+)?fun\s+(\w+)\s*\(", re.M)
+
+
+def rule_repository_interface_drift(root, files):
+    """【已停用·保留备查】DAO 方法未出现在 Repository 层。
+
+    停用原因（实测评估后否决）：
+      规则假设「DAO 的每个方法都应在 Repository 接口/实现/Fake 中出现」，但这是错的——
+      DAO 内部互相调用的私有辅助方法（如 insertEntry 仅供 insertEntryOrThrow 使用）
+      本就不该暴露到 Repository 层。在真实代码库上实测产生 16 条报告，人工抽查全部为
+      正常设计而非缺陷，误报率高、价值低，故不注册进 RULES。
+
+    保留此函数是为了留下评估记录；若将来需要「接口与实现确实漂移」的检查，
+    应以「接口方法是否都有对应实现」为判据，而非「DAO 方法是否都被提到」。
+
+    原规则说明：R11 DAO 新增方法后，Repository 接口与其 Fake 实现未同步 → 编译失败。
+
+    原理：项目里 Repository 是接口 + RoomXxxRepository 实现 + 测试 FakeXxx 实现。
+    给 DAO 加方法后若忘记同步接口/Fake，测试模块会报「未实现抽象成员」。
+    实测此坑出现过（observeActivePlan / observeScratchpads 两次）。
+
+    判定：对每个 XxxDao.kt 里的 public DAO 函数名集合，检查同名前缀的
+    interface 定义文件与测试目录下的 Fake 实现是否都出现了该方法名。
+    仅在「DAO 有、接口没有」或「接口有、Fake 没有」时报。
+
+    为控制误报，只在能明确找到对应接口文件时判定。
+    """
+    findings = []
+    # 收集 DAO 方法
+    dao_funcs = {}
+    for path in files:
+        base = os.path.basename(path)
+        if not base.endswith("Dao.kt"):
+            continue
+        src = strip_comments(read(path))
+        # 只取 interface 块内的 fun（DAO 文件通常是 interface）
+        if "interface " not in src:
+            continue
+        names = set()
+        for m in DAO_FUN.finditer(src):
+            n = m.group(1)
+            if n.startswith("_"):
+                continue
+            names.add(n)
+        if names:
+            dao_funcs[base[:-3]] = (path, names)
+
+    if not dao_funcs:
+        return findings
+
+    for dao_name, (dao_path, names) in sorted(dao_funcs.items()):
+        # 扫描**所有**文件（不按文件名过滤——实现类可能叫 PersistenceRepositories.kt 等，
+        # 早期版本按 'Repository' 子串过滤文件名，漏掉了复数命名的实现文件，造成大量误报）。
+        # 同时排除 DAO 自身文件：否则方法名总能在自己的定义处匹配到，规则永远不触发。
+        dao_abs = os.path.abspath(dao_path)
+        all_bodies = [
+            strip_comments(read(p))
+            for p in files
+            if os.path.abspath(p) != dao_abs
+        ]
+        for name in sorted(names):
+            mentioned = any(
+                re.search(r"\b" + re.escape(name) + r"\b", body)
+                for body in all_bodies
+                if body
+            )
+            if not mentioned:
+                findings.append({
+                    "rule": "R11_repository_interface_drift",
+                    "severity": "P2",
+                    "file": os.path.relpath(dao_path, root),
+                    "symbol": name,
+                    "note": ("DAO 方法 {} 未在任何 Repository/实现文件中出现，"
+                             "新增 DAO 方法后需同步 Repository 接口、Room 实现与测试 Fake，"
+                             "否则测试模块编译失败（本坑已出现两次）。").format(name),
+                })
+    return findings
+
+
 # 规则注册表：必须位于所有规则函数定义之后（Python 顺序执行，前置引用会 NameError）。
 RULES = [
     ("R1_duplicate_constant", rule_duplicate_constants),
@@ -437,6 +613,8 @@ RULES = [
     ("R6_suspend_call_on_main", rule_suspend_call_on_main),
     ("R7_unremembered_heavy_composition", rule_unremembered_heavy_composition),
     ("R8_flatmap_once_snapshot", rule_flatmap_once_snapshot),
+    ("R9_assert_argument_order", rule_assert_argument_order),
+    ("R10_unused_import", rule_unused_import),
 ]
 
 
@@ -518,13 +696,15 @@ def tool_list_rules(_args):
     lines = ["因果链闭环审计规则："]
     desc = {
         "R1_duplicate_constant": "同名常量跨模块重名且取值不同（单一真相源缺失）",
-        "R2_stateflow_distinct": "对 StateFlow 调 distinctUntilChanged（本项目按 error，会编译失败）",
+        "R2_stateflow_distinct": "对 StateFlow 调 distinctUntilChanged（ERROR 级 deprecation，编译失败）",
         "R3_combine_swallow_updates": "combine 输出恒定 + 下游去重 → 其余上游变化被吞（UI 不刷新）",
         "R4_default_value_divergence": "同一偏好键默认值多处不一致",
         "R5_orphan_preference_key": "偏好键只写不读（僵尸设置）",
         "R6_suspend_call_on_main": "Flow 链内调用 IO 方法却无 flowOn → 重活跑在 Main（首屏卡顿常见成因）",
         "R7_unremembered_heavy_composition": "Composable 内对列表做重算子但未 remember（重组时可能每帧重算）",
         "R8_flatmap_once_snapshot": "上游去重 + flatMapLatest 内一次性读取 → 数据源变化不传导（改了没反应）",
+        "R9_assert_argument_order": "JUnit4 断言参数顺序写反 assertTrue(条件, 消息) → 编译报类型不匹配",
+        "R10_unused_import": "未使用的 import（仅卫生问题，不影响编译）",
     }
     for name, _fn in RULES:
         lines.append("  - {}: {}".format(name, desc.get(name, "")))
@@ -546,7 +726,7 @@ def tool_explain(args):
         "   典型症状：DB 写入了、state 变了，但界面不刷新，要切换会话/重进页面才更新。\n\n"
         "3) StateFlow 上禁止 distinctUntilChanged\n"
         "   StateFlow 本身已按值去重，再调是 Kotlin 标记的 deprecated（无效果），\n"
-        "   而太墟项目 allWarningsAsErrors → 直接编译失败。\n\n"
+        "   且 Kotlin 将其标注为 ERROR 级 deprecation → 直接编译失败（与 allWarningsAsErrors 开关无关）。\n\n"
         "4) 修复范式（同一病根，四处已修）\n"
         "   - 数据表驱动 UI：改为订阅 Room 的 Flow 查询（observeXxx），而非一次性快照；\n"
         "   - 多上游共同决定：把各上游压成可比较信号（如 data class ProjectionKey）再做去重；\n"
