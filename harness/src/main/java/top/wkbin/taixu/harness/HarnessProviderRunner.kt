@@ -195,12 +195,15 @@ class HarnessProviderRunner @Inject constructor(
                 val retryBudget = effectiveRetryBudget(maxNetworkRetries, io)
                 // 同步「显示用预算」为实际生效值，保证状态栏分母与真实重试行为一致。
                 attemptBudget = retryBudget
-                // netRetry 表示「这是第几次失败」；净重试预算为 retryBudget 次，故第 retryBudget+1 次失败即放弃。
-                // 原写法 "重试 $netRetry/$retryBudget" 会被误读成「已执行第 retryBudget 次重试、仍在继续」。
+                // 措辞统一：netRetry 是「第几次失败」，允许的失败次数（含首次）为 retryBudget + 1。
+                // 旧写法「第 4 次失败（重试上限 3 次）」会被读成越界（4 > 3），
+                // 实际语义是「已失败 4 次，达到上限 3 次重试的允许范围，本轮将放弃」。
+                // 这里改成同时给出「失败次数」与「允许的总尝试次数」，两数同源不再互相矛盾。
+                val allowedAttempts = retryBudget + 1
                 agentEventLogger.log(
                     sessId,
                     "NetworkRetry",
-                    "网络中断，第 $netRetry 次失败（重试上限 $retryBudget 次" +
+                    "网络中断，第 $netRetry 次失败（共允许 $allowedAttempts 次尝试" +
                         (if (transient) "，瞬态故障不受大上下文降级" else "") + "）：${io.message}",
                     io,
                 )

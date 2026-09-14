@@ -61,6 +61,53 @@ interface HarnessRuntimeDao {
     @Query("SELECT COUNT(*) FROM harness_entries WHERE (:start IS NULL OR createdAt >= :start) AND (:end IS NULL OR createdAt < :end)")
     suspend fun countEntriesInRange(start: Long?, end: Long?): Int
 
+    // ========== 用量统计专用：SQL 层聚合，避免把含巨大 payloadJson 的整表搬进内存 ==========
+    //
+    // 背景（2026-09-14 OOM 事故）：用量分析原先调用 listEntriesInRange(null, null) 把全部
+    // harness_entries（实测 15,888 条，其中 tool_result 5,696 条可能各含数十 KB~数 MB 的
+    // payloadJson）读进内存，再对每条 json.parseToJsonElement 建树 —— 256MB 堆直接 OOM。
+    //
+    // 以下查询用 json_extract 在 SQLite 侧取数并聚合，只把「每会话每类型的小结果」带回 Kotlin：
+    //   · 不 SELECT payloadJson 本体，只取 json_extract 出来的标量；
+    //   · 按 (sessionId, customType) GROUP BY，把 1.5 万行压成几十行。
+    //
+    // ⚠️ 必须带 json_valid 守卫：库中存在非 JSON 的 payloadJson —— 大负载会被外置为文件，
+    //    DB 里只留 "@@TAIXU_BLOB@@:harness_blobs/..." 占位串（实测 172 条）。
+    //    对这类行调用 json_extract 会让 SQLite 直接抛 "malformed JSON" 并中断整个查询，
+    //    因此统一写成 CASE WHEN json_valid(payloadJson) THEN json_extract(...) ELSE ... END。
+    // 注意：json_extract/json_valid 需要 SQLite JSON1 扩展（Android API 30+ 与 Room 自带 SQLite
+    //       均支持；已在本机实测可用）。
+
+    @Query(
+        """
+        SELECT sessionId AS sessionId,
+               customType AS customType,
+               COUNT(*) AS entryCount,
+               SUM(CASE WHEN json_valid(payloadJson) THEN COALESCE(json_extract(payloadJson, '${'$'}.promptTokens'), 0) ELSE 0 END) AS promptTokens,
+               SUM(CASE WHEN json_valid(payloadJson) THEN COALESCE(json_extract(payloadJson, '${'$'}.completionTokens'), 0) ELSE 0 END) AS completionTokens,
+               SUM(CASE WHEN json_valid(payloadJson) THEN COALESCE(json_extract(payloadJson, '${'$'}.cachedTokens'), 0) ELSE 0 END) AS cachedTokens,
+               SUM(CASE WHEN json_valid(payloadJson) THEN LENGTH(COALESCE(json_extract(payloadJson, '${'$'}.text'), '')) ELSE 0 END) AS textChars,
+               SUM(CASE WHEN json_valid(payloadJson) THEN LENGTH(COALESCE(json_extract(payloadJson, '${'$'}.reasoning'), '')) ELSE 0 END) AS reasoningChars
+        FROM harness_entries
+        WHERE (:start IS NULL OR createdAt >= :start) AND (:end IS NULL OR createdAt < :end)
+        GROUP BY sessionId, customType
+        """,
+    )
+    suspend fun aggregateUsageInRange(start: Long?, end: Long?): List<UsageAggregateRow>
+
+    @Query(
+        """
+        SELECT createdAt AS createdAt,
+               sessionId AS sessionId,
+               customType AS customType,
+               COUNT(*) AS entryCount
+        FROM harness_entries
+        WHERE (:start IS NULL OR createdAt >= :start) AND (:end IS NULL OR createdAt < :end)
+        GROUP BY CAST(createdAt / 86400000 AS INTEGER), sessionId, customType
+        """,
+    )
+    suspend fun aggregateDailyCounts(start: Long?, end: Long?): List<DailyCountRow>
+
     @Query("SELECT * FROM harness_entries WHERE id = :entryId LIMIT 1")
     suspend fun findEntry(entryId: String): HarnessEntryEntity?
 
