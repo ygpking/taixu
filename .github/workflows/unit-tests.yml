@@ -36,6 +36,14 @@ jobs:
       - name: Grant Execute Permission for Gradlew
         run: chmod +x gradlew
 
+      - name: 因果链闭环审计（静态检查，无需 Gradle）
+        run: |
+          set -o pipefail
+          python3 scripts/causal_chain_audit.py --root . --no-tests --json audit-report.json | tee /tmp/audit.log
+          # P0 = StateFlow 误用 / combine 吞更新 等会直接导致行为缺陷的问题，必须为 0。
+          # 脚本以退出码 1 表示存在 P0；其余级别仅记录不阻断。
+          grep -q 'P0_' /tmp/audit.log && { echo "::error::存在 P0 级因果链缺陷"; exit 1; } || true
+
       - name: Run unit tests
         run: |
           set -o pipefail
