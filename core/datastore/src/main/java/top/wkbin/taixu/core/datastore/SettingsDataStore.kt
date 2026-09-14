@@ -654,6 +654,17 @@ class SettingsDataStore @Inject constructor(
     suspend fun setContextFoldingRatioPercent(value: Int) { context.settingsDataStore.edit { it[contextFoldingRatioPercentKey] = value.coerceIn(10, 100) } }
 
     /**
+     * 折叠后「保留窗口」的 token 上限（默认 20000，参考 OMP 的 compaction.keepRecentTokens）。
+     *
+     * 为什么需要：只按「条数」保留会失控——单条 tool_result 可达上万 token，
+     * 保留 10 条就可能留下十几万 token，压缩执行了但下一轮请求依旧庞大。
+     * 该值作为条数下限之上的护栏，把保留窗口的 token 总量夹住。
+     */
+    private val contextMaxKeepTokensKey = androidx.datastore.preferences.core.intPreferencesKey("agent_context_max_keep_tokens")
+    val contextMaxKeepTokens: Flow<Int> = context.settingsDataStore.data.map { it[contextMaxKeepTokensKey] ?: 20_000 }
+    suspend fun setContextMaxKeepTokens(value: Int) { context.settingsDataStore.edit { it[contextMaxKeepTokensKey] = value.coerceIn(2_000, 200_000) } }
+
+    /**
      * 单轮最多允许执行的工具调用数量（默认 12）。超过则本轮回填占位结果并提示模型，
      * 防止一次爆发大量工具调用耗尽上下文或陷入失控循环。
      */

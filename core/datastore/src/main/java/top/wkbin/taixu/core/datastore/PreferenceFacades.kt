@@ -154,6 +154,7 @@ class AgentPreferences @Inject constructor(private val store: SettingsDataStore)
     val baseCommandTimeoutSeconds get() = store.baseCommandTimeoutSeconds
     val contextBudgetTokens get() = store.contextBudgetTokens
     val contextFoldingRatioPercent get() = store.contextFoldingRatioPercent
+    val contextMaxKeepTokens get() = store.contextMaxKeepTokens
     val maxToolsPerRound get() = store.maxToolsPerRound
     val maxConsecutiveFailures get() = store.maxConsecutiveFailures
     val providerModel get() = store.providerModel

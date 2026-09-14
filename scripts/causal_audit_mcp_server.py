@@ -762,6 +762,45 @@ def rule_json_extract_without_guard(root, files):
     return findings
 
 
+# ---------------------------------------------------------------- R16
+
+def rule_keep_by_count_without_token_cap(root, files):
+    """R16 上下文保留只按「条数」限制，缺少「token 总量」上限护栏。
+
+    真实事故（2026-09-14）：太墟折叠逻辑用 MIN_KEEP_MESSAGES(条数) 兜底，但单条
+    tool_result 实测可达上万 token，保留 10 条就可能留下十几万 token ——
+    表现为「压缩执行了、下一轮请求依然巨大」，历史摘要等于没压下去。
+    OMP 的做法是按 token 保留（compaction.keepRecentTokens=20000），而非按条数。
+
+    判定：同一文件内出现「按条数保留」的常量/参数（MIN_KEEP_MESSAGES、keepMessages、
+    minKeepMessages 等），但整份文件未见任何 token 上限概念
+    （maxKeepTokens / keepRecentTokens / tokenCap / MAX_KEEP_TOKENS）。
+    报 P1 提示：条数下限必须再受 token 上限约束。
+    """
+    findings=[]
+    count_markers=('MIN_KEEP_MESSAGES','minKeepMessages','keepMessagesForRounds')
+    cap_markers=('maxKeepTokens','MAX_KEEP_TOKENS','keepRecentTokens','tokenCap')
+    for path in files:
+        relpath=os.path.relpath(path,root)
+        if 'ContextWindowPolicy' not in os.path.basename(path):
+            continue
+        src=strip_comments(read(path))
+        if not any(m in src for m in count_markers):
+            continue
+        if any(m in src for m in cap_markers):
+            continue
+        findings.append({
+            'rule':'R16_keep_by_count_without_token_cap',
+            'severity':'P1',
+            'file':relpath,
+            'line':next((i+1 for i,l in enumerate(src.split('\n')) if any(m in l for m in count_markers)),1),
+            'note':'保留窗口只按「条数」限制，缺少 token 总量上限。单条 tool_result 可达上万 token，'
+                  '仅按条数保留会让折叠后的窗口依旧庞大（压缩了但 token 降不下来）。'
+                  '应像 OMP 的 compaction.keepRecentTokens 那样，为保留窗口再加一个 token 上限护栏。'
+        })
+    return findings
+
+
 # 规则注册表：必须位于所有规则函数定义之后（Python 顺序执行，前置引用会 NameError）。
 RULES = [
     ("R1_duplicate_constant", rule_duplicate_constants),
@@ -775,6 +814,7 @@ RULES = [
     ("R9_assert_argument_order", rule_assert_argument_order),
     ("R10_unused_import", rule_unused_import),
     ("R13_composable_heavy_full_list", rule_composable_heavy_full_list),
+    ("R16_keep_by_count_without_token_cap", rule_keep_by_count_without_token_cap),
     ("R14_stats_full_payload_load", rule_stats_full_payload_load),
     ("R15_json_extract_without_guard", rule_json_extract_without_guard),
     ("R12_offscreen_compositing_in_scroll", rule_offscreen_compositing_in_scroll),
@@ -869,6 +909,7 @@ def tool_list_rules(_args):
         "R9_assert_argument_order": "JUnit4 断言参数顺序写反 assertTrue(条件, 消息) → 编译报类型不匹配",
         "R10_unused_import": "未使用的 import（仅卫生问题，不影响编译）",
         "R13_composable_heavy_full_list": "Composable 用整个列表作 remember key 并做全量派生（长会话/时间线面板性能候选）",
+        "R16_keep_by_count_without_token_cap": "上下文保留只按条数、缺 token 总量上限（压缩后 token 降不下来）",
         "R14_stats_full_payload_load": "统计路径全量加载含 payloadJson 的实体（OOM 风险）",
         "R15_json_extract_without_guard": "json_extract(payloadJson) 缺 json_valid 守卫（脏数据会 malformed JSON）",
         "R12_offscreen_compositing_in_scroll": "滚动容器上使用 CompositingStrategy.Offscreen → 滚动每帧离屏合成（滑动卡顿头号成因）",
