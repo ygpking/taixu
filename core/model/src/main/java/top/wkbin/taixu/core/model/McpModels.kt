@@ -178,6 +178,18 @@ object BuiltinMcpPresets {
             isBuiltin = true,
         ),
         McpServerConfig(
+            id = "mcp_causal_audit",
+            name = "因果链闭环审计",
+            description = "机械可验证地检出「同一语义在多处实现/读取/显示不一致」的结构性缺陷：单一真相源缺失、" +
+                "StateFlow 误用 distinctUntilChanged、combine 输出恒定导致上游变化被吞（UI 不刷新）、" +
+                "偏好默认值分歧、僵尸设置。供 Agent 在重构/排障时一次性扫全仓，替代人肉模式搜索。",
+            transportType = McpTransportType.STDIO,
+            command = "python3",
+            args = listOf("-u", "/opt/taixu/scripts/causal_audit_mcp_server.py", "--repository", "/workspace"),
+            isEnabled = true,
+            isBuiltin = true,
+        ),
+        McpServerConfig(
             id = BROWSER_BUILTIN_ID,
             name = "TaiXu Browser (Built-in)",
             description = "TaiXu 内置 in-app WebView 的 MCP server（in-process loopback 127.0.0.1:8787，Streamable HTTP POST /mcp 请求-响应，Bearer 认证）；由 harness 层 BrowserMcpBootstrap 启动，暴露 mcp__browser__* 工具给 Agent 与外接 IDE。",
