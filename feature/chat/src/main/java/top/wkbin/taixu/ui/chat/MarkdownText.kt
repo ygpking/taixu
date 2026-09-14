@@ -22,7 +22,6 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -959,8 +958,23 @@ private fun isTableStart(lines: List<String>, i: Int): Boolean =
 @Composable
 private fun TableBlock(table: MdTable) {
     val colCount = (listOf(table.headers) + table.rows).maxOf { it.size }
-    // 多列表格包裹横向滚动容器：窄屏不再把每列挤压成竖条，宽表可左右滑动查看；
-    // IntrinsicSize.Max 让各行列宽按全表最宽行对齐，保持原有等分观感。
+
+    // 列宽按「该列所有单元格中最宽者」估算，用固定 dp 宽度绘制。
+    //
+    // 为什么不用 IntrinsicSize / weight：
+    //   旧写法 Box{ Column(horizontalScroll + width(IntrinsicSize.Max)){ Row(fillMaxWidth){ 列 weight(1f) } } }
+    //   三者语义冲突——horizontalScroll 下子项获得无限宽约束，IntrinsicSize 依赖固有测量，
+    //   而 weight 需要确定的可分配宽度；结果每列被压成 0 宽，界面只剩最左一列
+    //   （用户实际观测：表格内容丢失、只剩第一列）。
+    //   改为按字符数估算固定宽度：纯算术、确定性 100%，不依赖 Compose 测量机制。
+    val colWidths = (0 until colCount).map { c ->
+        val widest = (listOf(table.headers) + table.rows)
+            .mapNotNull { it.getOrNull(c) }
+            .maxOfOrNull { displayWidthOf(it) } ?: 1
+        // 每字符约 7.2dp（bodySmall ~12sp 的粗略折算），上下限夹逼避免极窄/极宽列。
+        (widest * 7.2f).dp.coerceIn(48.dp, 280.dp)
+    }
+
     Box(
         Modifier
             .fillMaxWidth()
@@ -969,34 +983,65 @@ private fun TableBlock(table: MdTable) {
         Column(
             Modifier
                 .horizontalScroll(rememberScrollState())
-                .width(IntrinsicSize.Max)
                 .padding(10.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            Row(Modifier.fillMaxWidth()) {
+            Row {
                 (0 until colCount).forEach { c ->
                     InlineText(
                         table.headers.getOrNull(c) ?: "",
                         MaterialTheme.typography.bodySmall,
                         bold = true,
-                        modifier = Modifier.weight(1f).padding(end = 8.dp),
+                        modifier = Modifier
+                            .width(colWidths[c])
+                            .padding(end = 12.dp),
                     )
                 }
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             table.rows.forEach { row ->
-                Row(Modifier.fillMaxWidth()) {
+                Row {
                     (0 until colCount).forEach { c ->
                         InlineText(
                             row.getOrNull(c) ?: "",
                             MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.weight(1f).padding(end = 8.dp),
+                            modifier = Modifier
+                                .width(colWidths[c])
+                                .padding(end = 12.dp),
                         )
                     }
                 }
             }
         }
     }
+}
+
+/**
+ * 估算字符串的显示宽度（以半角字符为单位）。
+ *
+ * Markdown 强调标记（`**`、`*`、`` ` ``）不占实际显示宽度，需先剥离；
+ * CJK / 全角标点按 2 个单位计，其余按 1。用于表格列宽估算，无需精确字形度量。
+ */
+private fun displayWidthOf(raw: String): Int {
+    val text = raw
+        .replace("**", "")
+        .replace("`", "")
+        .replace("*", "")
+    var width = 0
+    text.forEach { ch ->
+        val code = ch.code
+        width += when {
+            code in 0x1100..0x115F -> 2                 // 韩文字母
+            code in 0x2E80..0xA4CF -> 2                 // CJK 部首/汉字/日文假名
+            code in 0xAC00..0xD7A3 -> 2                 // 韩文音节
+            code in 0xF900..0xFAFF -> 2                 // CJK 兼容表意
+            code in 0xFE30..0xFE6F -> 2                 // CJK 兼容形式
+            code in 0xFF00..0xFF60 -> 2                 // 全角 ASCII
+            code in 0xFFE0..0xFFE6 -> 2                 // 全角符号
+            else -> 1
+        }
+    }
+    return width.coerceAtLeast(1)
 }
 
 @Composable
