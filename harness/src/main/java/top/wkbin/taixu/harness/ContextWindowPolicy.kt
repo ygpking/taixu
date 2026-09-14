@@ -28,14 +28,31 @@ object ContextWindowPolicy {
     }
 
     /**
-     * 历史折叠触发线（token）：由有效预算减去协议预留得出，不再叠加任何与模型脱钩的固定上限。
-     * 面板应显示此值，使用户「填多少、看到多少、实际按多少折叠」三处一致。
+     * 历史折叠触发线（token）。
+     *
+     * 公式：`min(预算 × 比例, 预算 − 协议预留)`，再夹到 [MIN_CONTEXT_BUDGET] 以上。
+     *  - `ratioPercent = 100`（默认）时退化为「预算 − 预留」，与旧行为完全一致；
+     *  - 调小比例可让历史更早折叠，降低单次请求 token 量。
+     * 之所以取 min：比例只是「提前折叠」的手段，绝不能把折叠线推到超过「预算 − 预留」
+     * —— 那会让历史挤占 completion 与工具 schema 的空间，导致上游 400 或生成崩塌。
+     *
+     * 面板必须显示本函数的结果（而非原始预算），使「填多少、看到多少、实际按多少折叠」三处一致。
      */
-    fun foldingLimitFor(budget: Int): Int {
+    fun foldingLimitFor(budget: Int, ratioPercent: Int = DEFAULT_FOLDING_RATIO_PERCENT): Int {
         if (budget <= 0) return 0
         val reserved = RESERVED_OUTPUT_TOKENS + TOOL_SCHEMA_RESERVE_TOKENS
-        return (budget - reserved).coerceAtLeast(MIN_CONTEXT_BUDGET)
+        val hardCeiling = budget - reserved
+        val safeRatio = ratioPercent.coerceIn(MIN_FOLDING_RATIO_PERCENT, MAX_FOLDING_RATIO_PERCENT)
+        val scaled = (budget.toLong() * safeRatio / 100L).toInt()
+        return minOf(scaled, hardCeiling).coerceAtLeast(MIN_CONTEXT_BUDGET)
     }
+
+    /** 折叠线比例的默认值（100 = 只在「预算 − 预留」处折叠，与旧行为一致）。 */
+    const val DEFAULT_FOLDING_RATIO_PERCENT = 100
+    /** 折叠线比例下限：低于此值会频繁折叠，历史几乎留不住。 */
+    const val MIN_FOLDING_RATIO_PERCENT = 10
+    /** 折叠线比例上限。 */
+    const val MAX_FOLDING_RATIO_PERCENT = 100
 
     /** 预留：completion 输出空间（协议硬需求，与模型档位无关）。 */
     private const val RESERVED_OUTPUT_TOKENS = 8_192
@@ -185,9 +202,10 @@ object ContextWindowPolicy {
         mcpTokens: Int = 0,
         subagentTokens: Int = 0,
         minKeepMessages: Int = MIN_KEEP_MESSAGES,
+        foldingRatioPercent: Int = DEFAULT_FOLDING_RATIO_PERCENT,
     ): EffectiveContextUsage {
         val keepFrom = if (compactionEnabled) {
-            computeKeepFromIndex(messages, budget, systemTokens, minKeepMessages)
+            computeKeepFromIndex(messages, budget, systemTokens, minKeepMessages, foldingRatioPercent)
         } else {
             0
         }
@@ -253,18 +271,22 @@ object ContextWindowPolicy {
      * @param minKeepMessages 强制保留的最近消息条数下限。默认 [MIN_KEEP_MESSAGES]；
      *   调用方可由用户设置「压缩触发阈值（用户轮次）」经 [keepMessagesForRounds] 换算后传入，
      *   使该设置真正影响折叠行为（此前引擎完全不读该设置，属僵尸设置）。
+     * @param foldingRatioPercent 折叠线比例（百分比，默认 100 = 与旧行为一致）。
+     *   由用户设置「折叠线比例」传入，使历史可在预算的一部分处就开始折叠，
+     *   避免长会话长期以数十万 token 的请求运行。
      */
     fun computeKeepFromIndex(
         messages: List<HarnessMessage>,
         budget: Int,
         systemTokens: Int,
         minKeepMessages: Int = MIN_KEEP_MESSAGES,
+        foldingRatioPercent: Int = DEFAULT_FOLDING_RATIO_PERCENT,
     ): Int {
         if (messages.size <= 1) return 0
         if (budget <= 0) {
             return alignKeepFromIndex(messages, minimalKeepFromIndex(messages))
         }
-        val rawLimit = foldingLimitFor(budget) - systemTokens
+        val rawLimit = foldingLimitFor(budget, foldingRatioPercent) - systemTokens
         // 预算耗尽（rawLimit<=0）时只保留最小近轮。
         // 「防失忆」职责由 minKeepMessages 强制保留最近若干条 + alignKeepFromIndex 的工具对闭合共同覆盖。
         if (rawLimit <= 0) {

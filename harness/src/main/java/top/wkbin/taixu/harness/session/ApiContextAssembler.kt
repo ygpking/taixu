@@ -52,6 +52,10 @@ class ApiContextAssembler @Inject constructor(
         val minKeepMessages = ContextWindowPolicy.keepMessagesForRounds(
             runCatching { settingsDataStore.contextCompactionThreshold.first() }.getOrNull(),
         )
+        // 「折叠线比例」：让历史在预算的一部分处就开始折叠。
+        // 与面板同源读取同一个偏好，保证两侧折叠决策一致。
+        val foldingRatioPercent = runCatching { settingsDataStore.contextFoldingRatioPercent.first() }
+            .getOrDefault(ContextWindowPolicy.DEFAULT_FOLDING_RATIO_PERCENT)
         val toolCallMode = if (model.pureChatMode) ToolCallMode.DISABLED else model.toolCallMode
 
         var compactedContext = compactionManager.project(sessId)
@@ -91,6 +95,7 @@ class ApiContextAssembler @Inject constructor(
                     ContextWindowPolicy.estimateTokens(systemPrompt) +
                         ContextWindowPolicy.estimateTokens(compactedContext.summary.orEmpty()),
                     minKeepMessages = minKeepMessages,
+                    foldingRatioPercent = foldingRatioPercent,
                 )
             } else {
                 0

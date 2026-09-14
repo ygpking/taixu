@@ -1,5 +1,6 @@
 package top.wkbin.taixu.ui.settings
 
+import top.wkbin.taixu.harness.ContextWindowPolicy
 import top.wkbin.taixu.ui.components.RuntimeAlertDialog
 
 import androidx.compose.foundation.background
@@ -97,6 +98,7 @@ fun AgentSettingsScreen(
     val maxToolsPerRound by viewModel.maxToolsPerRound.collectAsStateWithLifecycle()
     val maxConsecutiveFailures by viewModel.maxConsecutiveFailures.collectAsStateWithLifecycle()
     val contextBudgetTokens by viewModel.contextBudgetTokens.collectAsStateWithLifecycle()
+    val contextFoldingRatioPercent by viewModel.contextFoldingRatioPercent.collectAsStateWithLifecycle()
     val skills by viewModel.allSkills.collectAsStateWithLifecycle()
     val subagents by viewModel.allSubagents.collectAsStateWithLifecycle()
     val autoSubagentDelegation by viewModel.autoSubagentDelegationEnabled.collectAsStateWithLifecycle()
@@ -277,6 +279,12 @@ fun AgentSettingsScreen(
                         ContextBudgetSliderRow(
                             currentValue = contextBudgetTokens,
                             onValueChange = viewModel::setContextBudgetTokens,
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        ContextFoldingRatioSliderRow(
+                            currentValue = contextFoldingRatioPercent,
+                            budget = contextBudgetTokens,
+                            onValueChange = viewModel::setContextFoldingRatioPercent,
                         )
                     }
                 }
@@ -978,6 +986,58 @@ private fun ThresholdSliderRow(
             onValueChangeFinished = { onThresholdChange(sliderVal.toInt()) },
             valueRange = 5f..40f,
             steps = 6,
+        )
+    }
+}
+
+@Composable
+private fun ContextFoldingRatioSliderRow(
+    currentValue: Int,
+    budget: Int,
+    onValueChange: (Int) -> Unit,
+) {
+    var sliderVal by remember(currentValue) { mutableFloatStateOf(currentValue.toFloat()) }
+    // 实时预览：按当前比例算出的折叠线，让用户直观看到"拖到多少就按多少折叠"。
+    val previewLimit = remember(sliderVal, budget) {
+        ContextWindowPolicy.foldingLimitFor(budget, sliderVal.toInt())
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("历史折叠线比例", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold))
+            Text(
+                "${sliderVal.toInt()}%",
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        Text(
+            "历史在「预算 × 比例」处开始折叠；调小可显著降低单次请求 token 量（省费用、降首字延迟）。" +
+                "100% 表示只在预算减去输出/工具预留处折叠。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        // 实时显示换算结果，避免"拖了不知道影响多大"
+        Text(
+            "按当前设置将折叠线约为 ${previewLimit / 1000}K tok",
+            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Slider(
+            value = sliderVal,
+            onValueChange = { sliderVal = it },
+            onValueChangeFinished = { onValueChange(sliderVal.toInt()) },
+            // 与存储层 SettingsDataStore.setContextFoldingRatioPercent 的 coerceIn(10, 100) 对齐
+            valueRange = 10f..100f,
+            steps = 8, // 步长 10%
         )
     }
 }

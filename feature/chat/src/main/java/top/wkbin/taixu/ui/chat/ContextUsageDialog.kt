@@ -157,13 +157,20 @@ fun ContextUsageDialog(
                     )
 
                     // 3b. 标称上限标注：分母是折叠线（参与比例计算、保证数字自洽），
-                    //     这里补一行说明「模型档案里填的上限是多少」，避免用户以为设置没生效。
+                    //     这里补一行说明「模型档案里填的上限是多少、按什么比例折叠」，
+                    //     让三个数（上限 / 比例 / 折叠线）都透明，避免用户以为设置没生效。
                     if (usage.declaredTokens > usage.limitTokens) {
+                        val declaredLabel = formatLimitTokens(usage.declaredTokens)
                         Text(
-                            text = stringResource(
-                                R.string.chat_context_declared_limit,
-                                formatLimitTokens(usage.declaredTokens),
-                            ),
+                            text = if (usage.foldingRatioPercent < 100) {
+                                stringResource(
+                                    R.string.chat_context_declared_limit_with_ratio,
+                                    declaredLabel,
+                                    usage.foldingRatioPercent,
+                                )
+                            } else {
+                                stringResource(R.string.chat_context_declared_limit, declaredLabel)
+                            },
                             style = MaterialTheme.typography.bodySmall.copy(
                                 fontSize = 11.sp,
                                 color = if (isDark) Color(0xFF6B7280) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),

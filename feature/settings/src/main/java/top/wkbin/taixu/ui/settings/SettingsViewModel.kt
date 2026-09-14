@@ -633,6 +633,10 @@ class SettingsViewModel @Inject constructor(
     val contextBudgetTokens: StateFlow<Int> = settingsDataStore.contextBudgetTokens
         .stateIn(viewModelScope, SharingStarted.Eagerly, 128_000)
 
+    /** 折叠线比例（百分比，默认 100）：历史在预算的百分之几处开始折叠。 */
+    val contextFoldingRatioPercent: StateFlow<Int> = settingsDataStore.contextFoldingRatioPercent
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 100)
+
     val maxToolsPerRound: StateFlow<Int> = settingsDataStore.maxToolsPerRound
         .stateIn(viewModelScope, SharingStarted.Eagerly, 12)
 
@@ -672,6 +676,11 @@ class SettingsViewModel @Inject constructor(
 
     fun setContextCompactionThreshold(value: Int) {
         viewModelScope.launch { settingsDataStore.setContextCompactionThreshold(value) }
+    }
+
+    /** 折叠线比例：10~100（%）。调小则更早折叠历史，降低单次请求 token 量。 */
+    fun setContextFoldingRatioPercent(value: Int) {
+        viewModelScope.launch { settingsDataStore.setContextFoldingRatioPercent(value) }
     }
 
     fun setMaxToolRounds(value: Int) {

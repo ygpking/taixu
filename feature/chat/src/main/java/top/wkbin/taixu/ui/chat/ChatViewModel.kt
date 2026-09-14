@@ -607,15 +607,17 @@ class ChatViewModel @Inject constructor(
             defaultBudget = defaultBudget,
         )
     }.combine(
-        // 两个设置项一起并入：压缩开关 + 用户轮次阈值（后者此前是僵尸设置，引擎不读；
-        // 现在面板与引擎都用它换算「最少保留条数」，保证两侧折叠决策完全同源）。
+        // 三个设置项一起并入：压缩开关 + 用户轮次阈值 + 折叠线比例。
+        // 后两者此前分别是僵尸设置/不存在；现在面板与引擎都用同一组值做折叠决策，保证同源。
         kotlinx.coroutines.flow.combine(
             settingsDataStore.contextCompactionEnabled,
             settingsDataStore.contextCompactionThreshold,
-        ) { enabled, threshold -> enabled to threshold },
+            settingsDataStore.contextFoldingRatioPercent,
+        ) { enabled, threshold, ratio -> Triple(enabled, threshold, ratio) },
     ) { inputs, compaction ->
         val compactionEnabled = compaction.first
         val compactionThreshold = compaction.second
+        val foldingRatioPercent = compaction.third
         val activeModel = inputs.activeModel
         val pureChat = activeModel?.pureChatMode == true
         val toolDisabled = pureChat || activeModel?.toolCallMode.equals("disabled", ignoreCase = true)
@@ -648,6 +650,8 @@ class ChatViewModel @Inject constructor(
             subagentTokens = subagentTokens,
             // 与引擎同源：用户轮次阈值决定「最少保留条数」，面板据此估算折叠后的用量。
             minKeepMessages = ContextWindowPolicy.keepMessagesForRounds(compactionThreshold),
+            // 同样与引擎同源：折叠线比例参与折叠决策。
+            foldingRatioPercent = foldingRatioPercent,
         )
         val totalPromptTokens = inputs.currentMessages.filterIsInstance<AssistantText>().mapNotNull { it.promptTokens?.toLong() }.sum()
         val totalCachedTokens = inputs.currentMessages.filterIsInstance<AssistantText>().mapNotNull { it.cachedTokens?.toLong() }.sum()
@@ -657,10 +661,13 @@ class ChatViewModel @Inject constructor(
 
         ContextUsage(
             usedTokens = effectiveUsage.totalTokens,
-            // 分母 = 折叠触发线；与 usedTokens 同源同尺度，保证「已用/分母=百分比」自洽。
-            limitTokens = ContextWindowPolicy.foldingLimitFor(budget),
+            // 分母 = 折叠触发线（含用户设定的比例）；与 usedTokens 同源同尺度，
+            // 保证「已用/分母=百分比」自洽。
+            limitTokens = ContextWindowPolicy.foldingLimitFor(budget, foldingRatioPercent),
             // 标称上限：用户在模型档案里填的值，供面板标注「模型上限 X」，不参与比例计算。
             declaredTokens = budget,
+            // 折叠线比例：面板据此标注「按 X% 折叠」，让三个数（上限/比例/折叠线）都透明可见。
+            foldingRatioPercent = foldingRatioPercent,
             systemTokens = totalSystemTokens,
             toolTokens = effectiveUsage.toolTokens,
             conversationTokens = effectiveUsage.conversationTokens,
@@ -1474,6 +1481,11 @@ data class ContextUsage(
      * 造成分母与百分比对不上（两张皮）。
      */
     val declaredTokens: Int = 128_000,
+    /**
+     * 折叠线比例（百分比）。面板据此标注「按 X% 折叠」，
+     * 使「模型上限 / 比例 / 实际折叠线」三个数都透明可见，避免任何一方成为暗箱。
+     */
+    val foldingRatioPercent: Int = 100,
     val systemTokens: Int = 0,
     val toolTokens: Int = 0,
     val conversationTokens: Int = 0,
