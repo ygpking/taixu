@@ -95,7 +95,11 @@ class HarnessProviderRunner @Inject constructor(
         var imageStripped = false
         val estimatedRequestTokens = estimateTokens(requestMessages)
         val maxNetworkRetries = maxNetworkRetriesFor(estimatedRequestTokens, retryPolicy.maxRetries)
-        val maxAttempts = maxNetworkRetries + 1
+        // 显示的「分母」：瞬态传输故障（Socket/EOF/TLS/5xx）会被 effectiveRetryBudget 放宽到
+        // 至少 TRANSIENT_MAX_RETRIES 次，因此预算不是固定值。这里用可变值在每次失败后同步为
+        // 真正生效的预算，避免出现「(3/2)」这种分母小于当前次数的自相矛盾显示
+        // （同一语义两处计算造成的 UI 与实际行为两张皮）。
+        var attemptBudget = maxNetworkRetries
         if (maxNetworkRetries < retryPolicy.maxRetries) {
             agentEventLogger.log(
                 sessId,
@@ -105,13 +109,14 @@ class HarnessProviderRunner @Inject constructor(
         }
         while (streamed == null) {
             try {
-                stateMirrors.setStatus(sessId, "等待模型首个响应（${netRetry + 1}/$maxAttempts）")
+                // 分母为「本预算下最多允许多少次尝试」= 重试预算 + 1。
+                stateMirrors.setStatus(sessId, "等待模型首个响应（${netRetry + 1}/${attemptBudget + 1}）")
                 operationCoordinator.providerIntent(
                     operationId = operationId,
                     effectId = assistantId,
                     round = round,
                     attempt = netRetry + 1,
-                    maxAttempts = maxAttempts,
+                    maxAttempts = attemptBudget + 1,
                 )
                 streamed = providerClient.chatStream(
                     model,
@@ -165,6 +170,8 @@ class HarnessProviderRunner @Inject constructor(
                 }
                 netRetry++
                 if (netRetry > maxNetworkRetries) throw rateLimit
+                // 限流分支的预算即 maxNetworkRetries，同步显示用预算保持一致。
+                attemptBudget = maxNetworkRetries
                 metrics.streamRetry()
                 stateMirrors.setThinkingLive(sessId, false)
                 val waitSeconds = rateLimit.retryAfterSeconds ?: (netRetry * RETRY_BACKOFF_SEC).coerceAtMost(60L)
@@ -186,6 +193,8 @@ class HarnessProviderRunner @Inject constructor(
                 // OkHttp 的 retryOnConnectionFailure 不覆盖已建立连接的中途断开，只能在应用层放宽。
                 val transient = isTransientFailure(io)
                 val retryBudget = effectiveRetryBudget(maxNetworkRetries, io)
+                // 同步「显示用预算」为实际生效值，保证状态栏分母与真实重试行为一致。
+                attemptBudget = retryBudget
                 // netRetry 表示「这是第几次失败」；净重试预算为 retryBudget 次，故第 retryBudget+1 次失败即放弃。
                 // 原写法 "重试 $netRetry/$retryBudget" 会被误读成「已执行第 retryBudget 次重试、仍在继续」。
                 agentEventLogger.log(
