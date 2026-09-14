@@ -603,6 +603,54 @@ def rule_repository_interface_drift(root, files):
     return findings
 
 
+# ---------------------------------------------------------------- R12
+OFFSCREEN = re.compile(r"CompositingStrategy\.Offscreen")
+SCROLL_CONTAINER = re.compile(r"\b(LazyColumn|LazyRow|LazyVerticalGrid|LazyHorizontalGrid|"
+                              r"Modifier\.verticalScroll|Modifier\.horizontalScroll|"
+                              r"rememberLazyListState|rememberScrollState)\b")
+# 允许的白名单场景：一次性全屏遮罩/引导层（不在滚动容器内），保留 Offscreen 是合理的。
+OFFSCREEN_ALLOW_HINT = re.compile(r"(Spotlight|Guide|Tour|Overlay|Mask|Scrim)", re.I)
+
+
+def rule_offscreen_compositing_in_scroll(root, files):
+    """R12 滚动容器上使用 CompositingStrategy.Offscreen → 滚动每帧离屏合成（滑动卡顿头号成因）。
+
+    原理：`BlendMode.DstIn` 之类的遮罩必须先把内容渲染到独立离屏缓冲才能生效，
+    因此 `CompositingStrategy.Offscreen` 会让**被挂载的那个节点每帧全量离屏合成**。
+    若挂在 LazyColumn / 滚动容器（或它们的父节点）上，代价与「列表面积 × 帧率」成正比，
+    表现为**静止不卡、一滑就卡**——2026-09-14 太墟聊天列表滑动卡顿的真实根因即此。
+
+    判定：同一文件内出现 Offscreen，且该修饰符所挂的节点上下文里有滚动容器特征
+    （LazyColumn / rememberScrollState / verticalScroll 等），文件类型名不在引导层白名单。
+    报 P1：需人工确认该节点是否处于滚动路径上。
+    """
+    findings = []
+    for path in files:
+        src = strip_comments(read(path))
+        lines = src.split("\n")
+        base = os.path.basename(path)
+        if OFFSCREEN_ALLOW_HINT.search(base):
+            continue
+        for i, line in enumerate(lines):
+            if not OFFSCREEN.search(line):
+                continue
+            # 前后 30 行窗口内是否出现滚动容器
+            window = "\n".join(lines[max(0, i - 30):i + 30])
+            if not SCROLL_CONTAINER.search(window):
+                continue
+            findings.append({
+                "rule": "R12_offscreen_compositing_in_scroll",
+                "severity": "P1",
+                "file": os.path.relpath(path, root),
+                "line": i + 1,
+                "code": line.strip()[:150],
+                "note": ("滚动容器附近使用 CompositingStrategy.Offscreen：该节点每帧都要离屏合成，"
+                         "滚动期间代价与列表面积×帧率成正比（典型症状：静止不卡、一滑就卡）。"
+                         "建议改用「在滚动内容之上叠加渐变/遮罩层」的等价实现，避免离屏合成。"),
+            })
+    return findings
+
+
 # 规则注册表：必须位于所有规则函数定义之后（Python 顺序执行，前置引用会 NameError）。
 RULES = [
     ("R1_duplicate_constant", rule_duplicate_constants),
@@ -615,6 +663,7 @@ RULES = [
     ("R8_flatmap_once_snapshot", rule_flatmap_once_snapshot),
     ("R9_assert_argument_order", rule_assert_argument_order),
     ("R10_unused_import", rule_unused_import),
+    ("R12_offscreen_compositing_in_scroll", rule_offscreen_compositing_in_scroll),
 ]
 
 
@@ -705,6 +754,7 @@ def tool_list_rules(_args):
         "R8_flatmap_once_snapshot": "上游去重 + flatMapLatest 内一次性读取 → 数据源变化不传导（改了没反应）",
         "R9_assert_argument_order": "JUnit4 断言参数顺序写反 assertTrue(条件, 消息) → 编译报类型不匹配",
         "R10_unused_import": "未使用的 import（仅卫生问题，不影响编译）",
+        "R12_offscreen_compositing_in_scroll": "滚动容器上使用 CompositingStrategy.Offscreen → 滚动每帧离屏合成（滑动卡顿头号成因）",
     }
     for name, _fn in RULES:
         lines.append("  - {}: {}".format(name, desc.get(name, "")))
