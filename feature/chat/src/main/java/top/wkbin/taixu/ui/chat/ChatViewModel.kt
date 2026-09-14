@@ -66,6 +66,7 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.map
@@ -359,7 +360,11 @@ class ChatViewModel @Inject constructor(
     ) { sessionId, history, revisionAndList ->
         val live = history[sessionId].orEmpty()
         mergeHistoricalAndLiveEvents(sessionId, revisionAndList.second, live)
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    }
+        // 首屏卡顿修复（P1）：合成历史事件（synthesizeHistoricalEvents）是 O(n) 遍历，
+        // stateIn 默认在 Main 上跑，首订阅时会整段压在主线程。移到 Default 执行。
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     private val _branchRefresh = MutableStateFlow(0)
     private val branchMessageRevision = messages.map { list -> list.size to list.lastOrNull()?.id }.distinctUntilChanged()
@@ -389,7 +394,14 @@ class ChatViewModel @Inject constructor(
     }.distinctUntilChanged().mapLatest { key ->
         val sessionId = key.sessionId
         if (sessionId.isBlank()) emptyList() else runCatching { laneManager.branches(sessionId) }.getOrDefault(emptyList())
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    }
+        // 首屏卡顿修复（P0）：laneManager.branches() 内部会读取该会话**全部** entry
+        // （HarnessRuntimeDao.listEntries 无 LIMIT）并逐个 leaf 做路径回溯 + payload 解码，
+        // 属 O(entries) 的重活。stateIn(viewModelScope) 默认跑在 Dispatchers.Main，
+        // 而这条链此前没有任何 flowOn —— 于是「刚进入聊天界面」首次订阅时，
+        // 全量投影直接压在主线程上，与首帧布局争抢，表现为进入即卡。
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     /** 当前选中的会话 ID */
     val currentSessionId: StateFlow<String> = harnessLoop.currentSessionId
@@ -440,6 +452,9 @@ class ChatViewModel @Inject constructor(
                     emit(if (sessionId.isBlank()) null else compactionManager.latestSnapshot(sessionId))
                 }
             }
+            // 首屏修复（P1）：latestSnapshot 会读 DB（lane 查询 + entry 解码），
+            // 首订阅时不应压在主线程，与 branches/runtimeEvents 一并移到 Default。
+            .flowOn(Dispatchers.Default)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** 全量长期记忆（memory 工具写入），供记忆抽屉管理与模型上下文核对。 */
@@ -655,7 +670,11 @@ class ChatViewModel @Inject constructor(
             breakdown = effectiveUsage.breakdown,
         )
 
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ContextUsage())
+    }
+        // 首屏卡顿修复（P1）：estimateEffectiveUsage 与两次 filterIsInstance 求和都是 O(消息数)，
+        // stateIn 默认在 Main 执行；首订阅（空列表 → 全量）时会整段压在主线程，与首帧布局争抢。
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ContextUsage())
 
     /** 各 MCP 服务的实时连通性状态（与 McpManager 共享，聊天挂载面板 / 设置页联动）。 */
     val mcpConnectionStates: StateFlow<Map<String, McpConnectionState>> = mcpManager.connectionStates
