@@ -846,7 +846,8 @@ class ChatViewModel @Inject constructor(
         // 也会自动 loadSession 切换（HarnessLoop.kt:429），hook 单点会漏。
         viewModelScope.launch {
             currentSessionId
-                .distinctUntilChanged()
+                // currentSessionId 是 StateFlow，本身已按值去重，无需 distinctUntilChanged
+                //（对本项目而言该调用既无效果又被当作 error，曾导致编译失败）。
                 .drop(1) // 首次订阅时不清，仅响应"切换"
                 .collect {
                     _pinnedMentionIds.value = emptySet()
