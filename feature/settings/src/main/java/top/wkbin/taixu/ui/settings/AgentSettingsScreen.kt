@@ -928,6 +928,11 @@ private fun RoundsSliderRow(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        Text(
+            "注：委派给子智能体的子任务另受独立上限约束（5~30 轮），不沿用此值",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+        )
         Slider(
             value = sliderVal,
             onValueChange = { sliderVal = it },
@@ -963,7 +968,7 @@ private fun ThresholdSliderRow(
             )
         }
         Text(
-            "当会话历史超过该轮数时，启动智能剪裁，最近 4 轮保持无损",
+            "当会话历史超过该轮数时启动智能剪裁；该轮数内保持无损，且不低于 5 轮下限",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1010,8 +1015,11 @@ private fun ContextBudgetSliderRow(
             value = sliderVal,
             onValueChange = { sliderVal = it },
             onValueChangeFinished = { onValueChange(sliderVal.toInt()) },
-            valueRange = 8000f..1000000f,
-            steps = 48, // 步长约 2 万 tok
+            // 与存储层 SettingsDataStore.setContextBudgetTokens 的 coerceIn(4000, 2000000) 对齐：
+            // 此前滑块只到 100 万，导致 >100 万的高窗口模型无法设置，且既有 >100 万的值
+            // 一旦拖动就会被静默降级（Compose Slider 会把超范围值钳到上界）。
+            valueRange = 4_000f..2_000_000f,
+            steps = 199, // 步长约 1 万 tok
         )
     }
 }
@@ -1088,8 +1096,10 @@ private fun ConsecutiveFailuresSliderRow(
             value = sliderVal,
             onValueChange = { sliderVal = it },
             onValueChangeFinished = { onValueChange(sliderVal.toInt()) },
-            valueRange = 2f..30f,
-            steps = 28,
+            // 与存储层 setMaxConsecutiveFailures 的 coerceIn(1, 50) 对齐：
+            // 此前滑块为 2..30，下限 1 与上限 31~50 无法通过 UI 设置。
+            valueRange = 1f..50f,
+            steps = 48,
         )
     }
 }

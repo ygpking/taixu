@@ -47,6 +47,11 @@ class ApiContextAssembler @Inject constructor(
         val declaredTokens = model.contextTokens
             ?: runCatching { settingsDataStore.contextBudgetTokens.first() }.getOrDefault(ContextWindowPolicy.DEFAULT_CONTEXT_BUDGET)
         val budgetTokens = ContextWindowPolicy.resolveEffectiveBudget(declaredTokens)
+        // 「压缩触发阈值（用户轮次）」此前是僵尸设置：UI 可调、引擎从不读取，拖了没反应。
+        // 现在把它换算成「最少保留消息条数」传入折叠决策，使设置真正生效。
+        val minKeepMessages = ContextWindowPolicy.keepMessagesForRounds(
+            runCatching { settingsDataStore.contextCompactionThreshold.first() }.getOrNull(),
+        )
         val toolCallMode = if (model.pureChatMode) ToolCallMode.DISABLED else model.toolCallMode
 
         var compactedContext = compactionManager.project(sessId)
@@ -85,6 +90,7 @@ class ApiContextAssembler @Inject constructor(
                     budgetTokens,
                     ContextWindowPolicy.estimateTokens(systemPrompt) +
                         ContextWindowPolicy.estimateTokens(compactedContext.summary.orEmpty()),
+                    minKeepMessages = minKeepMessages,
                 )
             } else {
                 0

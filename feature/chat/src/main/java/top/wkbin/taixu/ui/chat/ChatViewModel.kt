@@ -62,6 +62,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
@@ -546,7 +547,16 @@ class ChatViewModel @Inject constructor(
             mcps = mcps,
             defaultBudget = defaultBudget,
         )
-    }.combine(settingsDataStore.contextCompactionEnabled) { inputs, compactionEnabled ->
+    }.combine(
+        // 两个设置项一起并入：压缩开关 + 用户轮次阈值（后者此前是僵尸设置，引擎不读；
+        // 现在面板与引擎都用它换算「最少保留条数」，保证两侧折叠决策完全同源）。
+        kotlinx.coroutines.flow.combine(
+            settingsDataStore.contextCompactionEnabled,
+            settingsDataStore.contextCompactionThreshold,
+        ) { enabled, threshold -> enabled to threshold },
+    ) { inputs, compaction ->
+        val compactionEnabled = compaction.first
+        val compactionThreshold = compaction.second
         val activeModel = inputs.activeModel
         val pureChat = activeModel?.pureChatMode == true
         val toolDisabled = pureChat || activeModel?.toolCallMode.equals("disabled", ignoreCase = true)
@@ -577,6 +587,8 @@ class ChatViewModel @Inject constructor(
             skillsTokens = skillTokens,
             mcpTokens = mcpTokens,
             subagentTokens = subagentTokens,
+            // 与引擎同源：用户轮次阈值决定「最少保留条数」，面板据此估算折叠后的用量。
+            minKeepMessages = ContextWindowPolicy.keepMessagesForRounds(compactionThreshold),
         )
         val totalPromptTokens = inputs.currentMessages.filterIsInstance<AssistantText>().mapNotNull { it.promptTokens?.toLong() }.sum()
         val totalCachedTokens = inputs.currentMessages.filterIsInstance<AssistantText>().mapNotNull { it.cachedTokens?.toLong() }.sum()
@@ -825,6 +837,23 @@ class ChatViewModel @Inject constructor(
 
     /** 待发送附件；处理（复制/压缩/编码）在 IO 线程完成 */
     val pendingAttachments: StateFlow<List<ChatAttachment>> = _pendingAttachments.asStateFlow()
+
+    init {
+        // 会话切换时清理会话级 UI 状态，避免跨会话残留：
+        //  - _pinnedMentionIds：钉选的技能/MCP 属会话上下文，残留会把上个会话的钉选带到新会话；
+        //  - _pendingAttachments：待发附件残留可能导致发错会话。
+        // 用监听 currentSessionId 而非 hook switchSession：HarnessLoop 在删除会话等路径
+        // 也会自动 loadSession 切换（HarnessLoop.kt:429），hook 单点会漏。
+        viewModelScope.launch {
+            currentSessionId
+                .distinctUntilChanged()
+                .drop(1) // 首次订阅时不清，仅响应"切换"
+                .collect {
+                    _pinnedMentionIds.value = emptySet()
+                    _pendingAttachments.value = emptyList()
+                }
+        }
+    }
 
     /** 附件处理中（复制/压缩/编码期间为 true，UI 据此展示加载指示） */
     private val _attachmentsProcessing = MutableStateFlow(false)

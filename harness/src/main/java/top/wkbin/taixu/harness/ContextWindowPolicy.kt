@@ -48,12 +48,29 @@ object ContextWindowPolicy {
     /** 预算上界：仅作为「明显异常输入」的护栏（如手误多打几个零），非模型能力限制。 */
     const val MAX_CONTEXT_BUDGET = 2_000_000
     /**
-     * 折叠时强制保留的最近消息条数下限。
+     * 折叠时强制保留的最近消息条数下限（默认值）。
      * 取 10 条：一轮完整交互（用户提问 / 工具调用 / 工具结果 / 助手回复）通常 2~4 条，
      * 10 条可覆盖最近 3 轮左右，避免「只留 2 条」导致模型记不住前因。
      * 该下限受预算约束：小窗口模型会自动少保，但至少保住最近一轮。
+     *
+     * 用户可在「设置 → 压缩触发阈值（用户轮次）」覆盖该下限，见 [keepMessagesForRounds]。
      */
     const val MIN_KEEP_MESSAGES = 10
+
+    /** 一行「用户轮次」折算的消息条数（user + assistant 各一条的保守估计）。 */
+    private const val MESSAGES_PER_ROUND = 2
+
+    /**
+     * 把「最少保留的用户轮数」换算成「最少保留的消息条数」。
+     *
+     * 设置项 `contextCompactionThreshold` 语义为轮次（5~40），引擎按消息条数工作，
+     * 此处做唯一换算，避免两处各写一份口径（此前该设置完全未被引擎读取，属僵尸设置）。
+     * 结果不低于 [MIN_KEEP_MESSAGES]，保证即使用户把轮次调到最小也不会退化成「只留 2 条」。
+     */
+    fun keepMessagesForRounds(rounds: Int?): Int {
+        val safeRounds = rounds?.takeIf { it > 0 } ?: 0
+        return (safeRounds * MESSAGES_PER_ROUND).coerceAtLeast(MIN_KEEP_MESSAGES)
+    }
     private const val APPROX_CHARS_PER_TOKEN = 4
 
     /**
@@ -167,9 +184,10 @@ object ContextWindowPolicy {
         skillsTokens: Int = 0,
         mcpTokens: Int = 0,
         subagentTokens: Int = 0,
+        minKeepMessages: Int = MIN_KEEP_MESSAGES,
     ): EffectiveContextUsage {
         val keepFrom = if (compactionEnabled) {
-            computeKeepFromIndex(messages, budget, systemTokens)
+            computeKeepFromIndex(messages, budget, systemTokens, minKeepMessages)
         } else {
             0
         }
@@ -229,14 +247,26 @@ object ContextWindowPolicy {
         )
     }
 
-    fun computeKeepFromIndex(messages: List<HarnessMessage>, budget: Int, systemTokens: Int): Int {
+    /**
+     * 计算滑动窗口起点。
+     *
+     * @param minKeepMessages 强制保留的最近消息条数下限。默认 [MIN_KEEP_MESSAGES]；
+     *   调用方可由用户设置「压缩触发阈值（用户轮次）」经 [keepMessagesForRounds] 换算后传入，
+     *   使该设置真正影响折叠行为（此前引擎完全不读该设置，属僵尸设置）。
+     */
+    fun computeKeepFromIndex(
+        messages: List<HarnessMessage>,
+        budget: Int,
+        systemTokens: Int,
+        minKeepMessages: Int = MIN_KEEP_MESSAGES,
+    ): Int {
         if (messages.size <= 1) return 0
         if (budget <= 0) {
             return alignKeepFromIndex(messages, minimalKeepFromIndex(messages))
         }
         val rawLimit = foldingLimitFor(budget) - systemTokens
         // 预算耗尽（rawLimit<=0）时只保留最小近轮。
-        // 「防失忆」职责由 MIN_KEEP_MESSAGES 强制保留最近若干条 + alignKeepFromIndex 的工具对闭合共同覆盖。
+        // 「防失忆」职责由 minKeepMessages 强制保留最近若干条 + alignKeepFromIndex 的工具对闭合共同覆盖。
         if (rawLimit <= 0) {
             return alignKeepFromIndex(messages, minimalKeepFromIndex(messages))
         }
@@ -254,9 +284,9 @@ object ContextWindowPolicy {
                 is ToolCall -> estimateTokens(message.args.toString()) + estimateTokens(message.reasoning.orEmpty())
             }
             if (used + tokens > limit) {
-                // 强制保留最近 MIN_KEEP_MESSAGES 条（即使已超 limit），避免「只留 2 条」导致
+                // 强制保留最近 minKeepMessages 条（即使已超 limit），避免「只留 2 条」导致
                 // 模型记不住前因。上限受预算约束：小窗口模型自动少保，但至少保住最近一轮。
-                val forcedFloor = ((messages.size - MIN_KEEP_MESSAGES).coerceAtLeast(0))
+                val forcedFloor = ((messages.size - minKeepMessages).coerceAtLeast(0))
                 val candidate = (index + 1).coerceIn(0, messages.lastIndex).coerceAtMost(forcedFloor)
                 val tokenBoundary = alignKeepFromIndex(messages, candidate)
                 return tokenBoundary
