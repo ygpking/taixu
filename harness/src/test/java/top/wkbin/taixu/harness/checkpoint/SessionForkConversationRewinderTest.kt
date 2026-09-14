@@ -68,6 +68,35 @@ class SessionForkConversationRewinderTest {
             entries.filter { (start == null || it.createdAt >= start) && (end == null || it.createdAt < end) }
 
         override suspend fun countEntriesInRange(start: Long?, end: Long?) = listEntriesInRange(start, end).size
+
+        // 用量统计聚合：Fake 内按 (sessionId, customType) 归并。
+        // 注意：真实实现在 SQL 侧用 json_extract 且带 json_valid 守卫；此处只保证接口满足，
+        // 且不解析 payloadJson（Fake 里的 payload 未必是合法 JSON）。
+        override suspend fun aggregateUsageInRange(start: Long?, end: Long?): List<UsageAggregateRow> =
+            listEntriesInRange(start, end)
+                .groupBy { it.sessionId to it.customType }
+                .map { (key, rows) ->
+                    UsageAggregateRow(
+                        sessionId = key.first,
+                        customType = key.second,
+                        entryCount = rows.size,
+                        promptTokens = 0L,
+                        completionTokens = 0L,
+                        cachedTokens = 0L,
+                        textChars = 0L,
+                        reasoningChars = 0L,
+                    )
+                }
+
+        override suspend fun aggregateDailyCounts(start: Long?, end: Long?): List<DailyCountRow> =
+            listEntriesInRange(start, end).map {
+                DailyCountRow(
+                    createdAt = it.createdAt,
+                    sessionId = it.sessionId,
+                    customType = it.customType,
+                    entryCount = 1,
+                )
+            }
         override suspend fun branch(sessionId: String, leafId: String?): List<HarnessEntryEntity> {
             if (leafId == null) return emptyList()
             val byId = entries.associateBy { it.id }

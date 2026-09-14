@@ -196,11 +196,31 @@ class StatsRepository @Inject constructor(
     }
 
     /**
-     * 由「字符数」估算 token —— 供 SQL 聚合路径使用。
+     * 逐字符估算 token（精度更高：CJK 记 2、ASCII 记 1，再乘 0.75）。
      *
-     * 原实现按字符逐个数权重（CJK 记 2、ASCII 记 1）再乘 0.75；SQL 侧 LENGTH() 只能拿到字符数、
-     * 拿不到原文，故这里直接用字符数近似：按 1 字符 ≈ 1 权重保守估计，再乘同一个 0.75 系数，
-     * 保证与逐字符版本同量级、不产生数量级偏差。
+     * 当前**无调用点**：统计路径已全部改为 SQL 聚合（只带得回字符数、带不回原文），
+     * 故实际使用的是 [estimateTokensFromChars]。
+     * 保留原因：① 它是精度更高的参考实现，将来若在 Kotlin 侧重新持有文本可直接复用；
+     *          ② 删除属代码清理，不在本次 OOM 修复范围内，避免越界改动。
+     * 如需清理请显式确认。
+     */
+    @Suppress("unused")
+    private fun estimateTokens(text: String): Int {
+        if (text.isBlank()) return 0
+        var tokens = 0
+        for (ch in text) {
+            tokens += if (ch.code > 127) 2 else 1
+        }
+        return (tokens * 0.75).toInt().coerceAtLeast(1)
+    }
+
+    /**
+     * 由「字符数」估算 token —— 仅供 SQL 聚合路径使用（该路径在 SQLite 侧用 LENGTH() 求和，
+     * 只带得回字符数、带不回原文，因此无法使用逐字符权重版 [estimateTokens]）。
+     *
+     * 精度取舍：按 1 字符 ≈ 1 权重保守估计后乘同一 0.75 系数。对以 CJK 为主的内容会略偏低
+     * （逐字符版按 2 计权重），但保证同量级、不产生数量级偏差。若将来需要更高精度，
+     * 可改为在 SQL 侧按字节长度（LENGTH(CAST(... AS BLOB))）区分 CJK 与 ASCII。
      */
     private fun estimateTokensFromChars(chars: Long): Long {
         if (chars <= 0L) return 0L
