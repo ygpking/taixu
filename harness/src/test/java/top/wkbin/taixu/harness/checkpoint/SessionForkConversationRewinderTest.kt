@@ -12,6 +12,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import top.wkbin.taixu.core.database.DailyCountRow
 import top.wkbin.taixu.core.database.HarnessEntryEntity
 import top.wkbin.taixu.core.database.HarnessLaneEntity
 import top.wkbin.taixu.core.database.HarnessOperationEntity
@@ -20,6 +21,7 @@ import top.wkbin.taixu.core.database.HarnessRuntimeRepository
 import top.wkbin.taixu.core.database.HarnessSessionEntity
 import top.wkbin.taixu.core.database.HarnessSessionRepository
 import top.wkbin.taixu.core.database.HarnessUsageEntity
+import top.wkbin.taixu.core.database.UsageAggregateRow
 import top.wkbin.taixu.harness.WorkspaceFileAccess
 
 class SessionForkConversationRewinderTest {

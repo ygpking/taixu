@@ -13,6 +13,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import top.wkbin.taixu.core.database.DailyCountRow
 import top.wkbin.taixu.core.database.HarnessEntryEntity
 import top.wkbin.taixu.core.database.HarnessLaneEntity
 import top.wkbin.taixu.core.database.HarnessLaneResultEntity
@@ -20,6 +21,7 @@ import top.wkbin.taixu.core.database.HarnessOperationEntity
 import top.wkbin.taixu.core.database.HarnessQueueItemEntity
 import top.wkbin.taixu.core.database.HarnessRuntimeRepository
 import top.wkbin.taixu.core.database.HarnessUsageEntity
+import top.wkbin.taixu.core.database.UsageAggregateRow
 import top.wkbin.taixu.harness.ChatUsage
 import top.wkbin.taixu.harness.UserMessage
 
