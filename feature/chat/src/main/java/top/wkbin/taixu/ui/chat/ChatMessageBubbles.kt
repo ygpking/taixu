@@ -379,12 +379,19 @@ internal fun AssistantBubble(
 ) {
     val reasoning = message.reasoning
     val context = LocalContext.current
-    val generatedImagePayload = remember(message.id, message.text.length) {
-        val cacheKey = "${message.id}:${message.text.length}"
-        generatedImageFlagCache.get(cacheKey)
-            ?: message.text.contains("data:image/", ignoreCase = true).also { found ->
-                generatedImageFlagCache.put(cacheKey, found)
-            }
+    // 生成图判定：live（流式进行中）直接跳过扫描 —— 此时 base64 尚未写完，扫描必然 miss，
+    // 却会在每个流式分片对整段（可能数 MB）文本跑一次 contains。改为仅在流结束后的稳定文本上判定，
+    // 缓存键也随之从「含 text.length」收敛为「按 message.id」，避免键随每帧变化导致缓存永久失效。
+    val generatedImagePayload = remember(message.id, live) {
+        if (live) {
+            false
+        } else {
+            val cacheKey = message.id
+            generatedImageFlagCache.get(cacheKey)
+                ?: message.text.contains("data:image/", ignoreCase = true).also { found ->
+                    generatedImageFlagCache.put(cacheKey, found)
+                }
+        }
     }
 
     val copyAll = {
@@ -460,11 +467,12 @@ internal fun AssistantBubble(
                 MarkdownText(
                     markdown = message.text,
                     modifier = Modifier.fillMaxWidth(),
-                    contentCacheKey = if (generatedImagePayload) {
-                        "assistant:${message.id}:${message.text.length}"
-                    } else {
-                        null
-                    },
+                    // 统一提供缓存键（只用 message.id，不含 text.length）：
+                    //  - 旧写法仅在有生成图时才给 key，导致普通长回复完全走不到
+                    //    largeMarkdownBlockCache（大文本 LRU）路径，滚动时反复解析；
+                    //  - 且旧键含 text.length，流式输出期间每帧都变，缓存形同失效。
+                    //    消息一旦落定其文本不再变化，id 足以标识内容。
+                    contentCacheKey = "assistant:${message.id}",
                 )
             }
         }

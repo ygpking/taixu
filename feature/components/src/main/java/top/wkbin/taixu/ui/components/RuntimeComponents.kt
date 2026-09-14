@@ -1602,6 +1602,12 @@ fun NoticeBanner(
 /**
  * 🌟 滚动列表平滑渐隐遮罩 (Scroll Fading Edge Mask)
  * 为列表顶部和底部提供平滑的 Alpha 渐隐过渡，消除与 TopBar / BottomBar 之间的生硬切边。
+ *
+ * ⚠️ 性能提示（2026-09-14）：本实现依赖 `CompositingStrategy.Offscreen` ——
+ * `BlendMode.DstIn` 要求先渲染到独立离屏缓冲才能做遮罩。挂在 LazyColumn 上时，
+ * **滚动期间每帧都要全量离屏合成**，屏幕越大代价越高，表现为「静止不卡、快速滑动明显掉帧」。
+ * 消息列表已改用 [ScrollFadeOverlay]（列表外叠加渐变，代价近乎为零）。
+ * 仅在「非滚动、或面积很小」的场景继续使用本修饰符。
  */
 fun Modifier.scrollFadingEdge(
     top: Dp = 14.dp,
@@ -1633,5 +1639,55 @@ fun Modifier.scrollFadingEdge(
             ),
             blendMode = BlendMode.DstIn,
         )
+    }
+}
+
+/**
+ * 🌟 滚动渐隐遮罩（轻量版）：绘制为**叠加在滚动内容之上**的两段渐变，不使用离屏合成。
+ *
+ * 与 [scrollFadingEdge] 的取舍：
+ *  - scrollFadingEdge 用 DstIn 真正「擦除」内容 alpha（效果更干净），
+ *    但要求 Offscreen 合成 → 滚动每帧全量离屏渲染，是滑动卡顿的头号来源。
+ *  - 本实现改为「在内容上方叠一层从背景色到透明的渐变」，视觉近似（顶/底自然淡出），
+ *    但**零离屏合成开销**，适合挂在长列表这类滚动频繁、面积大的场景。
+ *
+ * 用法：把滚动内容与本 Overlay 放进同一个 Box，Overlay 位于内容之上：
+ * ```
+ * Box {
+ *     LazyColumn(...)
+ *     ScrollFadeOverlay(top = 4.dp, bottom = 20.dp)
+ * }
+ * ```
+ */
+@Composable
+fun ScrollFadeOverlay(
+    modifier: Modifier = Modifier,
+    top: Dp = 14.dp,
+    bottom: Dp = 14.dp,
+    color: Color = MaterialTheme.colorScheme.surface,
+) {
+    Box(modifier.fillMaxSize()) {
+        if (top > 0.dp) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(top)
+                    .align(Alignment.TopCenter)
+                    .background(
+                        Brush.verticalGradient(listOf(color, color.copy(alpha = 0f))),
+                    ),
+            )
+        }
+        if (bottom > 0.dp) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(bottom)
+                    .align(Alignment.BottomCenter)
+                    .background(
+                        Brush.verticalGradient(listOf(color.copy(alpha = 0f), color)),
+                    ),
+            )
+        }
     }
 }

@@ -527,7 +527,8 @@ private fun RemoteMediaBlock(block: MdRemoteMedia, cacheKey: String? = null) {
             .data(dataModel)
             .size(decodeWidthPx, decodeHeightPx)
             .apply { if (cacheKey != null) memoryCacheKey(cacheKey) }
-            .crossfade(true)
+            // 列表内关闭 crossfade：淡入会给每张图片产生一个动画帧，
+            // 快速滑动时多张图同时切 loaded 状态会叠加成可见掉帧。全屏预览仍保留淡入。
             .build()
     }
     val imageWidth: androidx.compose.ui.unit.Dp
@@ -536,8 +537,12 @@ private fun RemoteMediaBlock(block: MdRemoteMedia, cacheKey: String? = null) {
         imageWidth = minOf(MEDIA_MAX_WIDTH, MEDIA_MAX_HEIGHT * aspectRatio)
         imageHeight = imageWidth / aspectRatio
     } else {
+        // 占位高度按「常见横图 4:3」估算，而非固定 180dp：
+        // 旧写法给的是与真实比例无关的常数高度，图片加载完成回填 aspectRatio 后，
+        // item 高度会从占位值突变到真实值 → LazyColumn 在滚动中反复重测量/位置修正。
+        // 按比例占位把跳变幅度压到最小（多数图片接近该比例），显著减轻滚动抖动。
         imageWidth = MEDIA_MAX_WIDTH
-        imageHeight = MEDIA_PLACEHOLDER_HEIGHT
+        imageHeight = imageWidth / MEDIA_PLACEHOLDER_ASPECT
     }
 
     // AsyncImage avoids SubcomposeAsyncImage's per-item subcomposition overhead in the LazyColumn.
@@ -846,7 +851,8 @@ private fun copyImageSource(context: Context, source: Any, target: Uri) {
 
 private val MEDIA_MAX_WIDTH = 260.dp
 private val MEDIA_MAX_HEIGHT = 340.dp
-private val MEDIA_PLACEHOLDER_HEIGHT = 180.dp
+/** 未加载完成时的占位宽高比（4:3 横图，接近常见截图/生成图比例，可把图片加载后的高度跳变压到最小）。 */
+private const val MEDIA_PLACEHOLDER_ASPECT = 4f / 3f
 private const val MARKDOWN_CACHE_MAX_CHARS = 128_000
 
 @Composable

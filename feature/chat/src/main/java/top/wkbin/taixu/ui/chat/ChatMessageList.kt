@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -60,7 +61,7 @@ import top.wkbin.taixu.ui.components.RuntimeIcon
 import top.wkbin.taixu.ui.components.RuntimeIconName
 import top.wkbin.taixu.ui.components.RuntimeCard
 import top.wkbin.taixu.ui.components.RuntimeCircularProgressIndicator as CircularProgressIndicator
-import top.wkbin.taixu.ui.components.scrollFadingEdge
+import top.wkbin.taixu.ui.components.ScrollFadeOverlay
 import androidx.compose.foundation.lazy.LazyListState
 import top.wkbin.taixu.core.model.QuickPhrase
 import top.wkbin.taixu.core.database.AgentApprovalRequestEntity
@@ -152,9 +153,13 @@ internal fun ChatMessageList(
             }
         }
     }
+    // 性能：原实现给 LazyColumn 挂 scrollFadingEdge（内部依赖 CompositingStrategy.Offscreen），
+    // 使整个列表**滚动期间每帧都要全量离屏合成**——屏幕越大代价越高，
+    // 表现为「静止不卡、快速滑动明显掉帧」。现改为在列表之上叠加轻量渐变（零离屏合成）。
+    Box(modifier = modifier) {
     LazyColumn(
         state = listState,
-        modifier = modifier.scrollFadingEdge(top = 4.dp, bottom = 20.dp),
+        modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(top = 4.dp, bottom = 20.dp),
     ) {
         if (initializing) {
@@ -273,6 +278,9 @@ internal fun ChatMessageList(
             }
             Spacer(Modifier.height(4.dp))
         }
+    }
+        // 轻量渐隐：叠加在列表之上，不使用离屏合成（scrollFadingEdge 的性能替代）。
+        ScrollFadeOverlay(top = 4.dp, bottom = 20.dp)
     }
 }
 
