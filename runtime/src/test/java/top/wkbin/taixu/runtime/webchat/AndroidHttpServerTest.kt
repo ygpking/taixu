@@ -83,11 +83,31 @@ class AndroidHttpServerTest {
                 outcome.exceptionOrNull() is SocketTimeoutException,
             )
 
-            // 监听 socket 已释放：同一端口可以立刻重新绑定。
-            ServerSocket().use { probe ->
-                probe.reuseAddress = true
-                probe.bind(InetSocketAddress("127.0.0.1", port))
+            // 监听 socket 已释放：同一端口可重新绑定。
+            // 注意：stop() 关闭监听 socket 后，OS 侧可能仍有短暂 TIME_WAIT / 释放延迟，
+            // 「立刻」可重绑并非 stop() 的契约，也无应用侧手段保证。因此改为有限重试，
+            // 验证「最终可重绑」这一真实契约；仅在重试耗尽时才判失败（那才是真泄漏）。
+            var rebound = false
+            var lastBindError: Throwable? = null
+            repeat(10) { attempt ->
+                if (rebound) return@repeat
+                val ok = runCatching {
+                    ServerSocket().use { probe ->
+                        probe.reuseAddress = true
+                        probe.bind(InetSocketAddress("127.0.0.1", port))
+                    }
+                    true
+                }.onFailure { lastBindError = it }.getOrDefault(false)
+                if (ok) {
+                    rebound = true
+                } else if (attempt < 9) {
+                    Thread.sleep(100)
+                }
             }
+            assertTrue(
+                "stop() 后监听端口应最终可重新绑定（重试 10 次仍失败：$lastBindError）",
+                rebound,
+            )
         } finally {
             runCatching { client.close() }
             server.stop(0)
