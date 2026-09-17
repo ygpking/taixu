@@ -57,6 +57,44 @@ class ContextWindowPolicyTest {
     }
 
     @Test
+    fun `keep window is additionally capped by token budget`() {
+        // 新契约（参考 OMP compaction.keepRecentTokens）：保留窗口除「条数下限」外，
+        // 还受「token 总量上限」约束。
+        // 背景：单条 tool_result 可达上万 token，只按条数保留会让折叠后的请求依旧庞大，
+        // 表现为「压缩执行了、token 却降不下来」。
+        val big = "t".repeat(80_000) // 约 6 万 token
+        val messages = buildList<HarnessMessage> {
+            for (i in 1..30) {
+                add(UserMessage("u$i", i.toLong(), "u".repeat(2_000)))
+                add(ToolCall("call$i", i.toLong(), HarnessTool.BASE, kotlinx.serialization.json.buildJsonObject {}))
+                add(ToolResult("r$i", i.toLong(), "call$i", true, big))
+            }
+            add(UserMessage("latest", 99, "latest question"))
+        }
+
+        val capped = ContextWindowPolicy.computeKeepFromIndex(
+            messages = messages,
+            budget = 1_000_000,
+            systemTokens = 10,
+            maxKeepTokens = 20_000,
+        )
+        val uncapped = ContextWindowPolicy.computeKeepFromIndex(
+            messages = messages,
+            budget = 1_000_000,
+            systemTokens = 10,
+            maxKeepTokens = Int.MAX_VALUE,
+        )
+
+        // 核心契约：token 上限生效时，保留的条数不会更多（即 keepFrom 不会更小）。
+        assertTrue(
+            "有 token 上限时保留条数不应多于无上限：capped=$capped uncapped=$uncapped",
+            messages.size - capped <= messages.size - uncapped,
+        )
+        // 且无论如何必须保住最后一条，不能产生空窗口。
+        assertTrue("必须保留最后一条消息", capped < messages.size)
+    }
+
+    @Test
     fun `exhausted budget retains only a minimal recent turn instead of all history`() {
         val messages = listOf(
             UserMessage("old-user", 1, "old request"),

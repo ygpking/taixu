@@ -54,6 +54,16 @@ object ContextWindowPolicy {
     /** 折叠线比例上限。 */
     const val MAX_FOLDING_RATIO_PERCENT = 100
 
+    /**
+     * 折叠后保留窗口的 token 总量上限（默认 20,000，与 OMP 的 compaction.keepRecentTokens 对齐）。
+     *
+     * 为什么必须有：`MIN_KEEP_MESSAGES` 只约束「条数」，而单条 tool_result 的 token 量差异巨大
+     * （实测单条可达 1.2 万 token）。若只有条数下限，折叠后仍可能留下十几万 token，
+     * 下一轮请求依旧庞大 —— 表现为「压缩日志有了、token 却降不下来」。
+     * 该值只作为条数下限之上的护栏：永远不会让保留窗口少于最后一条消息。
+     */
+    const val DEFAULT_MAX_KEEP_TOKENS = 20_000
+
     /** 预留：completion 输出空间（协议硬需求，与模型档位无关）。 */
     private const val RESERVED_OUTPUT_TOKENS = 8_192
     /** 预留：工具/MCP schema 空间（协议硬需求，与模型档位无关）。 */
@@ -71,6 +81,13 @@ object ContextWindowPolicy {
      * 该下限受预算约束：小窗口模型会自动少保，但至少保住最近一轮。
      *
      * 用户可在「设置 → 压缩触发阈值（用户轮次）」覆盖该下限，见 [keepMessagesForRounds]。
+     *
+     * ⚠️ 与 token 上限的关系（重要）：本常量只是「条数」维度的**下限**，
+     * 最终保留窗口还要再过一道 [DEFAULT_MAX_KEEP_TOKENS] 的 token 上限护栏。
+     * 当两者冲突时（例如保留 10 条就会超过 token 上限），**token 上限优先**——
+     * 因为按条数保留无法约束体量：单条 tool_result 可达上万 token，
+     * 硬保 10 条会让折叠后的请求依旧巨大（压缩了等于没压）。
+     * 唯一不可牺牲的是「至少保住最后一条消息」，以保证 provider transcript 非空。
      */
     const val MIN_KEEP_MESSAGES = 10
 
@@ -203,9 +220,10 @@ object ContextWindowPolicy {
         subagentTokens: Int = 0,
         minKeepMessages: Int = MIN_KEEP_MESSAGES,
         foldingRatioPercent: Int = DEFAULT_FOLDING_RATIO_PERCENT,
+        maxKeepTokens: Int = DEFAULT_MAX_KEEP_TOKENS,
     ): EffectiveContextUsage {
         val keepFrom = if (compactionEnabled) {
-            computeKeepFromIndex(messages, budget, systemTokens, minKeepMessages, foldingRatioPercent)
+            computeKeepFromIndex(messages, budget, systemTokens, minKeepMessages, foldingRatioPercent, maxKeepTokens)
         } else {
             0
         }
@@ -274,6 +292,10 @@ object ContextWindowPolicy {
      * @param foldingRatioPercent 折叠线比例（百分比，默认 100 = 与旧行为一致）。
      *   由用户设置「折叠线比例」传入，使历史可在预算的一部分处就开始折叠，
      *   避免长会话长期以数十万 token 的请求运行。
+     * @param maxKeepTokens 保留窗口的 token 总量上限（默认 [DEFAULT_MAX_KEEP_TOKENS]，参考 OMP
+     *   的 keepRecentTokens=20000）。这是「条数下限」之上的第二道护栏：只按条数保留会失控
+     *   （单条 tool_result 可达上万 token，10 条就可能留下十几万 token），
+     *   导致压缩执行了但下一轮请求依然巨大。
      */
     fun computeKeepFromIndex(
         messages: List<HarnessMessage>,
@@ -281,6 +303,7 @@ object ContextWindowPolicy {
         systemTokens: Int,
         minKeepMessages: Int = MIN_KEEP_MESSAGES,
         foldingRatioPercent: Int = DEFAULT_FOLDING_RATIO_PERCENT,
+        maxKeepTokens: Int = DEFAULT_MAX_KEEP_TOKENS,
     ): Int {
         if (messages.size <= 1) return 0
         if (budget <= 0) {
@@ -308,14 +331,61 @@ object ContextWindowPolicy {
             if (used + tokens > limit) {
                 // 强制保留最近 minKeepMessages 条（即使已超 limit），避免「只留 2 条」导致
                 // 模型记不住前因。上限受预算约束：小窗口模型自动少保，但至少保住最近一轮。
+                //
+                // ⚠️ 关键：条数下限必须再受「保留 token 上限」约束（参考 OMP 的 keepRecentTokens）。
+                // 只按条数保留会失控——真实数据里单条 tool_result 可达 1.2 万 token，
+                // MIN_KEEP_MESSAGES=10 条就可能留下十几万 token，导致「压缩看起来执行了、
+                // 但下一轮请求依然几十万 token」，这是历史摘要压不下去的根因。
+                // 因此在满足条数下限的同时，把保留窗口的 token 总量也夹到 maxKeepTokens 以内；
+                // 若单条消息本身就超上限，则至少保住它自身（不产生空窗口）。
                 val forcedFloor = ((messages.size - minKeepMessages).coerceAtLeast(0))
-                val candidate = (index + 1).coerceIn(0, messages.lastIndex).coerceAtMost(forcedFloor)
+                var candidate = (index + 1).coerceIn(0, messages.lastIndex).coerceAtMost(forcedFloor)
+                candidate = shrinkToTokenCap(messages, candidate, maxKeepTokens)
                 val tokenBoundary = alignKeepFromIndex(messages, candidate)
                 return tokenBoundary
             }
             used += tokens
         }
         return 0
+    }
+
+    /**
+     * 在保留窗口的 token 总量超过 [maxKeepTokens] 时，从窗口最前端继续向内收缩，
+     * 直到总量落回上限内（或只剩最后一条）。
+     *
+     * 语义：`keepFromIndex` 越大表示保留得越少。本函数只把该值继续推大（保留更少），
+     * 不会反向保留更多，因此不会与「最少保留条数」的语义冲突——它是条数下限之上的
+     * 第二道「token 上限」护栏。
+     */
+    private fun shrinkToTokenCap(
+        messages: List<HarnessMessage>,
+        keepFromIndex: Int,
+        maxKeepTokens: Int,
+    ): Int {
+        if (maxKeepTokens <= 0 || keepFromIndex <= 0) return keepFromIndex
+        var boundary = keepFromIndex.coerceIn(0, messages.lastIndex)
+        // 从窗口末尾往前累计；一旦超上限，就把 boundary 推到该条之后。
+        var used = 0
+        for (index in messages.lastIndex downTo boundary) {
+            val tokens = messageTokens(messages[index])
+            if (used + tokens > maxKeepTokens) {
+                // 至少保留最后一条：若连最后一条自身都超上限，则保留它（index == lastIndex 时）
+                val next = (index + 1).coerceIn(boundary, messages.lastIndex)
+                return next
+            }
+            used += tokens
+        }
+        return boundary
+    }
+
+    /** 单条消息的 token 估算（与 computeKeepFromIndex 内的口径保持一致）。 */
+    private fun messageTokens(message: HarnessMessage): Int = when (message) {
+        is CapabilityEvent -> 0
+        is UserMessage -> estimateTokens(message.text) + message.imageUrls.size * 1_000
+        is AssistantText -> estimateTokens(assistantTextForContext(message.text)) +
+            estimateTokens(message.reasoning.orEmpty())
+        is ToolResult -> estimateTokens(message.output)
+        is ToolCall -> estimateTokens(message.args.toString()) + estimateTokens(message.reasoning.orEmpty())
     }
 
     private fun minimalKeepFromIndex(messages: List<HarnessMessage>): Int {

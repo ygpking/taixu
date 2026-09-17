@@ -637,6 +637,10 @@ class SettingsViewModel @Inject constructor(
     val contextFoldingRatioPercent: StateFlow<Int> = settingsDataStore.contextFoldingRatioPercent
         .stateIn(viewModelScope, SharingStarted.Eagerly, 100)
 
+    /** 折叠后保留窗口的 token 上限（默认 20000，参考 OMP keepRecentTokens）。 */
+    val contextMaxKeepTokens: StateFlow<Int> = settingsDataStore.contextMaxKeepTokens
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 20_000)
+
     val maxToolsPerRound: StateFlow<Int> = settingsDataStore.maxToolsPerRound
         .stateIn(viewModelScope, SharingStarted.Eagerly, 12)
 
@@ -681,6 +685,11 @@ class SettingsViewModel @Inject constructor(
     /** 折叠线比例：10~100（%）。调小则更早折叠历史，降低单次请求 token 量。 */
     fun setContextFoldingRatioPercent(value: Int) {
         viewModelScope.launch { settingsDataStore.setContextFoldingRatioPercent(value) }
+    }
+
+    /** 保留窗口 token 上限：2000~200000。约束折叠后剩余历史的 token 总量。 */
+    fun setContextMaxKeepTokens(value: Int) {
+        viewModelScope.launch { settingsDataStore.setContextMaxKeepTokens(value) }
     }
 
     fun setMaxToolRounds(value: Int) {

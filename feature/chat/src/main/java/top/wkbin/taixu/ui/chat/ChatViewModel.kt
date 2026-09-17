@@ -607,17 +607,19 @@ class ChatViewModel @Inject constructor(
             defaultBudget = defaultBudget,
         )
     }.combine(
-        // 三个设置项一起并入：压缩开关 + 用户轮次阈值 + 折叠线比例。
-        // 后两者此前分别是僵尸设置/不存在；现在面板与引擎都用同一组值做折叠决策，保证同源。
+        // 四个设置项一起并入：压缩开关 + 用户轮次阈值 + 折叠线比例 + 保留窗口 token 上限。
+        // 面板与引擎都用同一组值做折叠决策，保证同源（避免再次出现「两张皮」）。
         kotlinx.coroutines.flow.combine(
             settingsDataStore.contextCompactionEnabled,
             settingsDataStore.contextCompactionThreshold,
             settingsDataStore.contextFoldingRatioPercent,
-        ) { enabled, threshold, ratio -> Triple(enabled, threshold, ratio) },
+            settingsDataStore.contextMaxKeepTokens,
+        ) { enabled, threshold, ratio, maxKeep -> CompactionTuning(enabled, threshold, ratio, maxKeep) },
     ) { inputs, compaction ->
-        val compactionEnabled = compaction.first
-        val compactionThreshold = compaction.second
-        val foldingRatioPercent = compaction.third
+        val compactionEnabled = compaction.enabled
+        val compactionThreshold = compaction.threshold
+        val foldingRatioPercent = compaction.ratio
+        val maxKeepTokens = compaction.maxKeepTokens
         val activeModel = inputs.activeModel
         val pureChat = activeModel?.pureChatMode == true
         val toolDisabled = pureChat || activeModel?.toolCallMode.equals("disabled", ignoreCase = true)
@@ -652,6 +654,8 @@ class ChatViewModel @Inject constructor(
             minKeepMessages = ContextWindowPolicy.keepMessagesForRounds(compactionThreshold),
             // 同样与引擎同源：折叠线比例参与折叠决策。
             foldingRatioPercent = foldingRatioPercent,
+            // 保留窗口 token 上限（条数下限之上的护栏），与引擎同源。
+            maxKeepTokens = maxKeepTokens,
         )
         val totalPromptTokens = inputs.currentMessages.filterIsInstance<AssistantText>().mapNotNull { it.promptTokens?.toLong() }.sum()
         val totalCachedTokens = inputs.currentMessages.filterIsInstance<AssistantText>().mapNotNull { it.cachedTokens?.toLong() }.sum()
@@ -1445,6 +1449,16 @@ enum class ComposerSendMode(val queue: PromptQueue) {
     STEER(PromptQueue.STEER),
     NEXT_RUN(PromptQueue.NEXT_RUN),
 }
+
+/**
+ * 面板侧折叠调参（与引擎读取同一组 DataStore 偏好，保证两侧决策同源）。
+ */
+private data class CompactionTuning(
+    val enabled: Boolean,
+    val threshold: Int,
+    val ratio: Int,
+    val maxKeepTokens: Int,
+)
 
 private data class ContextUsageInputs(
     val currentMessages: List<HarnessMessage>,

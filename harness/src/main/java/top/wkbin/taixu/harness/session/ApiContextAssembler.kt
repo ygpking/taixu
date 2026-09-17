@@ -56,6 +56,10 @@ class ApiContextAssembler @Inject constructor(
         // 与面板同源读取同一个偏好，保证两侧折叠决策一致。
         val foldingRatioPercent = runCatching { settingsDataStore.contextFoldingRatioPercent.first() }
             .getOrDefault(ContextWindowPolicy.DEFAULT_FOLDING_RATIO_PERCENT)
+        // 「保留窗口 token 上限」：只按条数保留会失控（单条 tool_result 可达上万 token），
+        // 该值作为条数下限之上的护栏，把折叠后剩余窗口的 token 总量夹住。
+        val maxKeepTokens = runCatching { settingsDataStore.contextMaxKeepTokens.first() }
+            .getOrDefault(ContextWindowPolicy.DEFAULT_MAX_KEEP_TOKENS)
         val toolCallMode = if (model.pureChatMode) ToolCallMode.DISABLED else model.toolCallMode
 
         var compactedContext = compactionManager.project(sessId)
@@ -96,6 +100,7 @@ class ApiContextAssembler @Inject constructor(
                         ContextWindowPolicy.estimateTokens(compactedContext.summary.orEmpty()),
                     minKeepMessages = minKeepMessages,
                     foldingRatioPercent = foldingRatioPercent,
+                    maxKeepTokens = maxKeepTokens,
                 )
             } else {
                 0

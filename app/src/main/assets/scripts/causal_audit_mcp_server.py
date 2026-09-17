@@ -397,12 +397,10 @@ def rule_unremembered_heavy_composition(root, files):
 
 # ---------------------------------------------------------------- R8
 def rule_flatmap_once_snapshot(root, files):
-    """R8 flow{} 内一次性 emit 快照 + 上游去重 → 数据变化不刷新。
+    """R8 flow{} 一次性 emit 快照 + 上游去重 → 数据变化不刷新。
 
-    这是 D4（草稿便签）与 activeCompaction 的病灶形态：
-      combine(...) { ... }.distinctUntilChanged().flatMapLatest { flow { emit(dao.read(id)) } }
-    上游去重后值不变、且下游只读一次，DB 变化自然不传导。
-    """
+    只报真正会吞掉数据源更新的形态：combine 的输出必须是恒定单参数，
+    而不是把所有触发源纳入 Pair/data class。"""
     findings = []
     for path in files:
         src = strip_comments(read(path))
@@ -410,11 +408,22 @@ def rule_flatmap_once_snapshot(root, files):
         for i, line in enumerate(lines):
             if "flatMapLatest" not in line:
                 continue
-            window = "\n".join(lines[i:i + 10])
+            window = "\n".join(lines[max(0, i - 15):i + 10])
             if not re.search(r"flow\s*\{[^}]*emit\s*\(", window, re.S):
                 continue
-            back = "\n".join(lines[max(0, i - 12):i])
+            back = "\n".join(lines[max(0, i - 20):i])
             if "distinctUntilChanged" not in back:
+                continue
+            # { a, _ -> a } 才是恒定输出；{ a, b -> a to b } 不报。
+            constant_output = re.search(
+                r"combine\s*\([^)]*\)\s*\{\s*([A-Za-z_]\w*)\s*(?:,\s*_\s*)?->\s*\1\s*\}",
+                back.replace("\n", " "),
+            )
+            if "combine" in back and not constant_output:
+                continue
+            # observeXxx 返回 Flow，本身不是一次性快照。
+            emit_call = re.search(r"emit\s*\([^\n)]*\.\s*(\w+)\s*\(", window)
+            if emit_call and emit_call.group(1).startswith("observe"):
                 continue
             findings.append({
                 "rule": "R8_flatmap_once_snapshot",
@@ -422,9 +431,8 @@ def rule_flatmap_once_snapshot(root, files):
                 "file": os.path.relpath(path, root),
                 "line": i + 1,
                 "code": line.strip()[:150],
-                "note": ("上游含 distinctUntilChanged，下游 flatMapLatest 内用 flow{emit(一次性读取)}："
-                         "上游值不变时不会重读，数据源后续变化无法传导（UI 表现为「改了没反应」）。"
-                         "建议改为订阅数据源的 Flow（如 DAO 的 observeXxx）。"),
+                "note": ("上游去重输出未包含所有触发源，下游 flatMapLatest 内只 emit 一次性读取，"
+                         "数据源后续变化无法传导。建议订阅 DAO 的 observeXxx Flow，或把所有触发源纳入去重键。"),
             })
     return findings
 
@@ -651,6 +659,148 @@ def rule_offscreen_compositing_in_scroll(root, files):
     return findings
 
 
+# ---------------------------------------------------------------- R13
+COMPOSE_EXPENSIVE = re.compile(
+    r"(filterIsInstance|associateBy|groupBy|sortedBy|indexOfFirst|indexOfLast|\.sumOf|\.sum\(\))"
+)
+
+
+def rule_composable_heavy_full_list(root, files):
+    """R13 Composable 内把全量 messages/list 做 O(n) 派生后直接喂给 UI。
+
+    与 R7 的区别：R7 只找裸 val；R13 专门找**已经包在 remember 里的全量派生**，
+    判断其 key 是否为整个列表引用。`remember(messages) { messages.filter... }` 在流式
+    每个 token 块换新 list 时仍会失效，导致 O(n) 重建；如果这个值用于 LazyColumn
+    / BottomSheet 的全量时间线，就是「聊久了/打开面板卡」的候选因果链。
+
+    判定为 P2 提示：静态分析无法判断 messages 是否稳定或列表长度是否很小，需人工确认。
+    """
+    findings=[]
+    for path in files:
+        src=strip_comments(read(path))
+        if '@Composable' not in src: continue
+        lines=src.split('\n')
+        for i,line in enumerate(lines):
+            # 只看对**全量列表**做派生的 remember：不能把单对象 editTarget 等价处理。
+            if 'remember' not in line or 'messages' not in line:
+                continue
+            # R13 的目标是显式的列表消费；remember(messages, id) 但只做一次定位不够重，
+            # filterIsInstance 仍属候选，因此保留；其余依赖状态的情况必须含 messages。
+            window='\n'.join(lines[i:i+12])
+            if not COMPOSE_EXPENSIVE.search(window): continue
+            findings.append({
+                'rule':'R13_composable_heavy_full_list',
+                'severity':'P2',
+                'file':os.path.relpath(path,root),
+                'line':i+1,
+                'code':line.strip()[:160],
+                'note':'Composable 中以整个 messages/events 列表作为 remember key，并在块内做全量 filter/map/associate/sum。'
+                      '流式列表更新会使 remember 每次失效；长会话或时间线面板可能重复 O(n) 重建。'
+                      '建议用 revision key、增量索引，或把派生结果下沉到 ViewModel。'
+            })
+    return findings
+
+
+# ---------------------------------------------------------------- R14
+
+def rule_stats_full_payload_load(root, files):
+    """R14 统计/用量代码把完整 payloadJson 列表加载到 Kotlin 内存。
+
+    真实事故：StatsRepository.buildSnapshot 用 listEntriesInRange() 搬运全部实体（含巨大
+    payloadJson），再逐条解析，256MB 堆 OOM。统计应使用 SQL COUNT/GROUP BY/投影聚合。
+    判定只针对文件名/路径含 Stats/Usage/Analytics 的 Kotlin 文件，避免把正常聊天分支读取
+    误报；若同时出现 listEntriesInRange 与 payloadJson/json.parseToJsonElement，则报 P1。
+    已改成 aggregateUsageInRange 的文件不会命中。
+    """
+    findings=[]
+    for path in files:
+        relpath=os.path.relpath(path,root)
+        name=os.path.basename(path).lower()
+        if not any(x in name or x in relpath.lower() for x in ('stats','usage','analytics')):
+            continue
+        src=strip_comments(read(path))
+        if 'listEntriesInRange' not in src:
+            continue
+        if 'payloadJson' not in src and 'parseToJsonElement' not in src:
+            continue
+        findings.append({
+            'rule':'R14_stats_full_payload_load',
+            'severity':'P1',
+            'file':relpath,
+            'line':next((i+1 for i,l in enumerate(src.split('\n')) if 'listEntriesInRange' in l),1),
+            'note':'统计/用量路径读取 listEntriesInRange 的完整实体并触碰 payloadJson/JSON 解析，'
+                  '可能把大量大字段搬入堆导致 OOM。应改为 SQL 聚合投影（COUNT/GROUP BY/json_extract）'
+                  '且对非 JSON 外置占位使用 json_valid 守卫。'
+        })
+    return findings
+
+
+# ---------------------------------------------------------------- R15
+
+def rule_json_extract_without_guard(root, files):
+    """R15 SQL 对 payloadJson 使用 json_extract 却没有 json_valid 守卫。
+
+    真实数据存在 @@TAIXU_BLOB@@ 外置占位串；未守卫的 json_extract 会抛 malformed JSON，
+    使统计查询整体失败。只检查 SQL/DAO 文件中出现 json_extract(payloadJson) 的文件。
+    """
+    findings=[]
+    for path in files:
+        relpath=os.path.relpath(path,root)
+        src=strip_comments(read(path))
+        if 'json_extract' not in src or 'payloadJson' not in src:
+            continue
+        if 'json_valid' in src:
+            continue
+        findings.append({
+            'rule':'R15_json_extract_without_guard',
+            'severity':'P1',
+            'file':relpath,
+            'line':next((i+1 for i,l in enumerate(src.split('\n')) if 'json_extract' in l),1),
+            'note':'对 payloadJson 直接 json_extract，未见 json_valid 守卫；外置 BLOB 占位串/历史脏数据'
+                  '会触发 malformed JSON 并中断整条查询。应使用 CASE WHEN json_valid(payloadJson) THEN ... ELSE ... END。'
+        })
+    return findings
+
+
+# ---------------------------------------------------------------- R16
+
+def rule_keep_by_count_without_token_cap(root, files):
+    """R16 上下文保留只按「条数」限制，缺少「token 总量」上限护栏。
+
+    真实事故（2026-09-14）：太墟折叠逻辑用 MIN_KEEP_MESSAGES(条数) 兜底，但单条
+    tool_result 实测可达上万 token，保留 10 条就可能留下十几万 token ——
+    表现为「压缩执行了、下一轮请求依然巨大」，历史摘要等于没压下去。
+    OMP 的做法是按 token 保留（compaction.keepRecentTokens=20000），而非按条数。
+
+    判定：同一文件内出现「按条数保留」的常量/参数（MIN_KEEP_MESSAGES、keepMessages、
+    minKeepMessages 等），但整份文件未见任何 token 上限概念
+    （maxKeepTokens / keepRecentTokens / tokenCap / MAX_KEEP_TOKENS）。
+    报 P1 提示：条数下限必须再受 token 上限约束。
+    """
+    findings=[]
+    count_markers=('MIN_KEEP_MESSAGES','minKeepMessages','keepMessagesForRounds')
+    cap_markers=('maxKeepTokens','MAX_KEEP_TOKENS','keepRecentTokens','tokenCap')
+    for path in files:
+        relpath=os.path.relpath(path,root)
+        if 'ContextWindowPolicy' not in os.path.basename(path):
+            continue
+        src=strip_comments(read(path))
+        if not any(m in src for m in count_markers):
+            continue
+        if any(m in src for m in cap_markers):
+            continue
+        findings.append({
+            'rule':'R16_keep_by_count_without_token_cap',
+            'severity':'P1',
+            'file':relpath,
+            'line':next((i+1 for i,l in enumerate(src.split('\n')) if any(m in l for m in count_markers)),1),
+            'note':'保留窗口只按「条数」限制，缺少 token 总量上限。单条 tool_result 可达上万 token，'
+                  '仅按条数保留会让折叠后的窗口依旧庞大（压缩了但 token 降不下来）。'
+                  '应像 OMP 的 compaction.keepRecentTokens 那样，为保留窗口再加一个 token 上限护栏。'
+        })
+    return findings
+
+
 # 规则注册表：必须位于所有规则函数定义之后（Python 顺序执行，前置引用会 NameError）。
 RULES = [
     ("R1_duplicate_constant", rule_duplicate_constants),
@@ -663,6 +813,10 @@ RULES = [
     ("R8_flatmap_once_snapshot", rule_flatmap_once_snapshot),
     ("R9_assert_argument_order", rule_assert_argument_order),
     ("R10_unused_import", rule_unused_import),
+    ("R13_composable_heavy_full_list", rule_composable_heavy_full_list),
+    ("R16_keep_by_count_without_token_cap", rule_keep_by_count_without_token_cap),
+    ("R14_stats_full_payload_load", rule_stats_full_payload_load),
+    ("R15_json_extract_without_guard", rule_json_extract_without_guard),
     ("R12_offscreen_compositing_in_scroll", rule_offscreen_compositing_in_scroll),
 ]
 
@@ -754,6 +908,10 @@ def tool_list_rules(_args):
         "R8_flatmap_once_snapshot": "上游去重 + flatMapLatest 内一次性读取 → 数据源变化不传导（改了没反应）",
         "R9_assert_argument_order": "JUnit4 断言参数顺序写反 assertTrue(条件, 消息) → 编译报类型不匹配",
         "R10_unused_import": "未使用的 import（仅卫生问题，不影响编译）",
+        "R13_composable_heavy_full_list": "Composable 用整个列表作 remember key 并做全量派生（长会话/时间线面板性能候选）",
+        "R16_keep_by_count_without_token_cap": "上下文保留只按条数、缺 token 总量上限（压缩后 token 降不下来）",
+        "R14_stats_full_payload_load": "统计路径全量加载含 payloadJson 的实体（OOM 风险）",
+        "R15_json_extract_without_guard": "json_extract(payloadJson) 缺 json_valid 守卫（脏数据会 malformed JSON）",
         "R12_offscreen_compositing_in_scroll": "滚动容器上使用 CompositingStrategy.Offscreen → 滚动每帧离屏合成（滑动卡顿头号成因）",
     }
     for name, _fn in RULES:

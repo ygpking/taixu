@@ -99,6 +99,7 @@ fun AgentSettingsScreen(
     val maxConsecutiveFailures by viewModel.maxConsecutiveFailures.collectAsStateWithLifecycle()
     val contextBudgetTokens by viewModel.contextBudgetTokens.collectAsStateWithLifecycle()
     val contextFoldingRatioPercent by viewModel.contextFoldingRatioPercent.collectAsStateWithLifecycle()
+    val contextMaxKeepTokens by viewModel.contextMaxKeepTokens.collectAsStateWithLifecycle()
     val skills by viewModel.allSkills.collectAsStateWithLifecycle()
     val subagents by viewModel.allSubagents.collectAsStateWithLifecycle()
     val autoSubagentDelegation by viewModel.autoSubagentDelegationEnabled.collectAsStateWithLifecycle()
@@ -285,6 +286,11 @@ fun AgentSettingsScreen(
                             currentValue = contextFoldingRatioPercent,
                             budget = contextBudgetTokens,
                             onValueChange = viewModel::setContextFoldingRatioPercent,
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        ContextMaxKeepTokensSliderRow(
+                            currentValue = contextMaxKeepTokens,
+                            onValueChange = viewModel::setContextMaxKeepTokens,
                         )
                     }
                 }
@@ -986,6 +992,47 @@ private fun ThresholdSliderRow(
             onValueChangeFinished = { onThresholdChange(sliderVal.toInt()) },
             valueRange = 5f..40f,
             steps = 6,
+        )
+    }
+}
+
+@Composable
+private fun ContextMaxKeepTokensSliderRow(
+    currentValue: Int,
+    onValueChange: (Int) -> Unit,
+) {
+    var sliderVal by remember(currentValue) { mutableFloatStateOf(currentValue.toFloat()) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("折叠后保留窗口上限", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold))
+            Text(
+                "${sliderVal.toInt()} tok",
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        Text(
+            "折叠后最多保留多少 token 的近期历史。调小可让长会话的每次请求更小（省费用、降首字延迟）；" +
+                "调大则保留更多上下文细节。单条消息超上限时仍会保住它自身，不会出现空窗口。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Slider(
+            value = sliderVal,
+            onValueChange = { sliderVal = it },
+            onValueChangeFinished = { onValueChange(sliderVal.toInt()) },
+            // 与存储层 SettingsDataStore.setContextMaxKeepTokens 的 coerceIn(2000, 200000) 对齐
+            valueRange = 2_000f..200_000f,
+            steps = 98, // 步长约 2 千 tok
         )
     }
 }
