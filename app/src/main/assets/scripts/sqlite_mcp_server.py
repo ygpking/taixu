@@ -34,12 +34,23 @@ def call_tool(db_path, name, args):
             query = str(args.get("query", "")).strip()
             if not query.lower().startswith(("select", "with", "pragma", "explain")):
                 raise ValueError("read_query 只允许 SELECT/WITH/PRAGMA/EXPLAIN")
-            rows = [dict(row) for row in db.execute(query)]
+            # 启用只读模式防止写入操作
+            try:
+                db.execute("PRAGMA query_only = ON")
+                rows = [dict(row) for row in db.execute(query)]
+                db.execute("PRAGMA query_only = OFF")
+            except sqlite3.OperationalError:
+                # 如果 query_only 不支持，回退到直接执行
+                rows = [dict(row) for row in db.execute(query)]
             return json.dumps(rows, ensure_ascii=False)
         if name == "write_query":
             query = str(args.get("query", "")).strip()
             if not query or query.lower().startswith(("select", "pragma")):
                 raise ValueError("write_query 需要写入或 DDL 语句")
+            # 阻止危险的 PRAGMA 和函数调用
+            dangerous_patterns = ["attach", "detach", "load_extension", ".import", ".shell"]
+            if any(pattern in query.lower() for pattern in dangerous_patterns):
+                raise ValueError("包含危险操作")
             cursor = db.execute(query)
             db.commit()
             return json.dumps({"affected_rows": cursor.rowcount}, ensure_ascii=False)
@@ -50,7 +61,8 @@ def call_tool(db_path, name, args):
             table = str(args.get("table_name", "")).strip()
             if not table or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for ch in table):
                 raise ValueError("table_name 无效")
-            rows = db.execute("PRAGMA table_info(\"" + table + "\")").fetchall()
+            # 表名已严格验证只包含字母数字和下划线，此处安全
+            rows = db.execute('PRAGMA table_info("{}")'.format(table)).fetchall()
             return json.dumps([dict(row) for row in rows], ensure_ascii=False)
         raise ValueError("未知工具: " + name)
 

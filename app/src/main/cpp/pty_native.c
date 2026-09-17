@@ -21,13 +21,23 @@
 static char **strings_array(JNIEnv *env, jobjectArray array) {
     if (array == NULL) return NULL;
     int n = (*env)->GetArrayLength(env, array);
+    if (n < 0 || n > 10000) return NULL;  // 防止整数溢出和过大分配
     char **result = calloc((size_t)n + 1, sizeof(char *));
     if (result == NULL) return NULL;
     for (int i = 0; i < n; i++) {
         jstring s = (jstring)(*env)->GetObjectArrayElement(env, array, i);
         if (s == NULL) continue;
         const char *cs = (*env)->GetStringUTFChars(env, s, NULL);
+        if (cs == NULL) {
+            free_strings(result);
+            return NULL;
+        }
         result[i] = strdup(cs);
+        if (result[i] == NULL) {
+            (*env)->ReleaseStringUTFChars(env, s, cs);
+            free_strings(result);
+            return NULL;
+        }
         (*env)->ReleaseStringUTFChars(env, s, cs);
         (*env)->DeleteLocalRef(env, s);
     }
@@ -112,6 +122,7 @@ Java_top_wkbin_taixu_runtime_pty_NativePty_readFd(
     JNIEnv *env, jclass clazz, jint fd, jbyteArray buffer) {
     jsize len = (*env)->GetArrayLength(env, buffer);
     if (len <= 0) return 0;
+    if (len > 1048576) return -1;  // 限制最大读取 1MB，防止过大分配
     jbyte *tmp = (jbyte *)malloc((size_t)len);
     if (tmp == NULL) return -1;
     ssize_t n = read((int)fd, tmp, (size_t)len);
@@ -126,6 +137,8 @@ JNIEXPORT jint JNICALL
 Java_top_wkbin_taixu_runtime_pty_NativePty_writeFd(
     JNIEnv *env, jclass clazz, jint fd, jbyteArray buffer, jint offset, jint length) {
     if (length <= 0) return 0;
+    if (length > 1048576) return -1;  // 限制最大写入 1MB
+    if (offset < 0 || offset + length > (*env)->GetArrayLength(env, buffer)) return -1;
     jbyte *tmp = (jbyte *)malloc((size_t)length);
     if (tmp == NULL) return -1;
     (*env)->GetByteArrayRegion(env, buffer, offset, length, tmp);

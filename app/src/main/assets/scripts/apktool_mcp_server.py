@@ -14,12 +14,19 @@
 # ==============================================================================
 import json
 import os
+import random
 import shutil
 import subprocess
 import sys
 import tempfile
 
 MAX_OUTPUT_CHARS = 60000  # 单次工具输出上限，防止海量日志撑爆上下文
+
+
+def get_default_storepass():
+    """生成随机密钥库密码，避免硬编码凭证"""
+    chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    return "".join(random.choice(chars) for _ in range(12))
 
 
 def run(cmd, timeout=600):
@@ -166,7 +173,7 @@ def tool_sign_apk(args):
             "-alias", "taixu",
             "-keyalg", "RSA", "-keysize", "2048",
             "-validity", "10000",
-            "-storepass", "taixu123", "-keypass", "taixu123",
+            "-storepass", get_default_storepass(), "-keypass", get_default_storepass(),
             "-dname", "CN=Taixu Debug, OU=Taixu, O=Taixu, C=CN",
         ])
         if not ok:

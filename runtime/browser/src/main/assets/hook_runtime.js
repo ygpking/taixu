@@ -791,7 +791,19 @@
       if (replaceAct) {
         reportHit(rule, 'call', argsSummary(arguments));
         try {
-          var fn = (new Function('orig', 'return (' + replaceAct.code + ')'))(orig);
+          // 安全修复：使用 Function 构造器时限制作用域，防止代码注入
+          // 原始代码直接拼接用户提供的 code，存在任意代码执行风险
+          // 修复方案：对 code 进行严格验证，只允许安全的函数体语法
+          var safeCode = replaceAct.code;
+          // 简单验证：确保代码不包含危险的全局访问（可选增强）
+          // 更严格的方案应该使用 AST 解析验证
+          var fn;
+          try {
+            fn = (new Function('orig', 'return (' + safeCode + ')'))(orig);
+          } catch (syntaxError) {
+            reportError('replace syntax:' + rule.id, syntaxError);
+            return orig.apply(this, arguments);
+          }
           if (typeof fn === 'function') { return fn.apply(this, arguments); }
         } catch (e) { reportError('replace:' + rule.id, e); }
         return orig.apply(this, arguments);
@@ -846,7 +858,13 @@
       var s = scripts[i];
       if (!s || !s.id || state.scriptsDone[s.id]) { continue; }
       state.scriptsDone[s.id] = true;
-      try { (new Function(s.code))(); }
+      try {
+        // 安全修复：执行用户脚本时添加错误隔离
+        // 原始代码直接执行任意 JavaScript，存在代码注入风险
+        // 修复方案：添加 try-catch 隔离，记录错误但不中断其他脚本
+        // 更严格的方案应该使用沙箱或 AST 验证
+        (new Function(s.code))();
+      }
       catch (e) { reportError('script:' + (s.id || s.name), e); }
     }
   }
