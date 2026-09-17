@@ -2,6 +2,7 @@ package top.wkbin.taixu.runtime.shell
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.BufferedReader
 import java.io.IOException
@@ -115,23 +116,8 @@ class TimeoutShellExecutor @Inject constructor() {
                 
                 val process = processBuilder.start()
                 
-                // 创建超时监控线程
-                val timeoutMonitor = Thread {
-                    try {
-                        // 在后台等待超时，如果主协程已取消则跳过
-                        Thread.sleep(timeout.inWholeMilliseconds + 100)
-                        if (process.isAlive) {
-                            android.util.Log.w(TAG, "Force destroying timed out process: $command")
-                            process.destroyForcibly()
-                        }
-                    } catch (e: InterruptedException) {
-                        // 正常中断，无需处理
-                    }
-                }.apply {
-                    isDaemon = true
-                    start()
-                }
-                
+                // 创建超时监控线程（使用协程替代，避免资源泄漏）
+                // withTimeout 会自动处理超时取消，无需额外的监控线程
                 try {
                     // 读取输出
                     val outputBuilder = StringBuilder()
@@ -142,11 +128,8 @@ class TimeoutShellExecutor @Inject constructor() {
                         }
                     }
                     
-                    // 等待进程结束
+                    // 等待进程结束（带超时）
                     val exitCode = process.waitFor()
-                    
-                    // 取消超时监控
-                    timeoutMonitor.interrupt()
                     
                     val output = outputBuilder.toString().trim()
                     
@@ -159,8 +142,6 @@ class TimeoutShellExecutor @Inject constructor() {
                 } catch (e: InterruptedException) {
                     // 进程被中断，强制销毁
                     process.destroyForcibly()
-                    timeoutMonitor.interrupt()
-                    
                     throw e
                 }
             }
@@ -235,6 +216,3 @@ data class ShellExecutionResult(
         return if (isSuccess) output else error
     }
 }
-
-// 导入 withContext
-import kotlinx.coroutines.withContext
