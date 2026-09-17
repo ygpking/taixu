@@ -177,7 +177,8 @@ class TimeoutException(message: String) : Exception(message)
 class RecursionDepthLimiter(
     private val maxDepth: Int = 5
 ) {
-    private val currentDepth = ThreadLocal<Int>().apply { set(0) }
+    // 修复：ThreadLocal 必须提供初始值，否则 get() 会返回 null 导致 NPE
+    private val currentDepth = ThreadLocal.withInitial { 0 }
 
     /**
      * 检查并进入下一层递归
@@ -185,7 +186,7 @@ class RecursionDepthLimiter(
      * @throws RecursionDepthExceededException 如果超过最大深度
      */
     fun checkAndEnter() {
-        val depth = currentDepth.get()!!
+        val depth = currentDepth.get()
         if (depth >= maxDepth) {
             throw RecursionDepthExceededException(
                 "Maximum recursion depth ($maxDepth) exceeded. Current depth: $depth"
@@ -198,7 +199,7 @@ class RecursionDepthLimiter(
      * 退出当前递归层
      */
     fun exit() {
-        val depth = currentDepth.get()!!
+        val depth = currentDepth.get()
         currentDepth.set(depth - 1)
     }
 
@@ -206,7 +207,7 @@ class RecursionDepthLimiter(
      * 获取当前递归深度
      */
     fun getCurrentDepth(): Int {
-        return currentDepth.get()!!
+        return currentDepth.get()
     }
 
     /**
