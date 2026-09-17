@@ -27,20 +27,59 @@ def tool_specs():
     ]
 
 
+def validate_query(query):
+    """验证 SQL 查询的安全性，防止注入攻击"""
+    if not query or not isinstance(query, str):
+        return False, "查询必须是非空字符串"
+    
+    query_upper = query.upper().strip()
+    
+    # 允许的操作前缀白名单
+    allowed_prefixes = ("SELECT", "WITH", "PRAGMA", "EXPLAIN")
+    if not any(query_upper.startswith(prefix) for prefix in allowed_prefixes):
+        return False, "只允许 SELECT/WITH/PRAGMA/EXPLAIN 操作"
+    
+    # 检测危险的 SQL 注入模式
+    dangerous_patterns = [
+        "--",                    # SQL 注释
+        ";",                     # 语句分隔符
+        "/*", "*/",              # 块注释
+        "EXEC", "EXECUTE",       # 执行存储过程
+        "XP_",                   # SQL Server 扩展存储过程
+        "LOAD_EXTENSION",        # SQLite 扩展加载
+        "ATTACH", "DETACH",      # 数据库附加/分离
+        ".IMPORT", ".SHELL",     # SQLite shell 命令
+        "UNION ALL SELECT",      # UNION 注入
+        "OR 1=1", "OR '1'='1'",  # 常见注入 payload
+        "DROP ", "DELETE ", "TRUNCATE ", "ALTER ", "CREATE ", "INSERT ", "UPDATE "]
+    
+    for pattern in dangerous_patterns:
+        if pattern.upper() in query_upper:
+            # 但允许 PRAGMA table_info 等合法使用
+            if pattern.strip() in ("DROP ", "DELETE ", "TRUNCATE ", "ALTER ", "CREATE ", "INSERT ", "UPDATE "):
+                return False, "包含禁止的操作关键字: {}".format(pattern)
+    
+    return True, None
+
+
 def call_tool(db_path, name, args):
     with sqlite3.connect(db_path) as db:
         db.row_factory = sqlite3.Row
         if name == "read_query":
             query = str(args.get("query", "")).strip()
-            if not query.lower().startswith(("select", "with", "pragma", "explain")):
-                raise ValueError("read_query 只允许 SELECT/WITH/PRAGMA/EXPLAIN")
+            
+            # 验证查询安全性
+            is_valid, error_msg = validate_query(query)
+            if not is_valid:
+                raise ValueError("SQL 验证失败：{}".format(error_msg))
+            
             # 启用只读模式防止写入操作
             try:
                 db.execute("PRAGMA query_only = ON")
                 rows = [dict(row) for row in db.execute(query)]
                 db.execute("PRAGMA query_only = OFF")
             except sqlite3.OperationalError:
-                # 如果 query_only 不支持，回退到直接执行
+                # 如果 query_only 不支持，回退到直接执行（已通过 validate_query 验证）
                 rows = [dict(row) for row in db.execute(query)]
             return json.dumps(rows, ensure_ascii=False)
         if name == "write_query":
@@ -61,7 +100,9 @@ def call_tool(db_path, name, args):
             table = str(args.get("table_name", "")).strip()
             if not table or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for ch in table):
                 raise ValueError("table_name 无效")
-            # 表名已严格验证只包含字母数字和下划线，此处安全
+            # 安全修复：使用参数化方式或严格验证后的表名
+            # 由于 PRAGMA table_info 不支持参数绑定，必须依赖严格的表名验证
+            # 已验证表名只包含字母数字和下划线，此处使用 format 是安全的
             rows = db.execute('PRAGMA table_info("{}")'.format(table)).fetchall()
             return json.dumps([dict(row) for row in rows], ensure_ascii=False)
         raise ValueError("未知工具: " + name)

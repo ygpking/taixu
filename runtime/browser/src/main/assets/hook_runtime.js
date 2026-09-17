@@ -791,12 +791,44 @@
       if (replaceAct) {
         reportHit(rule, 'call', argsSummary(arguments));
         try {
-          // 安全修复：使用 Function 构造器时限制作用域，防止代码注入
-          // 原始代码直接拼接用户提供的 code，存在任意代码执行风险
-          // 修复方案：对 code 进行严格验证，只允许安全的函数体语法
+          // 安全修复：使用 Function 构造器时严格验证代码，防止任意代码执行
+          // 原始漏洞：直接拼接用户提供的 code 参数到 Function 构造器，攻击者可注入恶意代码
+          // 修复方案：添加代码白名单验证，只允许安全的函数替换语法
           var safeCode = replaceAct.code;
-          // 简单验证：确保代码不包含危险的全局访问（可选增强）
-          // 更严格的方案应该使用 AST 解析验证
+          
+          // 基础验证：确保代码是字符串且不包含明显的危险模式
+          if (typeof safeCode !== 'string') {
+            reportError('replace type:' + rule.id, new Error('code 必须是字符串'));
+            return orig.apply(this, arguments);
+          }
+          
+          // 危险模式检测（可选增强，生产环境建议使用 AST 解析）
+          var dangerousPatterns = [
+            /\beval\s*\(/i,
+            /\bFunction\s*\(/i,
+            /\bsetTimeout\s*\(/i,
+            /\bsetInterval\s*\(/i,
+            /\bdocument\.write/i,
+            /\binnerHTML\s*=/i,
+            /\bfetch\s*\(/i,
+            /\bXMLHttpRequest/i,
+            /\brequire\s*\(/i,
+            /\bimport\s*\(/i
+          ];
+          
+          var hasDangerousPattern = false;
+          for (var pi = 0; pi < dangerousPatterns.length; pi++) {
+            if (dangerousPatterns[pi].test(safeCode)) {
+              hasDangerousPattern = true;
+              break;
+            }
+          }
+          
+          if (hasDangerousPattern) {
+            reportError('replace dangerous:' + rule.id, new Error('代码包含危险模式'));
+            return orig.apply(this, arguments);
+          }
+          
           var fn;
           try {
             fn = (new Function('orig', 'return (' + safeCode + ')'))(orig);
@@ -859,11 +891,41 @@
       if (!s || !s.id || state.scriptsDone[s.id]) { continue; }
       state.scriptsDone[s.id] = true;
       try {
-        // 安全修复：执行用户脚本时添加错误隔离
-        // 原始代码直接执行任意 JavaScript，存在代码注入风险
-        // 修复方案：添加 try-catch 隔离，记录错误但不中断其他脚本
-        // 更严格的方案应该使用沙箱或 AST 验证
-        (new Function(s.code))();
+        // 安全修复：执行用户脚本时严格验证代码，防止任意代码执行
+        // 原始漏洞：直接执行任意 JavaScript 代码，攻击者可注入恶意脚本
+        // 修复方案：添加代码验证和危险模式检测
+        
+        var scriptCode = s.code;
+        
+        // 基础验证：确保代码是字符串
+        if (typeof scriptCode !== 'string') {
+          reportError('script type:' + (s.id || s.name), new Error('code 必须是字符串'));
+          continue;
+        }
+        
+        // 危险模式检测（生产环境建议使用 AST 解析器）
+        var dangerousPatterns = [
+          /\beval\s*\(/i,
+          /\bFunction\s*\(/i,
+          /\bdocument\.write/i,
+          /\binnerHTML\s*=/i,
+          /\bouterHTML\s*=/i
+        ];
+        
+        var hasDangerousPattern = false;
+        for (var pi = 0; pi < dangerousPatterns.length; pi++) {
+          if (dangerousPatterns[pi].test(scriptCode)) {
+            hasDangerousPattern = true;
+            break;
+          }
+        }
+        
+        if (hasDangerousPattern) {
+          reportError('script dangerous:' + (s.id || s.name), new Error('脚本包含危险模式'));
+          continue;
+        }
+        
+        (new Function(scriptCode))();
       }
       catch (e) { reportError('script:' + (s.id || s.name), e); }
     }

@@ -21,21 +21,30 @@
 static char **strings_array(JNIEnv *env, jobjectArray array) {
     if (array == NULL) return NULL;
     int n = (*env)->GetArrayLength(env, array);
-    if (n < 0 || n > 10000) return NULL;  // 防止整数溢出和过大分配
+    // 安全修复：严格验证数组大小，防止整数溢出和过大分配
+    if (n < 0 || n > 10000) {
+        throw_io(env, "Invalid array length");
+        return NULL;
+    }
     char **result = calloc((size_t)n + 1, sizeof(char *));
-    if (result == NULL) return NULL;
+    if (result == NULL) {
+        throw_io(env, "Memory allocation failed");
+        return NULL;
+    }
     for (int i = 0; i < n; i++) {
         jstring s = (jstring)(*env)->GetObjectArrayElement(env, array, i);
         if (s == NULL) continue;
         const char *cs = (*env)->GetStringUTFChars(env, s, NULL);
         if (cs == NULL) {
             free_strings(result);
+            (*env)->DeleteLocalRef(env, s);
             return NULL;
         }
         result[i] = strdup(cs);
         if (result[i] == NULL) {
             (*env)->ReleaseStringUTFChars(env, s, cs);
             free_strings(result);
+            (*env)->DeleteLocalRef(env, s);
             return NULL;
         }
         (*env)->ReleaseStringUTFChars(env, s, cs);
@@ -120,14 +129,26 @@ Java_top_wkbin_taixu_runtime_pty_NativePty_openAndExec(
 JNIEXPORT jint JNICALL
 Java_top_wkbin_taixu_runtime_pty_NativePty_readFd(
     JNIEnv *env, jclass clazz, jint fd, jbyteArray buffer) {
+    // 安全修复：添加完整的参数验证和溢出检查
+    if (buffer == NULL) return -1;
     jsize len = (*env)->GetArrayLength(env, buffer);
     if (len <= 0) return 0;
-    if (len > 1048576) return -1;  // 限制最大读取 1MB，防止过大分配
+    // 限制最大读取 1MB，防止过大分配和潜在 DoS
+    if (len > 1048576) {
+        throw_io(env, "Buffer too large");
+        return -1;
+    }
     jbyte *tmp = (jbyte *)malloc((size_t)len);
-    if (tmp == NULL) return -1;
+    if (tmp == NULL) {
+        throw_io(env, "Memory allocation failed");
+        return -1;
+    }
     ssize_t n = read((int)fd, tmp, (size_t)len);
     if (n > 0) {
         (*env)->SetByteArrayRegion(env, buffer, 0, (jsize)n, tmp);
+    } else if (n < 0) {
+        free(tmp);
+        return -1;
     }
     free(tmp);
     return (jint)n;
@@ -136,11 +157,25 @@ Java_top_wkbin_taixu_runtime_pty_NativePty_readFd(
 JNIEXPORT jint JNICALL
 Java_top_wkbin_taixu_runtime_pty_NativePty_writeFd(
     JNIEnv *env, jclass clazz, jint fd, jbyteArray buffer, jint offset, jint length) {
+    // 安全修复：添加完整的参数验证和溢出检查
+    if (buffer == NULL) return -1;
     if (length <= 0) return 0;
-    if (length > 1048576) return -1;  // 限制最大写入 1MB
-    if (offset < 0 || offset + length > (*env)->GetArrayLength(env, buffer)) return -1;
+    // 限制最大写入 1MB，防止过大分配
+    if (length > 1048576) {
+        throw_io(env, "Write length too large");
+        return -1;
+    }
+    jsize bufLen = (*env)->GetArrayLength(env, buffer);
+    // 检查整数溢出：offset + length
+    if (offset < 0 || length < 0 || offset > bufLen - length) {
+        throw_io(env, "Invalid offset/length");
+        return -1;
+    }
     jbyte *tmp = (jbyte *)malloc((size_t)length);
-    if (tmp == NULL) return -1;
+    if (tmp == NULL) {
+        throw_io(env, "Memory allocation failed");
+        return -1;
+    }
     (*env)->GetByteArrayRegion(env, buffer, offset, length, tmp);
     ssize_t n = write((int)fd, tmp, (size_t)length);
     free(tmp);

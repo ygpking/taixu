@@ -188,8 +188,8 @@ def tool_sign_apk(args):
         ok, out = run([
             "apksigner", "sign",
             "--ks", keystore,
-            "--ks-pass", "pass:taixu123",
-            "--key-pass", "pass:taixu123",
+            "--ks-pass", "pass:" + storepass,
+            "--key-pass", "pass:" + keypass,
             "--out", output_apk,
             aligned,
         ])
