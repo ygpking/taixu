@@ -2,7 +2,6 @@ package top.wkbin.taixu.ui.components
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -46,7 +45,7 @@ fun AccessibleIconButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     customContentDescription: String? = null,
-    content: @Composable RowScope.() -> Unit
+    content: @Composable () -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     
@@ -56,7 +55,7 @@ fun AccessibleIconButton(
             .clearAndSetSemantics {
                 this.contentDescription = customContentDescription ?: label
                 this.role = Role.Button
-                this.disabled = !enabled
+                if (!enabled) this.disabled()
                 if (enabled) {
                     onClick(label = label) {
                         onClick()
@@ -100,7 +99,7 @@ fun Modifier.clickableWithSemantics(
         )
         .clearAndSetSemantics {
             this.contentDescription = customContentDescription ?: label
-            this.disabled = !enabled
+            if (!enabled) this.disabled()
             if (enabled) {
                 onClick(label = label) {
                     onClick()

@@ -32,8 +32,8 @@ fun rememberOptimizedImageLoader(
     return remember(context) {
         ImageLoader.Builder(context)
             .memoryCache {
-                MemoryCache.Builder(context)
-                    .maxSizePercent(memoryCacheSizePercent)
+                MemoryCache.Builder()
+                    .maxSizePercent(context, memoryCacheSizePercent.toDouble())
                     .build()
             }
             .diskCache {
@@ -42,8 +42,7 @@ fun rememberOptimizedImageLoader(
                     .maxSizeBytes(diskCacheSizeBytes)
                     .build()
             }
-            .crossfade(enableCrossfade)
-            .crossfadeDurationMillis(crossfadeDurationMillis)
+            .apply { if (enableCrossfade) crossfade(crossfadeDurationMillis) }
             .logger(DebugLogger()) // 仅在 debug 构建中输出日志
             .build()
     }
