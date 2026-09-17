@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import top.wkbin.taixu.core.ui.util.throttleLatest
+import com.taixu.core.ui.util.throttleLatest
 import top.wkbin.taixu.harness.HarnessMessage
 
 /**
@@ -54,7 +54,7 @@ class HarnessUiBuffer @Inject constructor(
      * }
      * ```
      */
-    fun startThrottling(
+    suspend fun startThrottling(
         throttleWindowMs: Long = 100,
         maxEmissions: Int = 10
     ) {

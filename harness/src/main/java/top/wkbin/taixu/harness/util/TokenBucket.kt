@@ -2,7 +2,7 @@ package top.wkbin.taixu.harness.util
 
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.time.delay
+import kotlinx.coroutines.delay
 import kotlin.time.Duration
 import kotlin.time.DurationUnit
 

@@ -27,6 +27,7 @@ dependencies {
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.material3)
     implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.coil.compose)
     implementation(project(":feature:theme"))
     // 澄明(液态玻璃)主题：底部导航毛玻璃折射
     implementation(libs.backdrop)

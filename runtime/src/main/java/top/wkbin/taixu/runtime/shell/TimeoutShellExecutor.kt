@@ -1,7 +1,6 @@
 package top.wkbin.taixu.runtime.shell
 
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.IO
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import java.io.BufferedReader

@@ -5,8 +5,6 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.runtime.saveable.Saver
-import androidx.compose.runtime.saveable.listSaver
 import top.wkbin.taixu.harness.HarnessMessage
 import top.wkbin.taixu.harness.ToolResult
 import top.wkbin.taixu.harness.AssistantText
@@ -154,13 +152,3 @@ fun rememberRenderItems(
         projectChatMessages(messages, toolResults)
     }
 }
-
-/**
- * Saver for Map<String, Boolean> to be used with rememberSaveable
- * 修复：Map 本身不能存入 Bundle，需要序列化为 ArrayList<Pair>
- */
-val ExpandedOverridesSaver: Saver<Map<String, Boolean>, ArrayList<Pair<String, Boolean>>> = 
-    listSaver(
-        save = { state -> ArrayList(state.map { (key, value) -> key to value }) },
-        restore = { saved -> saved.toMap() },
-    )
