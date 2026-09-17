@@ -1,6 +1,8 @@
 package top.wkbin.taixu.runtime.filesystem
 
+import android.content.Context
 import android.util.Log
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -14,7 +16,7 @@ import kotlin.time.Duration.Companion.days
  * 🗑️ 临时目录 LRU 清理器
  * 
  * 功能：
- * 1. 定期清理 /data/local/tmp 目录下的过期文件
+ * 1. 定期清理临时目录下的过期文件
  * 2. 基于 LRU 策略（最后修改时间）
  * 3. 可配置保留天数和最大容量
  * 4. 支持白名单目录/文件跳过清理
@@ -41,26 +43,30 @@ import kotlin.time.Duration.Companion.days
  * ```
  */
 @Singleton
-class TmpDirCleaner @Inject constructor() {
+class TmpDirCleaner @Inject constructor(
+    @ApplicationContext private val context: Context
+) {
 
     /**
      * 执行清理操作
      * 
-     * @param targetDir 目标目录（默认 /data/local/tmp）
+     * @param targetDir 目标目录（默认使用应用缓存目录，Root 设备可使用 /data/local/tmp）
      * @param maxAgeDays 最大保留天数
      * @param maxSizeBytes 最大容量（字节）
      * @param whitelist 白名单（目录/文件路径前缀，匹配则跳过）
      * @return 清理的字节数
      */
     suspend fun clean(
-        targetDir: File = DEFAULT_TMP_DIR,
+        targetDir: File? = null,
         maxAgeDays: Int = DEFAULT_MAX_AGE_DAYS,
         maxSizeBytes: Long = DEFAULT_MAX_SIZE_BYTES,
         whitelist: List<String> = DEFAULT_WHITELIST
     ): Long {
         return withContext(Dispatchers.IO) {
-            if (!targetDir.exists() || !targetDir.isDirectory) {
-                Log.w(TAG, "Target directory does not exist or is not a directory: $targetDir")
+            val actualTargetDir = targetDir ?: getDefaultTmpDir()
+            
+            if (!actualTargetDir.exists() || !actualTargetDir.isDirectory) {
+                Log.w(TAG, "Target directory does not exist or is not a directory: $actualTargetDir")
                 return@withContext 0L
             }
 
@@ -191,11 +197,13 @@ class TmpDirCleaner @Inject constructor() {
      * 获取临时目录使用统计
      */
     suspend fun getUsageStats(
-        targetDir: File = DEFAULT_TMP_DIR,
+        targetDir: File? = null,
         whitelist: List<String> = DEFAULT_WHITELIST
     ): TmpDirUsageStats {
         return withContext(Dispatchers.IO) {
-            if (!targetDir.exists() || !targetDir.isDirectory) {
+            val actualTargetDir = targetDir ?: getDefaultTmpDir()
+            
+            if (!actualTargetDir.exists() || !actualTargetDir.isDirectory) {
                 return@withContext TmpDirUsageStats(
                     totalSize = 0L,
                     fileCount = 0,
@@ -204,7 +212,7 @@ class TmpDirCleaner @Inject constructor() {
                 )
             }
 
-            val files = collectFiles(targetDir, whitelist)
+            val files = collectFiles(actualTargetDir, whitelist)
             
             if (files.isEmpty()) {
                 return@withContext TmpDirUsageStats(
@@ -231,9 +239,6 @@ class TmpDirCleaner @Inject constructor() {
     companion object {
         private const val TAG = "TmpDirCleaner"
         
-        /** 默认临时目录 */
-        val DEFAULT_TMP_DIR = File("/data/local/tmp")
-        
         /** 默认最大保留天数（7 天） */
         const val DEFAULT_MAX_AGE_DAYS = 7
         
@@ -242,10 +247,10 @@ class TmpDirCleaner @Inject constructor() {
         
         /** 默认白名单（这些目录/文件不会被清理） */
         val DEFAULT_WHITELIST = listOf(
-            "/data/local/tmp/taixu",      // 太墟主目录
-            "/data/local/tmp/.keep",      // 占位文件
-            "/data/local/tmp/proot",      // proot 相关
-            "/data/local/tmp/fuse"        // FUSE 挂载点
+            "/taixu",      // 太墟主目录（相对路径匹配）
+            ".keep",       // 占位文件
+            "/proot",      // proot 相关
+            "/fuse"        // FUSE 挂载点
         )
 
         /** 格式化文件大小 */
@@ -257,6 +262,25 @@ class TmpDirCleaner @Inject constructor() {
                 else -> "${bytes / (1024 * 1024 * 1024)} GB"
             }
         }
+    }
+    
+    /**
+     * 获取默认的临时目录
+     * 优先尝试 /data/local/tmp（需要 Root），失败则回退到应用缓存目录
+     */
+    private fun getDefaultTmpDir(): File {
+        // 尝试使用 /data/local/tmp（仅 Root 设备可用）
+        val rootTmpDir = File("/data/local/tmp")
+        if (rootTmpDir.exists() && rootTmpDir.canWrite()) {
+            return rootTmpDir
+        }
+        
+        // 回退到应用缓存目录（无 Root 设备）
+        val appCacheDir = context.cacheDir.resolve("tmp")
+        if (!appCacheDir.exists()) {
+            appCacheDir.mkdirs()
+        }
+        return appCacheDir
     }
 }
 
