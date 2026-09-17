@@ -32,6 +32,12 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # Google 已于 2026-09-15 下架 Android SDK 的 `tools` 包，而 setup-android 的
+          # packages 默认值是 'tools platform-tools'，导致 sdkmanager 安装 tools 时 exit 1，
+          # 整个 job 挂在 "Set up Android SDK" 这一步（与业务代码无关）。
+          # 显式只装 platform-tools，绕过已下架的 tools 包。
+          packages: 'platform-tools'
 
       - name: Grant Execute Permission for Gradlew
         run: chmod +x gradlew

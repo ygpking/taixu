@@ -73,7 +73,7 @@ import top.wkbin.taixu.runtime.ProjectType
  * 工具卡片折叠状态 Saver：Map 本身不能存入 Bundle（rememberSaveable 会抛 IllegalArgumentException），
  * 把 entries 序列化为 ArrayList<Pair<String, Boolean>>（两者均可安全保存）。
  */
-private val ExpandedOverridesSaver = Saver<Map<String, Boolean>, ArrayList<Pair<String, Boolean>>>(
+val ExpandedOverridesSaver = Saver<Map<String, Boolean>, ArrayList<Pair<String, Boolean>>>(
     save = { state -> ArrayList(state.map { (key, value) -> key to value }) },
     restore = { saved -> saved.toMap() },
 )

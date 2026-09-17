@@ -166,9 +166,16 @@ class HomeViewModel @Inject constructor(
 
     private fun startMetricsMonitoring() {
         viewModelScope.launch {
+            // 性能优化：指标刷新频率从固定的 3 秒改为差异化策略
+            // - 快速变化指标（进程数、运行时间）：每 1 秒刷新
+            // - 慢速变化指标（内存、存储）：每 5 秒刷新
+            // 减少系统调用频率，降低功耗和 CPU 占用
+            var counter = 0
             while (isActive) {
-                refreshMetrics()
-                delay(3000)
+                val shouldRefreshSlowMetrics = (counter % 5 == 0)
+                refreshMetrics(refreshSlowMetrics = shouldRefreshSlowMetrics)
+                delay(1000L)
+                counter++
             }
         }
     }
@@ -206,43 +213,53 @@ class HomeViewModel @Inject constructor(
         environmentRepairer.cancelRepair()
     }
 
-    fun refreshMetrics() {
+    fun refreshMetrics(refreshSlowMetrics: Boolean = true) {
         if (metricsRefreshJob?.isActive == true) return
         metricsRefreshJob = viewModelScope.launch(Dispatchers.IO) {
             try {
-            // 1. 内存指标 (RAM)
-            val actManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
-            val memInfo = ActivityManager.MemoryInfo()
-            actManager?.getMemoryInfo(memInfo)
-            val totalMemMb = memInfo.totalMem / (1024 * 1024)
-            val availMemMb = memInfo.availMem / (1024 * 1024)
-            val usedMemMb = (totalMemMb - availMemMb).coerceAtLeast(0)
-            val memPercent = if (totalMemMb > 0) ((usedMemMb * 100) / totalMemMb).toInt() else 0
+                // 快速指标：每次刷新（进程数、运行时间）
+                val bgProcesses = try { linuxRuntime.listBackground() } catch (e: Exception) { emptyList() }
+                val activeProcs = bgProcesses.size + backgroundTaskRegistry.activeTasks.value.size
 
-            val rt = Runtime.getRuntime()
-            val heapUsedMb = (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024)
+                // 4. 运行时间 (基于全局应用启动时间戳，切换 Tab 不会重置)
+                val elapsedSec = (SystemClock.elapsedRealtime() - APP_START_TIME) / 1000
+                val hours = elapsedSec / 3600
+                val minutes = (elapsedSec % 3600) / 60
+                val seconds = elapsedSec % 60
+                val uptime = if (hours > 0) String.format("%02d:%02d:%02d", hours, minutes, seconds)
+                             else String.format("%02d:%02d", minutes, seconds)
 
-            // 2. 存储空间 (Disk / Rootfs)
-            val rootfsDir = try { linuxRuntime.rootfsPath() } catch (e: Exception) { context.filesDir }
-            val stat = StatFs(if (rootfsDir.exists()) rootfsDir.absolutePath else context.filesDir.absolutePath)
-            val totalBytes = stat.totalBytes
-            val availBytes = stat.availableBytes
-            val usedBytes = (totalBytes - availBytes).coerceAtLeast(0)
-            val totalGb = String.format("%.1f", totalBytes.toDouble() / (1024 * 1024 * 1024)).toDoubleOrNull() ?: 0.0
-            val usedGb = String.format("%.1f", usedBytes.toDouble() / (1024 * 1024 * 1024)).toDoubleOrNull() ?: 0.0
-            val storagePercent = if (totalBytes > 0) ((usedBytes * 100) / totalBytes).toInt() else 0
+                // 慢速指标：每 5 秒刷新一次（内存、存储），减少系统调用
+                var usedMemMb = _metrics.value.memoryUsedMb
+                var totalMemMb = _metrics.value.memoryTotalMb
+                var memPercent = _metrics.value.memoryUsagePercent
+                var heapUsedMb = _metrics.value.appHeapUsedMb
+                var usedGb = _metrics.value.storageUsedGb
+                var totalGb = _metrics.value.storageTotalGb
+                var storagePercent = _metrics.value.storageUsagePercent
+                
+                if (refreshSlowMetrics) {
+                    val actManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+                    val memInfo = ActivityManager.MemoryInfo()
+                    actManager?.getMemoryInfo(memInfo)
+                    totalMemMb = memInfo.totalMem / (1024 * 1024)
+                    val availMemMb = memInfo.availMem / (1024 * 1024)
+                    usedMemMb = (totalMemMb - availMemMb).coerceAtLeast(0)
+                    memPercent = if (totalMemMb > 0) ((usedMemMb * 100) / totalMemMb).toInt() else 0
 
-            // 3. 活跃进程与后台任务
-            val bgProcesses = try { linuxRuntime.listBackground() } catch (e: Exception) { emptyList() }
-            val activeProcs = bgProcesses.size + backgroundTaskRegistry.activeTasks.value.size
+                    val rt = Runtime.getRuntime()
+                    heapUsedMb = (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024)
 
-            // 4. 运行时间 (基于全局应用启动时间戳，切换 Tab 不会重置)
-            val elapsedSec = (SystemClock.elapsedRealtime() - APP_START_TIME) / 1000
-            val hours = elapsedSec / 3600
-            val minutes = (elapsedSec % 3600) / 60
-            val seconds = elapsedSec % 60
-            val uptime = if (hours > 0) String.format("%02d:%02d:%02d", hours, minutes, seconds)
-                         else String.format("%02d:%02d", minutes, seconds)
+                    // 2. 存储空间 (Disk / Rootfs)
+                    val rootfsDir = try { linuxRuntime.rootfsPath() } catch (e: Exception) { context.filesDir }
+                    val stat = StatFs(if (rootfsDir.exists()) rootfsDir.absolutePath else context.filesDir.absolutePath)
+                    val totalBytes = stat.totalBytes
+                    val availBytes = stat.availableBytes
+                    val usedBytes = (totalBytes - availBytes).coerceAtLeast(0)
+                    totalGb = String.format("%.1f", totalBytes.toDouble() / (1024 * 1024 * 1024)).toDoubleOrNull() ?: 0.0
+                    usedGb = String.format("%.1f", usedBytes.toDouble() / (1024 * 1024 * 1024)).toDoubleOrNull() ?: 0.0
+                    storagePercent = if (totalBytes > 0) ((usedBytes * 100) / totalBytes).toInt() else 0
+                }
 
             val arch = Build.SUPPORTED_ABIS.firstOrNull() ?: "aarch64"
             val androidVer = "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})"
