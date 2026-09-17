@@ -178,21 +178,33 @@ class PermissionManager @Inject constructor(
             return
         }
 
-        // 其他权限使用传统方式
-        val launcher = launchers[Manifest.permission.POST_NOTIFICATIONS] 
-            ?: throw IllegalStateException("Permission launcher not registered for $permissions")
+        // 其他权限：逐个请求第一个被拒绝的权限
+        // 注意：Android 不允许同时请求多个不相关的权限，需要逐个处理
+        val firstDeniedPermission = denied.first()
+        val launcher = launchers[firstDeniedPermission] 
+            ?: throw IllegalStateException("Permission launcher not registered for $firstDeniedPermission")
         
-        pendingCallbacks[Manifest.permission.POST_NOTIFICATIONS] = { granted ->
+        pendingCallbacks[firstDeniedPermission] = { granted ->
             val grantedPermissions = if (granted) {
-                permissions.intersect(denied.toSet()).toList()
+                // 如果第一个权限被授予，继续请求剩余的权限
+                val remainingPermissions = denied.drop(1)
+                if (remainingPermissions.isEmpty()) {
+                    listOf(firstDeniedPermission)
+                } else {
+                    // 递归请求剩余权限
+                    requestPermissions(activity, remainingPermissions) { remainingGranted ->
+                        onResult(listOf(firstDeniedPermission) + remainingGranted)
+                    }
+                    return@let
+                }
             } else {
                 emptyList()
             }
             onResult(grantedPermissions)
-            pendingCallbacks.remove(Manifest.permission.POST_NOTIFICATIONS)
+            pendingCallbacks.remove(firstDeniedPermission)
         }
 
-        launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        launcher.launch(firstDeniedPermission)
     }
 
     /**
