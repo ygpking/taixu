@@ -21,6 +21,13 @@ class AppearancePreferences @Inject constructor(private val store: SettingsDataS
     val chengmingBackgroundUri get() = store.chengmingBackgroundUri
     val appFontScale get() = store.appFontScale
     val autoCheckUpdates get() = store.autoCheckUpdates
+    val developerMode get() = store.developerMode
+    suspend fun setThemeMode(value: String) = store.setThemeMode(value)
+    suspend fun setThemeStyle(value: String) = store.setThemeStyle(value)
+    suspend fun setChengmingBackgroundUri(value: String?) = store.setChengmingBackgroundUri(value)
+    suspend fun setAppFontScale(value: Float) = store.setAppFontScale(value)
+    suspend fun setAutoCheckUpdates(value: Boolean) = store.setAutoCheckUpdates(value)
+    suspend fun setDeveloperMode(value: Boolean) = store.setDeveloperMode(value)
 }
 
 @Singleton
@@ -29,6 +36,8 @@ class TerminalPreferences @Inject constructor(private val store: SettingsDataSto
     val terminalColorScheme get() = store.terminalColorScheme
     val terminalHapticsEnabled get() = store.terminalHapticsEnabled
     suspend fun setTerminalFontSize(value: Int) = store.setTerminalFontSize(value)
+    suspend fun setTerminalColorScheme(value: String) = store.setTerminalColorScheme(value)
+    suspend fun setTerminalHapticsEnabled(value: Boolean) = store.setTerminalHapticsEnabled(value)
 }
 
 @Singleton
@@ -60,6 +69,9 @@ class RuntimePreferences @Inject constructor(private val store: SettingsDataStor
     suspend fun setAdbWirelessPort(value: Int) = store.setAdbWirelessPort(value)
     suspend fun setAdbPairedOnce(value: Boolean) = store.setAdbPairedOnce(value)
     suspend fun setAdbNotificationEnabled(value: Boolean) = store.setAdbNotificationEnabled(value)
+    suspend fun setMountDownloadEnabled(value: Boolean) = store.setMountDownloadEnabled(value)
+    suspend fun setMountDocumentsEnabled(value: Boolean) = store.setMountDocumentsEnabled(value)
+    suspend fun setMountSharedStorageEnabled(value: Boolean) = store.setMountSharedStorageEnabled(value)
 }
 
 @Singleton
@@ -159,13 +171,35 @@ class AgentPreferences @Inject constructor(private val store: SettingsDataStore)
     val contextMaxKeepTokens get() = store.contextMaxKeepTokens
     val contextArchiveEnabled get() = store.contextArchiveEnabled
     suspend fun setContextArchiveEnabled(value: Boolean) = store.setContextArchiveEnabled(value)
+    suspend fun setContextFoldingRatioPercent(value: Int) = store.setContextFoldingRatioPercent(value)
+    suspend fun setContextMaxKeepTokens(value: Int) = store.setContextMaxKeepTokens(value)
+    suspend fun setInputTokenLimit(value: Int) = store.setInputTokenLimit(value)
     val maxToolsPerRound get() = store.maxToolsPerRound
     val maxConsecutiveFailures get() = store.maxConsecutiveFailures
     val providerModel get() = store.providerModel
     val environmentPrivacyMode get() = store.environmentPrivacyMode
+    val allPlugins get() = store.allPlugins
+    val defaultRoundLimitAutoContinuations get() = SettingsDataStore.DEFAULT_ROUND_LIMIT_AUTO_CONTINUATIONS
+    val defaultBaseCommandTimeoutSeconds get() = SettingsDataStore.DEFAULT_BASE_COMMAND_TIMEOUT_SECONDS
     suspend fun setThinkingExpanded(value: Boolean) = store.setThinkingExpanded(value)
     suspend fun setCommandOutputCompressionEnabled(value: Boolean) = store.setCommandOutputCompressionEnabled(value)
     suspend fun removeModelApiKey(secretRef: String) = store.removeModelApiKey(secretRef)
+    suspend fun setEnvironmentPrivacyMode(value: Boolean) = store.setEnvironmentPrivacyMode(value)
+    suspend fun setThinkingLanguage(value: String) = store.setThinkingLanguage(value)
+    suspend fun setCustomSystemPromptEnabled(value: Boolean) = store.setCustomSystemPromptEnabled(value)
+    suspend fun setCustomSystemPrompt(value: String) = store.setCustomSystemPrompt(value)
+    suspend fun setAgentLoggingEnabled(value: Boolean) = store.setAgentLoggingEnabled(value)
+    suspend fun setDefaultReasoningDepth(value: String) = store.setDefaultReasoningDepth(value)
+    suspend fun setContextCompactionEnabled(value: Boolean) = store.setContextCompactionEnabled(value)
+    suspend fun setContextCompactionThreshold(value: Int) = store.setContextCompactionThreshold(value)
+    suspend fun setMaxToolRounds(value: Int) = store.setMaxToolRounds(value)
+    suspend fun setRoundLimitAutoContinuations(value: Int) = store.setRoundLimitAutoContinuations(value)
+    suspend fun setAutoWorkspaceCwd(value: Boolean) = store.setAutoWorkspaceCwd(value)
+    suspend fun setBaseCommandTimeoutSeconds(value: Int) = store.setBaseCommandTimeoutSeconds(value)
+    suspend fun setContextBudgetTokens(value: Int) = store.setContextBudgetTokens(value)
+    suspend fun setMaxToolsPerRound(value: Int) = store.setMaxToolsPerRound(value)
+    suspend fun setMaxConsecutiveFailures(value: Int) = store.setMaxConsecutiveFailures(value)
+    suspend fun setPluginEnabled(pluginId: String, enabled: Boolean) = store.setPluginEnabled(pluginId, enabled)
 }
 
 @Singleton
@@ -186,6 +220,50 @@ class ToolPreferences @Inject constructor(private val store: SettingsDataStore) 
     fun toolAccessToken(distroId: String, toolId: String) = store.toolAccessToken(distroId, toolId)
     suspend fun setToolAccessToken(distroId: String, toolId: String, token: String?) =
         store.setToolAccessToken(distroId, toolId, token)
+}
+
+/** 首次使用引导（插件中心 / 工作坊 / 多会话终端等页面级遮罩），设置页可整体清空重看。 */
+@Singleton
+class FirstUseGuidePreferences @Inject constructor(private val store: SettingsDataStore) {
+    val firstUseGuidesShown get() = store.firstUseGuidesShown
+    suspend fun markFirstUseGuideShown(id: String) = store.markFirstUseGuideShown(id)
+    suspend fun clearFirstUseGuides() = store.clearFirstUseGuides()
+}
+
+/** 插件仓库（Registry）签名清单配置，开发者页与工具中心使用。 */
+@Singleton
+class RegistryPreferences @Inject constructor(private val store: SettingsDataStore) {
+    val manifestUrl get() = store.registryManifestUrl
+    val signatureUrl get() = store.registrySignatureUrl
+    val publicKey get() = store.registryPublicKey
+    suspend fun setRegistryConfig(manifestUrl: String, signatureUrl: String, publicKey: String) =
+        store.setRegistryConfig(manifestUrl, signatureUrl, publicKey)
+}
+
+/** 应用级启动计数（数据统计页快照 / Application onCreate 递增）。 */
+@Singleton
+class AppStatsPreferences @Inject constructor(private val store: SettingsDataStore) {
+    val appLaunchCount get() = store.appLaunchCount
+    suspend fun incrementLaunchCount() = store.incrementLaunchCount()
+}
+
+/** AI Provider 端点与密钥偏好（经 ProviderRepository 收口后供 Settings UI 与工具适配层使用）。 */
+@Singleton
+class ProviderPreferences @Inject constructor(private val store: SettingsDataStore) {
+    val provider get() = store.provider
+    val baseUrl get() = store.providerBaseUrl
+    val model get() = store.providerModel
+    val apiKeyConfigured get() = store.apiKeyConfigured
+    suspend fun setProvider(value: String) = store.setProvider(value)
+    suspend fun setBaseUrl(value: String) = store.setProviderBaseUrl(value)
+    suspend fun setModel(value: String) = store.setProviderModel(value)
+    suspend fun setApiKey(value: String) = store.setApiKey(value)
+    suspend fun readApiKey(): String? = store.readApiKey()
+    suspend fun setModelApiKey(secretRef: String, value: String) = store.setModelApiKey(secretRef, value)
+    suspend fun readModelApiKey(secretRef: String): String? = store.readModelApiKey(secretRef)
+    suspend fun setModelApiKeys(secretRef: String, values: List<String>) = store.setModelApiKeys(secretRef, values)
+    suspend fun readModelApiKeys(secretRef: String): List<String> = store.readModelApiKeys(secretRef)
+    suspend fun removeModelApiKey(secretRef: String) = store.removeModelApiKey(secretRef)
 }
 
 @Singleton

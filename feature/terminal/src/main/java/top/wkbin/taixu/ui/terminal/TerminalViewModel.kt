@@ -39,16 +39,16 @@ class TerminalViewModel @Inject constructor(
     val sessionClientRouter: TerminalSessionClientRouter,
     private val workspaceManager: WorkspaceManager,
     private val settingsDataStore: TerminalPreferences,
-    private val appSettingsDataStore: top.wkbin.taixu.core.datastore.SettingsDataStore,
+    private val firstUseGuidePreferences: top.wkbin.taixu.core.datastore.FirstUseGuidePreferences,
     private val linuxRuntime: top.wkbin.taixu.runtime.LinuxRuntime,
 ) : ViewModel() {
     private var initialized = false
 
-    val firstUseGuidesShown: StateFlow<Set<String>> = appSettingsDataStore.firstUseGuidesShown
+    val firstUseGuidesShown: StateFlow<Set<String>> = firstUseGuidePreferences.firstUseGuidesShown
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
 
     fun markFirstUseGuideShown(id: String) {
-        viewModelScope.launch { appSettingsDataStore.markFirstUseGuideShown(id) }
+        viewModelScope.launch { firstUseGuidePreferences.markFirstUseGuideShown(id) }
     }
 
     val installedDistros = linuxRuntime.installedDistros

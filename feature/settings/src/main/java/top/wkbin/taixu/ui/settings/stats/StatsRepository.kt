@@ -6,7 +6,7 @@ import kotlinx.coroutines.withContext
 import top.wkbin.taixu.core.database.AiModelRepository
 import top.wkbin.taixu.core.database.HarnessRuntimeRepository
 import top.wkbin.taixu.core.database.HarnessSessionRepository
-import top.wkbin.taixu.core.datastore.SettingsDataStore
+import top.wkbin.taixu.core.datastore.AppStatsPreferences
 import top.wkbin.taixu.core.model.StatsDateRange
 import top.wkbin.taixu.core.model.StatsHeatmapDay
 import top.wkbin.taixu.core.model.StatsRankItem
@@ -25,7 +25,7 @@ class StatsRepository @Inject constructor(
     private val runtimeRepository: HarnessRuntimeRepository,
     private val sessionRepository: HarnessSessionRepository,
     private val aiModelRepository: AiModelRepository,
-    private val settingsDataStore: SettingsDataStore,
+    private val appStatsPreferences: AppStatsPreferences,
 ) {
     suspend fun buildSnapshot(
         range: StatsDateRange,
@@ -38,7 +38,7 @@ class StatsRepository @Inject constructor(
         // 1. 基础汇总
         val totalSessions = sessionRepository.countInRange(startEpochMs, endEpochMs)
         val totalMessages = runtimeRepository.countEntriesInRange(startEpochMs, endEpochMs)
-        val launchCount = settingsDataStore.appLaunchCount.first()
+        val launchCount = appStatsPreferences.appLaunchCount.first()
 
         // 2. 所有模型与会话缓存
         val allModels = aiModelRepository.observeAll().first().associateBy { it.id }

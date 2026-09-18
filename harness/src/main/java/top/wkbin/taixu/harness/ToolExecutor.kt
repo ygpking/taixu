@@ -5,7 +5,6 @@ import top.wkbin.taixu.core.database.HarnessSessionRepository
 import top.wkbin.taixu.harness.session.SessionTreeStore
 import top.wkbin.taixu.core.security.SecretRedactor
 import top.wkbin.taixu.core.datastore.AgentPreferences
-import top.wkbin.taixu.core.datastore.SettingsDataStore
 import top.wkbin.taixu.core.model.ApprovalMode
 import top.wkbin.taixu.core.network.DownloadEvent
 import top.wkbin.taixu.core.network.DownloadRequest
@@ -651,9 +650,9 @@ class ToolExecutor @Inject constructor(
         val preparedCommand = RtkCommandOptimizer.prepare(command, commandOutputCompressionEnabled)
         val configuredTimeoutSeconds = if (::settingsDataStore.isInitialized) {
             runCatching { settingsDataStore.baseCommandTimeoutSeconds.first() }
-                .getOrDefault(SettingsDataStore.DEFAULT_BASE_COMMAND_TIMEOUT_SECONDS)
+                .getOrDefault(settingsDataStore.defaultBaseCommandTimeoutSeconds)
         } else {
-            SettingsDataStore.DEFAULT_BASE_COMMAND_TIMEOUT_SECONDS
+            settingsDataStore.defaultBaseCommandTimeoutSeconds
         }
         val timeoutSeconds = optionalLong(
             args = args,

@@ -32,15 +32,15 @@ class WorkspaceViewModel @Inject constructor(
     private val linuxRuntime: top.wkbin.taixu.runtime.LinuxRuntime,
     private val workshopPreferences: top.wkbin.taixu.core.datastore.WorkshopPreferences,
     private val projectTemplateStore: ProjectTemplateStore,
-    private val settingsDataStore: top.wkbin.taixu.core.datastore.SettingsDataStore,
+    private val firstUseGuidePreferences: top.wkbin.taixu.core.datastore.FirstUseGuidePreferences,
 ) : ViewModel() {
 
-    /** 首次使用引导登记（统一存于 SettingsDataStore，设置页可整体清空重看）。 */
-    val firstUseGuidesShown: StateFlow<Set<String>> = settingsDataStore.firstUseGuidesShown
+    /** 首次使用引导登记（统一存于偏好存储，设置页可整体清空重看）。 */
+    val firstUseGuidesShown: StateFlow<Set<String>> = firstUseGuidePreferences.firstUseGuidesShown
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
 
     fun markFirstUseGuideShown(id: String) {
-        viewModelScope.launch { settingsDataStore.markFirstUseGuideShown(id) }
+        viewModelScope.launch { firstUseGuidePreferences.markFirstUseGuideShown(id) }
     }
 
     private val _projectTemplates = MutableStateFlow<List<InstalledProjectTemplate>>(emptyList())

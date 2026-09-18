@@ -1,6 +1,6 @@
-﻿package top.wkbin.taixu.core.tools
+package top.wkbin.taixu.core.tools
 
-import top.wkbin.taixu.core.datastore.SettingsDataStore
+import top.wkbin.taixu.core.datastore.ProviderPreferences
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.Flow
@@ -8,21 +8,21 @@ import kotlinx.coroutines.flow.Flow
 /** Provider persistence boundary used by Settings UI and tool adapters. */
 @Singleton
 class ProviderRepository @Inject constructor(
-    private val settingsDataStore: SettingsDataStore,
+    private val providerPreferences: ProviderPreferences,
 ) {
-    val provider: Flow<String> = settingsDataStore.provider
-    val baseUrl: Flow<String> = settingsDataStore.providerBaseUrl
-    val model: Flow<String> = settingsDataStore.providerModel
-    val apiKeyConfigured: Flow<Boolean> = settingsDataStore.apiKeyConfigured
+    val provider: Flow<String> = providerPreferences.provider
+    val baseUrl: Flow<String> = providerPreferences.baseUrl
+    val model: Flow<String> = providerPreferences.model
+    val apiKeyConfigured: Flow<Boolean> = providerPreferences.apiKeyConfigured
 
-    suspend fun setProvider(value: String) = settingsDataStore.setProvider(value)
-    suspend fun setBaseUrl(value: String) = settingsDataStore.setProviderBaseUrl(value)
-    suspend fun setModel(value: String) = settingsDataStore.setProviderModel(value)
-    suspend fun setApiKey(value: String) = settingsDataStore.setApiKey(value)
-    suspend fun readApiKey(): String? = settingsDataStore.readApiKey()
-    suspend fun setModelApiKey(secretRef: String, value: String) = settingsDataStore.setModelApiKey(secretRef, value)
-    suspend fun readModelApiKey(secretRef: String): String? = settingsDataStore.readModelApiKey(secretRef)
-    suspend fun setModelApiKeys(secretRef: String, values: List<String>) = settingsDataStore.setModelApiKeys(secretRef, values)
-    suspend fun readModelApiKeys(secretRef: String): List<String> = settingsDataStore.readModelApiKeys(secretRef)
-    suspend fun removeModelApiKey(secretRef: String) = settingsDataStore.removeModelApiKey(secretRef)
+    suspend fun setProvider(value: String) = providerPreferences.setProvider(value)
+    suspend fun setBaseUrl(value: String) = providerPreferences.setBaseUrl(value)
+    suspend fun setModel(value: String) = providerPreferences.setModel(value)
+    suspend fun setApiKey(value: String) = providerPreferences.setApiKey(value)
+    suspend fun readApiKey(): String? = providerPreferences.readApiKey()
+    suspend fun setModelApiKey(secretRef: String, value: String) = providerPreferences.setModelApiKey(secretRef, value)
+    suspend fun readModelApiKey(secretRef: String): String? = providerPreferences.readModelApiKey(secretRef)
+    suspend fun setModelApiKeys(secretRef: String, values: List<String>) = providerPreferences.setModelApiKeys(secretRef, values)
+    suspend fun readModelApiKeys(secretRef: String): List<String> = providerPreferences.readModelApiKeys(secretRef)
+    suspend fun removeModelApiKey(secretRef: String) = providerPreferences.removeModelApiKey(secretRef)
 }
