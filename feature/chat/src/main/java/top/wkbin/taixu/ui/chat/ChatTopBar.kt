@@ -4,6 +4,9 @@ import android.app.Activity
 import android.provider.Settings
 import top.wkbin.taixu.ui.chat.floating.FloatingChatService
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -56,6 +59,8 @@ internal fun ChatTopBar(
     // Git 可视化工作台（第 3 项搬运，2026-09-13）
     onOpenGit: () -> Unit = {},
     gitUncommittedCount: Int = 0,
+    onOpenRepository: (() -> Unit)? = null,
+    repositoryHighlight: Boolean = false,
 ) {
     val context = LocalContext.current
     Column(
@@ -73,11 +78,15 @@ internal fun ChatTopBar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            // 左侧：品牌 Badge + 标题/状态
+            // 左侧：品牌 Badge + 标题/状态（点击可快速唤出左侧会话抽屉）
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.weight(1f, fill = false),
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onOpenSessions)
+                    .padding(vertical = 2.dp, horizontal = 4.dp),
             ) {
                 TaiXuBrandBadge(28.dp)
                 Column {
@@ -176,6 +185,8 @@ internal fun ChatTopBar(
             onOpenRuntime = onOpenRuntime,
             onOpenBrowser = onOpenBrowser,
             browserHighlight = browserHighlight,
+            onOpenRepository = onOpenRepository,
+            repositoryHighlight = repositoryHighlight,
         )
     }
 }

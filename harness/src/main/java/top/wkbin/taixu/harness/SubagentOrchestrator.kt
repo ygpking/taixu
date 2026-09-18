@@ -18,7 +18,11 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import top.wkbin.taixu.harness.session.LaneManager
+import top.wkbin.taixu.harness.subagent.SubagentApprovalHandoff
 import top.wkbin.taixu.harness.subagent.SubagentLaneRunner
+import top.wkbin.taixu.harness.subagent.SubagentTermination
+import top.wkbin.taixu.harness.subagent.buildSubagentTimeoutSummary
+import top.wkbin.taixu.harness.subagent.declaresWriteIntent
 import top.wkbin.taixu.harness.prompt.PromptAssetLoader
 import top.wkbin.taixu.harness.WorkspaceFileAccess
 
@@ -105,8 +109,20 @@ class SubagentOrchestrator @Inject constructor(
         // Completion order and lease waves must not change the user-requested presentation order.
         val orderedResults = results.sortedBy { outcome -> specs.indexOf(outcome.spec) }
         val summaryMarkdown = paginateSummary(orderedResults, workspace)
-        val anySuccess = orderedResults.any { it.isSuccess }
-        anySuccess to summaryMarkdown
+        logger.logAgent(
+            parentSessionId,
+            "SubagentBatch",
+            orderedResults.joinToString("; ") { outcome ->
+                "task=${outcome.spec.taskName}, success=${outcome.isSuccess}, termination=${outcome.termination}, " +
+                    "toolCalls=${outcome.toolCallCount}, pendingApprovals=${outcome.pendingApprovals.size}, " +
+                    "blockedWrites=${outcome.blockedWrites.size}, " +
+                    "readOnlyWriteIntent=${outcome.readOnlyWriteIntent}"
+            },
+        )
+        // 整批工具结果只有在每个子任务都确认完成时才算成功。用 anySuccess 会让"1 成功 5 失败"
+        // 在父会话里显示为成功工具调用，模型据此继续往下走，正文里的部分失败说明形同虚设。
+        val allSucceeded = orderedResults.all { it.isSuccess }
+        allSucceeded to summaryMarkdown
     }
 
     private suspend fun runSubagent(
@@ -147,28 +163,49 @@ class SubagentOrchestrator @Inject constructor(
         }
         val laneName = "subagent:${profile.id}:${java.util.UUID.randomUUID()}"
         laneManager.create(parentSessionId, laneName, parentLeaf)
-        val prompt = buildSubagentPrompt(spec, profile, workspace, parentSessionId)
+        val readOnlyWriteIntent = spec.writePaths.isEmpty() && declaresWriteIntent(spec.prompt)
+        val prompt = buildSubagentPrompt(spec, profile, workspace, parentSessionId, readOnlyWriteIntent)
+        if (readOnlyWriteIntent) {
+            logger.logAgent(
+                parentSessionId,
+                "SubagentWriteScope",
+                "task=${spec.taskName} 任务文字要求落盘但未声明 write_paths，本 Lane 按只读执行",
+            )
+        }
         val laneResult = withTimeoutOrNull(SUBAGENT_TIMEOUT_MS) {
-            laneRunner.run(parentSessionId, laneName, prompt, workspace, modelConfig = targetModel)
+            laneRunner.run(
+                parentSessionId,
+                laneName,
+                prompt,
+                workspace,
+                modelConfig = targetModel,
+                writePaths = spec.writePaths,
+            )
         }
 
         // 超时取消时 withTimeoutOrNull 返回 null，若直接 ?: 0 会把子智能体在超时窗口内
         // 真实执行的工具调用全部归零，汇总里出现"明明在跑却显示 0 次工具调用"。
         // lane 的 tool_call entry 在执行期已逐条落库，从 transcript 恢复真实计数。
-        val toolCallCount = resolveSubagentToolCallCount(
-            laneResult?.toolCallCount,
-            runCatching { laneManager.transcript(parentSessionId, laneName) }.getOrDefault(emptyList()),
-        )
+        val transcript = runCatching { laneManager.subagentTranscript(parentSessionId, laneName) }
+            .getOrElse { runCatching { laneManager.transcript(parentSessionId, laneName) }.getOrDefault(emptyList()) }
+        val toolCallCount = resolveSubagentToolCallCount(laneResult?.toolCallCount, transcript)
 
         return SubagentExecutionOutcome(
             spec = spec,
             subSessionId = laneName,
             isSuccess = laneResult?.success == true,
-            summary = laneResult?.summary ?: "执行超时 (${SUBAGENT_TIMEOUT_MS / 60_000} 分钟，已执行 $toolCallCount 次工具调用)",
+            // 超时不再只回一句"执行超时"：已查到的证据、改过的文件、最后进度都从 transcript
+            // 还原成续跑摘要，否则父智能体只能创建全新 Lane 从头重复同样的工作。
+            summary = laneResult?.summary
+                ?: buildSubagentTimeoutSummary(SUBAGENT_TIMEOUT_MS, toolCallCount, transcript, laneName),
             toolCallCount = toolCallCount,
             resolvedProfileId = profile.id,
             resolvedProfileName = profile.name,
             resolvedModel = "${targetModel.provider}/${targetModel.model}",
+            termination = laneResult?.termination ?: SubagentTermination.TIMEOUT,
+            pendingApprovals = laneResult?.pendingApprovals.orEmpty(),
+            blockedWrites = laneResult?.blockedWrites.orEmpty(),
+            readOnlyWriteIntent = readOnlyWriteIntent,
         )
     }
 
@@ -200,15 +237,29 @@ class SubagentOrchestrator @Inject constructor(
         profile: AgentSubagent,
         workspace: String,
         parentSessionId: String,
+        readOnlyWriteIntent: Boolean,
     ): String {
         val factsPack = buildParentFactsPack(parentSessionId, workspace)
         val writeLine = when {
-            spec.writePaths.isEmpty() ->
-                "本任务为只读任务：禁止调用 write/edit，禁止执行会修改工作区的命令；只返回分析或数据。"
-            spec.writePaths.any(::isWholeWorkspacePath) ->
+            spec.writePaths.isEmpty() -> buildString {
+                append("本任务为只读任务：禁止调用 write/edit/download，禁止执行会修改工作区的命令；只返回分析或数据。")
+                append("write/edit/download 在本 Lane 内会被强制拦截；base 命令不受该闸门约束，")
+                append("因此绝不允许用 shell 重定向、sed -i、mv、rm 等方式绕过。")
+                if (readOnlyWriteIntent) {
+                    // 任务文字要求落盘却没有写租约：必须显式指出冲突，否则子智能体会在
+                    // "要写"与"不许写"之间自行猜测，并可能把"没法写"当成完成。
+                    append("\n注意：本任务文字提到了落盘/写入，但主智能体未声明 write_paths。")
+                    append("请把需要落盘的完整内容直接放进结论正文（含目标路径与完整文件内容），")
+                    append("由主智能体写入；不要声称文件已生成。")
+                }
+            }
+            spec.writePaths.any(::isWholeWorkspaceWritePath) ->
                 "本任务持有整工作区独占写租约；仅修改任务确实需要的文件，避免无关改动。"
-            else ->
-                "限定写入范围（请只在这些文件/目录下写，勿越界）：${spec.writePaths.joinToString("、")}"
+            else -> buildString {
+                append("限定写入范围（write/edit/download 会强制校验，越界写入直接拦截）：")
+                append(spec.writePaths.joinToString("、"))
+                append("。base 命令不受该闸门约束，也必须遵守同一范围。")
+            }
         }
         return promptAssets.render(
             "prompts/subagent_task.md",
@@ -255,7 +306,13 @@ class SubagentOrchestrator @Inject constructor(
      * 模型可用 read 工具按 offset/limit 分页读取。
      */
     private suspend fun paginateSummary(outcomes: List<SubagentExecutionOutcome>, workspace: String): String =
-        paginateSubagentSummary(outcomes, workspace, fileAccess)
+        paginateSubagentSummary(
+            outcomes,
+            workspace,
+            // 落盘必须与 ToolExecutor 的 read 走同一基准：汇总里给父智能体的是工作区相对路径，
+            // 用全局 fileAccess 写会落到应用根目录，模型随后 read 就会"提示有报告、实际读不到"。
+            if (workspace.isNotBlank()) fileAccess.withBase(workspace) else fileAccess,
+        )
 
     internal data class SubagentExecutionOutcome(
         val spec: SubagentTaskSpec,
@@ -266,6 +323,11 @@ class SubagentOrchestrator @Inject constructor(
         val resolvedProfileId: String? = null,
         val resolvedProfileName: String? = null,
         val resolvedModel: String? = null,
+        val termination: SubagentTermination = SubagentTermination.CONCLUDED,
+        val pendingApprovals: List<SubagentApprovalHandoff> = emptyList(),
+        val blockedWrites: List<String> = emptyList(),
+        /** 任务文字要求落盘但未声明 write_paths，本次按只读执行。 */
+        val readOnlyWriteIntent: Boolean = false,
     )
 }
 
@@ -307,9 +369,12 @@ internal fun buildWriteCleanWaves(specs: List<SubagentTaskSpec>): List<List<Suba
         val paths = spec.writePaths.mapTo(hashSetOf()) { normalizeWritePath(it) }
         val kind = when {
             paths.isEmpty() -> SubagentWaveKind.READ_ONLY
-            paths.any(::isWholeWorkspacePath) -> SubagentWaveKind.WHOLE_WORKSPACE
+            paths.any { it in WHOLE_WORKSPACE_SCOPES } -> SubagentWaveKind.WHOLE_WORKSPACE
             else -> SubagentWaveKind.SCOPED_WRITE
         }
+        // 只读任务统一并入首个只读波（SubagentWritePathTest 编码了该语义：只读先行并行、
+        // 与写入波隔离避免读到中间态）；声明在写任务之后的只读任务也会前置，
+        // 需要校验写入结果的场景应由上层任务拆分时显式声明写路径。
         val joinIndex = waves.indices.firstOrNull { i ->
             when (kind) {
                 SubagentWaveKind.READ_ONLY -> waveKinds[i] == SubagentWaveKind.READ_ONLY
@@ -331,17 +396,41 @@ internal fun buildWriteCleanWaves(specs: List<SubagentTaskSpec>): List<List<Suba
     return waves
 }
 
-/** 规范化写路径，统一去掉首尾斜杠，保证跨子任务的路径比较稳定。 */
-internal fun normalizeWritePath(path: String): String = path.trim().replace('\\', '/').trim('/').removeSuffix("/.")
+/**
+ * 规范化写路径：统一分隔符、按段消解 `.` 与 `..`、去掉首尾斜杠，保证跨子任务的路径比较稳定。
+ *
+ * 必须按段消解 `..`：只做字符串裁剪时 `docs` 与 `docs/../src` 会被判为互不冲突而排进同一波，
+ * 写租约的冲突检测形同虚设；同理租约校验里 `docs/../x` 会因前缀匹配被误放行。
+ * （真正写文件时 [WorkspaceFileAccess] 还会拒绝含 `..` 的路径，这里是让租约层自身即可判定。）
+ * 逃逸出顶层的 `..` 原样保留，由调用方按越界处理。
+ */
+internal fun normalizeWritePath(path: String): String {
+    val segments = ArrayDeque<String>()
+    var escaped = 0
+    path.trim().replace('\\', '/').split('/').forEach { segment ->
+        when {
+            segment.isEmpty() || segment == "." -> Unit
+            segment == ".." -> if (segments.isEmpty()) escaped++ else segments.removeLast()
+            else -> segments.addLast(segment)
+        }
+    }
+    return "../".repeat(escaped) + segments.joinToString("/")
+}
 
 private enum class SubagentWaveKind { READ_ONLY, SCOPED_WRITE, WHOLE_WORKSPACE }
 
-private fun isWholeWorkspacePath(path: String): Boolean = normalizeWritePath(path) in setOf("*", ".")
+/**
+ * 是否为整工作区租约。`*` 与 `.` 都表示整个工作区；`.` 归一化后为空串，
+ * 空串同样是"工作区根"，不能当成未声明。
+ */
+internal fun isWholeWorkspaceWritePath(path: String): Boolean = normalizeWritePath(path) in WHOLE_WORKSPACE_SCOPES
+
+private val WHOLE_WORKSPACE_SCOPES = setOf("*", "")
 
 internal fun writePathsConflict(left: String, right: String): Boolean {
     val a = normalizeWritePath(left)
     val b = normalizeWritePath(right)
-    if (isWholeWorkspacePath(a) || isWholeWorkspacePath(b)) return true
+    if (a in WHOLE_WORKSPACE_SCOPES || b in WHOLE_WORKSPACE_SCOPES) return true
     return a == b || a.startsWith("$b/") || b.startsWith("$a/")
 }
 
@@ -364,35 +453,88 @@ internal const val PER_TASK_INLINE_BUDGET = 3_000
 /** 子智能体汇总 Markdown：状态行 + 每任务的输出。 */
 internal fun renderSummaryMarkdown(outcomes: List<SubagentOrchestrator.SubagentExecutionOutcome>): String =
     buildString {
-        val succeeded = outcomes.count { it.isSuccess }
-        val batchStatus = when (succeeded) {
-            outcomes.size -> "全部成功"
-            0 -> "全部失败"
-            else -> "部分成功"
-        }
-        append("### 🤖 子智能体协同执行完成 · $batchStatus ($succeeded/${outcomes.size})\n\n")
+        append(subagentBatchHeader(outcomes))
         outcomes.forEachIndexed { index, outcome ->
-            val statusIcon = if (outcome.isSuccess) "✅" else "⚠️"
-            val resolvedRole = if (outcome.resolvedProfileId != null) {
-                "${outcome.resolvedProfileName} · ${outcome.resolvedProfileId}"
-            } else {
-                outcome.spec.role.ifBlank { "${outcome.spec.department} / ${outcome.spec.agentQuery}" }
-            }
-            val modelBadge = outcome.resolvedModel?.let { " · 专用模型: $it" } ?: ""
-            append("#### ${index + 1}. $statusIcon 【${outcome.spec.taskName}】(角色: $resolvedRole$modelBadge)\n")
-            append("- **工具调用次数**：${outcome.toolCallCount} 次\n")
-
+            append(subagentOutcomeHeader(outcome, index, includeModelBadge = true))
             append("- **子任务输出**：\n")
             append(outcome.summary.trim())
             append("\n\n")
         }
     }
 
+private fun subagentBatchHeader(outcomes: List<SubagentOrchestrator.SubagentExecutionOutcome>): String {
+    val succeeded = outcomes.count { it.isSuccess }
+    val batchStatus = when (succeeded) {
+        outcomes.size -> "全部成功"
+        0 -> "全部失败"
+        else -> "部分成功"
+    }
+    return buildString {
+        append("### 🤖 子智能体协同执行完成 · $batchStatus ($succeeded/${outcomes.size})\n\n")
+        if (succeeded in 1 until outcomes.size) {
+            // 整批 ToolResult 标失败（一个没做完就不能算成功），但重发时不该把已完成的再跑一遍。
+            append("（本批部分成功：需要处理的只有下方标 ⚠️ 的子任务。重新派发时只提交这些任务，")
+            append("不要重复标 ✅ 的工作；它们的产出已在本汇总中。）\n\n")
+        }
+    }
+}
+
+/**
+ * 每个子任务的状态头。
+ *
+ * 状态不再只有 ✅/⚠️ 两态：未完成时必须写出终止原因、待审批交接与被拦截的写入，
+ * 否则父智能体（和用户）无法区分"做完了"与"收场了但没做完"。
+ */
+private fun subagentOutcomeHeader(
+    outcome: SubagentOrchestrator.SubagentExecutionOutcome,
+    index: Int,
+    includeModelBadge: Boolean,
+): String = buildString {
+    val statusIcon = if (outcome.isSuccess) "✅" else "⚠️"
+    val resolvedRole = if (outcome.resolvedProfileId != null) {
+        "${outcome.resolvedProfileName} · ${outcome.resolvedProfileId}"
+    } else {
+        outcome.spec.role.ifBlank { "${outcome.spec.department} / ${outcome.spec.agentQuery}" }
+    }
+    val modelBadge = if (includeModelBadge) outcome.resolvedModel?.let { " · 专用模型: $it" } ?: "" else ""
+    append("#### ${index + 1}. $statusIcon 【${outcome.spec.taskName}】(角色: $resolvedRole$modelBadge)\n")
+    append("- **工具调用次数**：${outcome.toolCallCount} 次\n")
+    if (!outcome.isSuccess) {
+        append("- **终止原因**：${subagentTerminationLabel(outcome.termination)}\n")
+    }
+    if (outcome.pendingApprovals.isNotEmpty()) {
+        append("- **待主智能体重新发起并审批**：")
+        append(outcome.pendingApprovals.joinToString("、") { it.toolName })
+        append("\n")
+    }
+    if (outcome.blockedWrites.isNotEmpty()) {
+        append("- **被写租约拦截、未落盘**：${outcome.blockedWrites.joinToString("、")}\n")
+    }
+    if (outcome.readOnlyWriteIntent) {
+        append("- **写租约缺失**：任务要求落盘但未声明 write_paths，本次按只读执行；产物在正文中，未写入文件\n")
+    }
+}
+
+private fun subagentTerminationLabel(termination: SubagentTermination): String = when (termination) {
+    SubagentTermination.CONCLUDED -> "已产出结论"
+    SubagentTermination.INCOMPLETE -> "收场但未产出可信结论"
+    SubagentTermination.NEEDS_APPROVAL -> "有需要审批的操作未执行"
+    SubagentTermination.WRITE_SCOPE_BLOCKED -> "写入被写租约拦截"
+    SubagentTermination.WRITE_FAILED -> "写入尝试失败，产物未落盘"
+    SubagentTermination.UNPARSEABLE_TOOL_CALL -> "文本工具调用无法解析"
+    SubagentTermination.MAX_ROUNDS -> "用尽工具轮数预算"
+    SubagentTermination.FAILED -> "执行异常"
+    SubagentTermination.TIMEOUT -> "执行超时"
+}
+
 /**
  * 结果分页读取：汇总注入父上下文前的预算控制。
  * 总量 ≤ [SUMMARY_INLINE_BUDGET] 字符 → 原样注入（保持现状，小批次体验不变）；
  * 超限 → 每个超长子任务输出截断为 [PER_TASK_INLINE_BUDGET] 字符，完整结果落盘
  * `.taixu-subagent/<laneName-safe>.md`（工作区相对路径），模型可用 read 工具按 offset/limit 分页读取。
+ *
+ * [fileAccess] 必须已经绑定到 [workspace]：返回给父智能体的是工作区相对路径，
+ * 写入基准与 read 的基准不一致就会出现"提示有完整报告、实际读不到"。
  */
 internal suspend fun paginateSubagentSummary(
     outcomes: List<SubagentOrchestrator.SubagentExecutionOutcome>,
@@ -418,23 +560,10 @@ internal suspend fun paginateSubagentSummary(
     }
 
     return buildString {
-        val succeeded = outcomes.count { it.isSuccess }
-        val batchStatus = when (succeeded) {
-            outcomes.size -> "全部成功"
-            0 -> "全部失败"
-            else -> "部分成功"
-        }
-        append("### 🤖 子智能体协同执行完成 · $batchStatus ($succeeded/${outcomes.size})\n\n")
+        append(subagentBatchHeader(outcomes))
         append("（本批输出总量超出注入预算，超长子任务已截断；完整结果可用 read 工具按 offset/limit 分页读取）\n\n")
         outcomes.forEachIndexed { index, outcome ->
-            val statusIcon = if (outcome.isSuccess) "✅" else "⚠️"
-            val resolvedRole = if (outcome.resolvedProfileId != null) {
-                "${outcome.resolvedProfileName} · ${outcome.resolvedProfileId}"
-            } else {
-                outcome.spec.role.ifBlank { "${outcome.spec.department} / ${outcome.spec.agentQuery}" }
-            }
-            append("#### ${index + 1}. $statusIcon 【${outcome.spec.taskName}】(角色: $resolvedRole)\n")
-            append("- **工具调用次数**：${outcome.toolCallCount} 次\n")
+            append(subagentOutcomeHeader(outcome, index, includeModelBadge = false))
             append("- **子任务输出**：\n")
             val spillPath = spilled[outcome.subSessionId]
             if (spillPath != null) {

@@ -1,4 +1,4 @@
-﻿package top.wkbin.taixu.runtime.tools
+package top.wkbin.taixu.runtime.tools
 
 import top.wkbin.taixu.runtime.FakeLinuxRuntime
 import kotlinx.coroutines.runBlocking
@@ -14,8 +14,8 @@ class RemoteScriptRunnerTest {
 
         runner.run(
             RemoteScriptSpec(
-                name = "openclaw",
-                url = "https://openclaw.ai/install.sh",
+                name = "chatgpt",
+                url = "https://chatgpt.com/codex/install.sh",
                 arguments = listOf("--no-onboard"),
             ),
         )

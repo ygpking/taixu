@@ -5,7 +5,7 @@ package top.wkbin.taixu.harness
  */
 internal object HarnessApiMapper {
     fun toApiMessage(message: HarnessMessage): ApiMessage = when (message) {
-        is CapabilityEvent -> ApiMessage(role = "system", content = null)
+        is CapabilityEvent, is ModelSwitchEvent -> ApiMessage(role = "system", content = null)
         is UserMessage -> ApiMessage(role = "user", content = message.text, imageUrls = message.imageUrls)
         is AssistantText -> ApiMessage(
             role = "assistant",

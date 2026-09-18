@@ -37,6 +37,8 @@
 - 项目架构、函数/类定位、调用链与代码检索 → code-navigation
 - 长期偏好、项目规范、重要配置记忆 → memory
 - 破坏性或敏感操作的识别与确认 → security
+- 查找 / 展示 / 下载图片与截图交付规范 → image-delivery
+- 网页逆向 hook 与 CDP 断点调试准则 → browser-reverse
 
 ## 标准决策顺序 (Decision Flow)
 

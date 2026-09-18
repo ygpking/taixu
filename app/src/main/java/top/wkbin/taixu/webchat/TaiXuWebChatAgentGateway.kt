@@ -19,6 +19,7 @@ import top.wkbin.taixu.harness.AssistantText
 import top.wkbin.taixu.harness.CapabilityEvent
 import top.wkbin.taixu.harness.HarnessLoop
 import top.wkbin.taixu.harness.HarnessMessage
+import top.wkbin.taixu.harness.ModelSwitchEvent
 import top.wkbin.taixu.harness.ToolCall
 import top.wkbin.taixu.harness.ToolResult
 import top.wkbin.taixu.harness.UserMessage
@@ -174,6 +175,22 @@ class TaiXuWebChatAgentGateway @Inject constructor(
                 put("toolType", message.kind.name.lowercase())
                 put("status", "success")
                 put("details", message.details)
+            },
+            createAt = message.createdAt,
+        )
+        is ModelSwitchEvent -> WebChatMessage(
+            id = message.id,
+            user = 0,
+            type = 2,
+            content = buildJsonObject {
+                put("type", "model_switch")
+                put("toolTitle", message.toLabel)
+                put("toolType", "model_switch")
+                put("status", if (message.compacted) "compacted" else "success")
+                put("details", message.fromLabel)
+                put("toContextTokens", message.toContextTokens)
+                put("compacted", message.compacted)
+                put("foldedMessageCount", message.foldedMessageCount)
             },
             createAt = message.createdAt,
         )

@@ -151,17 +151,30 @@ class RoomHarnessRuntimeRepository @Inject constructor(
         dao.findEntry(entryId)?.takeIf { it.sessionId == sessionId }?.let(::restoreFromStorage)
 
     override suspend fun appendToLane(sessionId: String, laneName: String, entry: HarnessEntryEntity) {
-        val lane = ensureLane(sessionId, laneName)
-        if (lane.leafId == entry.id) {
-            val existing = dao.findEntry(entry.id)
-            if (existing != null && existing.sessionId == sessionId && existing.payloadJson == entry.payloadJson) {
-                return
+        require(entry.sessionId == sessionId) { "Entry session mismatch" }
+        repeat(APPEND_RETRY_LIMIT) {
+            val lane = ensureLane(sessionId, laneName)
+            if (lane.leafId == entry.id) {
+                val existing = dao.findEntry(entry.id)
+                if (existing != null && existing.sessionId == sessionId && existing.payloadJson == entry.payloadJson) {
+                    return
+                }
             }
+            // Concurrent appends often race on a stale parentId captured before another writer
+            // advanced the leaf. Rebase onto the current leaf instead of crashing the UI loop.
+            val linked = if (entry.parentId == lane.leafId) entry else entry.copy(parentId = lane.leafId)
+            val uniqueEntry = ensureUniqueStorageEntry(linked)
+            val sanitized = sanitizeForStorage(uniqueEntry)
+            val updatedLane = lane.copy(leafId = uniqueEntry.id, updatedAt = System.currentTimeMillis())
+            val outcome = runCatching { dao.appendEntry(sanitized, updatedLane) }
+            if (outcome.isSuccess) return
+            val message = outcome.exceptionOrNull()?.message.orEmpty()
+            if ("moved while appending" in message) {
+                return@repeat
+            }
+            throw outcome.exceptionOrNull()!!
         }
-        require(entry.sessionId == sessionId && entry.parentId == lane.leafId) { "Entry parent does not match lane leaf" }
-        val uniqueEntry = ensureUniqueStorageEntry(entry)
-        val sanitized = sanitizeForStorage(uniqueEntry)
-        dao.appendEntry(sanitized, lane.copy(leafId = uniqueEntry.id, updatedAt = System.currentTimeMillis()))
+        error("Unable to append entry ${entry.id} to $sessionId/$laneName after $APPEND_RETRY_LIMIT retries")
     }
 
     override suspend fun moveLane(sessionId: String, laneName: String, leafId: String?) {
@@ -240,5 +253,9 @@ class RoomHarnessRuntimeRepository @Inject constructor(
     override suspend fun deleteSessionData(sessionId: String) {
         dao.deleteSessionData(sessionId)
         blobStore?.deleteSessionBlobs(sessionId)
+    }
+
+    private companion object {
+        const val APPEND_RETRY_LIMIT = 8
     }
 }

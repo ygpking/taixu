@@ -80,10 +80,10 @@ class ToolRegistry @Inject constructor(
         val persisted = persistedFile.takeIf { it.isFile }?.let { file ->
             runCatching { parseAndValidate(file.readText()) }.getOrNull()
         }
-        val base = persisted ?: parseAndValidate(
+        val base = (persisted ?: parseAndValidate(
             context.assets.open(REGISTRY_ASSET).bufferedReader().use { it.readText() },
-        )
-        val locals = loadLocalManifests()
+        )).filterNot { it.id in REMOVED_TOOL_IDS }
+        val locals = loadLocalManifests().filterNot { it.id in REMOVED_TOOL_IDS }
         return (base.filter { remote -> locals.none { it.id == remote.id } } + locals)
     }
 
@@ -426,9 +426,10 @@ class ToolRegistry @Inject constructor(
         }.getOrElse { throw IllegalStateException("无法提交工具清单", it) }
     }
 
-    private companion object {
+    companion object {
         const val REGISTRY_ASSET = "registry/tools.json"
         const val MAX_REGISTRY_BYTES = 1024 * 1024L
+        val REMOVED_TOOL_IDS = setOf("claude-code", "openclaw", "hermes-agent")
         // Android + ARM64 NDK + Flutter archives can exceed 4 GiB after extraction.
         const val MAX_PACKAGE_BYTES = 8L * 1024L * 1024L * 1024L
         const val PROGRESS_REPORT_BYTES = 4L * 1024L * 1024L

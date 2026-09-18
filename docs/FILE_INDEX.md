@@ -76,6 +76,20 @@
 | `feature/developer/.../DeveloperScreen.kt` | 开发者控制台 | 包含底层健康监控、无线 ADB 状态卡片、工具源更新等 |
 | `harness/ToolExecutor.kt` | `host.logcat` 分派 | 优先使用无线 ADB，失败后回退 Shizuku/Root |
 
+## 🌿 Git 分支管理（feature:git）
+
+| 模块 | 关键文件 | 职责 |
+| --- | --- | --- |
+| `feature/git/.../GitManager.kt` | JGit 封装（MGit 同款技术栈） | 分支列表/切换/新建/删除、提交树泳道算法、push/pull 进度、友好错误映射 |
+| `feature/git/.../GitCredentialsStore.kt` | 按 host 的 HTTPS 凭据存储 | Token 经 SecretManager（AndroidKeyStore AES/GCM）加密后落 JSON |
+| `feature/git/.../GitViewModel.kt` | GitScreen 状态机 | 项目绑定 / 操作互斥 / 进度上抛 |
+| `feature/git/.../GitScreen.kt` | 分支管理页（分支+提交记录双页签） | 入口：智枢顶部工具条「仓库」 |
+| `feature/git/.../GitCommitGraph.kt` | Canvas 泳道提交图 | 穿线/合并/分叉斜线 + 多色节点 |
+| `feature/chat/.../ChatWorkbenchPanels.kt` | 顶部工具条「仓库」入口 | `onOpenRepository` 可选回调模式 |
+| `feature/navigation/.../TaiXuNavHost.kt` | `GitRepositoryDestination(projectName)` | 路由注册 |
+
+> JGit 在宿主侧直接打开工作区仓库（`RepositoryBuilder` + 空的 system/user 配置规避 Android 路径问题），不依赖沙箱内 git 安装。
+
 ## 🤝 Web Reverse MCP 参考
 
 项目内置浏览器/MCP 设计借鉴自 `mnjh666/WebReverse-MCP`（模块切分 / 工具动词集 / 风险矩阵），不复用其代码。

@@ -304,18 +304,24 @@ class WorkflowGuiPilot @Inject constructor(
             delay(900)
         }
 
-        val success = failedReason == null && (doneReason != null || steps >= maxSteps)
+        // 步数耗尽且模型未宣布 done：目标未达成，必须判 FAILED（exitCode 非零），
+        // 不得以 SUCCESS/exitCode 0 返回误导调用方（步数上限与循环一致取 1..40 收敛值）
+        val stepBudget = maxSteps.coerceIn(1, 40)
+        val exhausted = failedReason == null && doneReason == null && steps >= stepBudget
+        val effectiveFailure = failedReason
+            ?: if (exhausted) "步数耗尽未达成目标（${stepBudget} 步内模型未宣布完成）" else null
+        val success = effectiveFailure == null
         val summary = buildString {
-            appendLine(if (doneReason != null) "✔ $doneReason" else if (failedReason != null) "✘ $failedReason" else "达到最大步数 $maxSteps")
+            appendLine(if (doneReason != null) "✔ $doneReason" else if (effectiveFailure != null) "✘ $effectiveFailure" else "达到最大步数 $maxSteps")
             appendLine()
             append(log.toString().trimEnd())
         }
-        onProgress(if (success && failedReason == null) "GUI 试飞结束" else "GUI 试飞未完成")
+        onProgress(if (success) "GUI 试飞结束" else "GUI 试飞未完成")
         return NodeExecutionOutput(
-            status = if (failedReason == null) NodeRunStatus.SUCCESS else NodeRunStatus.FAILED,
-            exitCode = if (failedReason == null) 0 else 1,
+            status = if (success) NodeRunStatus.SUCCESS else NodeRunStatus.FAILED,
+            exitCode = if (success) 0 else 1,
             textOutput = summary,
-            error = failedReason,
+            error = effectiveFailure,
             variables = mapOf(
                 "GUI_PILOT_STEPS" to steps.toString(),
                 "GUI_PILOT_DONE" to (doneReason != null).toString(),

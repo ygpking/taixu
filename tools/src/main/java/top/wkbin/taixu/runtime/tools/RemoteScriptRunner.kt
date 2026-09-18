@@ -86,8 +86,6 @@ class RemoteScriptRunner @Inject constructor(
         private val SHA256 = Regex("[a-fA-F0-9]{64}")
         private val ALLOWED_HOSTS = setOf(
             "chatgpt.com",
-            "openclaw.ai",
-            "hermes-agent.nousresearch.com",
         )
     }
 }

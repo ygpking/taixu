@@ -24,6 +24,8 @@ class PromptRouter @Inject constructor(
         CODE_NAVIGATION("prompts/system/code-navigation.md", "code-navigation"),
         SECURITY("prompts/system/security.md", "security"),
         MEMORY("prompts/system/memory.md", "memory"),
+        IMAGE_DELIVERY("prompts/system/image-delivery.md", "image-delivery"),
+        BROWSER_REVERSE("prompts/system/browser-reverse.md", "browser-reverse"),
     }
 
     /** 每轮常驻注入的规则块（L0 工具说明 + L1 PRoot 约束）。 */
@@ -67,6 +69,17 @@ class PromptRouter @Inject constructor(
             blocks.add(RuleBlock.MEMORY)
         }
 
+        // 图片查找 / 展示 / 下载任务注入交付规范（Markdown 图片语法、图床反爬规避）。
+        if (IMAGE_DELIVERY_SIGNALS.any { it in text }) {
+            blocks.add(RuleBlock.IMAGE_DELIVERY)
+        }
+
+        // 浏览器逆向 / 调试任务注入 hook 与 CDP 准则；信号刻意偏宽：
+        // 漏掉「调试结束必须 debug_resume」铁律会让页面永久冻结，多注入 1.5KB 的代价远小于此。
+        if (BROWSER_REVERSE_SIGNALS.any { it in text }) {
+            blocks.add(RuleBlock.BROWSER_REVERSE)
+        }
+
         return blocks
     }
 
@@ -75,6 +88,9 @@ class PromptRouter @Inject constructor(
         val block = RuleBlock.entries.firstOrNull { it.loadName == name.trim().lowercase() } ?: return null
         return runCatching { promptAssets.read(block.assetPath) }.getOrNull()
     }
+
+    /** 可用规则块名单（供错误提示动态生成，避免硬编码清单随枚举漂移）。 */
+    fun availableRuleNames(): String = RuleBlock.entries.joinToString(" / ") { it.loadName }
 
     companion object {
         private val CODE_SIGNALS = listOf(
@@ -104,6 +120,19 @@ class PromptRouter @Inject constructor(
         private val MEMORY_SIGNALS = listOf(
             "记住", "记一下", "以后都", "以后默认", "我的偏好", "这是规范",
             "remember", "my preference",
+        )
+
+        private val IMAGE_DELIVERY_SIGNALS = listOf(
+            "图片", "照片", "壁纸", "头像", "海报", "封面", "配图", "发我", "发张", "来张",
+            "保存到本地", "下载到本地", "留存", "美图", "表情包",
+            "image", "picture", "photo", "pic",
+        )
+
+        private val BROWSER_REVERSE_SIGNALS = listOf(
+            "逆向", "反编译", "抓包", "抓接口", "hook", "断点", "加密", "签名",
+            "mock", "拦截", "worker", "爬虫", "爬取",
+            "网页", "页面", "网站", "浏览器", "网址",
+            "browser", "web page", "debug",
         )
     }
 }

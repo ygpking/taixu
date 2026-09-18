@@ -2,7 +2,9 @@ package top.wkbin.taixu.harness
 
 import java.security.MessageDigest
 import java.util.ArrayDeque
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
@@ -94,6 +96,8 @@ internal suspend fun <T> executeWithRotatedApiKey(
     val excluded = mutableSetOf<String>()
     var lastRateLimit: LlmRateLimitException? = null
     while (true) {
+        // 重试前确认协程仍存活：用户已点"停止"时不再用下一个 Key 重发请求
+        currentCoroutineContext().ensureActive()
         val selection = scheduler.select(keys, model.requestsPerMinutePerKey, excluded)
         val selectedKey = selection.key
         if (selectedKey == null) {

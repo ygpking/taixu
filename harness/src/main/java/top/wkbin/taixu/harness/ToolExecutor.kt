@@ -90,12 +90,21 @@ class ToolExecutor @Inject constructor(
                 val decision = approvalPolicyEngine.decide(mode, toolCall.tool, toolCall.args, workspace, toolCall.rawToolName)
                 if (decision.required) {
                     if (!allowApprovalRequest) {
+                        // 后台 Lane 没有可暂停的审批 UI，只能结构化交接：标记 approvalDeferred，
+                        // 由 Lane 收集成待办上交父智能体。若只回一句失败文字，模型下一轮会输出
+                        // "已交由主智能体"，而那句话曾被当成完成结论。
                         return ToolResult(
                             id = UUID.randomUUID().toString(),
                             createdAt = now,
                             toolCallId = toolCall.id,
                             success = false,
-                            output = "该工具需要用户审批，子智能体后台 Lane 不支持暂停审批；请交由主智能体调用。",
+                            output = buildString {
+                                append("该工具需要用户审批（${decision.summary}），子智能体后台 Lane 不支持暂停审批，本次调用未执行。")
+                                append("\n原因：").append(decision.reason)
+                                append("\n请不要重试同一调用，也不要声称已完成：把该操作作为待办写进结论，")
+                                append("由主智能体在主会话重新发起并等待用户批准。")
+                            },
+                            approvalDeferred = true,
                         )
                     }
                     checkNotNull(repository) { "审批仓库未初始化" }
@@ -179,7 +188,11 @@ class ToolExecutor @Inject constructor(
         progressReporter: (suspend (String) -> Unit)?,
         operationId: String?,
     ): Pair<Boolean, String> {
-        val args = top.wkbin.taixu.harness.validation.ToolSchemaValidator.normalizeArgs(rawArgs)
+        // MCP 工具的参数名由远端 schema 定义，跳过单键解包/扁平键还原与内置别名，
+        // 否则名为 input 的单参数或含 __ / . 的合法参数名会被错误改写。
+        val args = top.wkbin.taixu.harness.validation.ToolSchemaValidator.normalizeArgs(
+            rawArgs, applyAliases = tool != HarnessTool.MCP, isMcpTool = tool == HarnessTool.MCP,
+        )
         val activeFileAccess = if (workspace.isNotBlank()) fileAccess.withBase(workspace) else fileAccess
         return when (tool) {
             HarnessTool.READ -> {
@@ -228,7 +241,10 @@ class ToolExecutor @Inject constructor(
                 if (content != null) {
                     true to "【规则块：$rule】\n$content"
                 } else {
-                    false to "未知规则块：$rule。可用：workflow / code-navigation / security / memory / environment-proot / tools"
+                    // 名单从 PromptRouter 动态生成：硬编码清单会随规则块增删漂移（曾漏 image-delivery/browser-reverse）。
+                    val available = promptRouter?.availableRuleNames()
+                        ?: "workflow / code-navigation / security / memory / environment-proot / tools"
+                    false to "未知规则块：$rule。可用：$available"
                 }
             }
         }
@@ -604,6 +620,7 @@ class ToolExecutor @Inject constructor(
 
     private fun historyLabel(message: HarnessMessage, full: Boolean = false): String = when (message) {
         is CapabilityEvent -> "能力事件 ${message.name}: ${message.details}"
+        is ModelSwitchEvent -> "切换模型 ${message.fromLabel} → ${message.toLabel}"
         is UserMessage -> "用户：${message.text.take(if (full) MAX_HISTORY_READ_OUTPUT else 240)}"
         is AssistantText -> "助手：${message.text.take(if (full) MAX_HISTORY_READ_OUTPUT else 240)}" +
             if (full && !message.reasoning.isNullOrBlank()) "\nreasoning:\n${message.reasoning.take(MAX_HISTORY_READ_OUTPUT)}" else ""

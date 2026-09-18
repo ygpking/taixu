@@ -24,6 +24,9 @@ class LinuxMcpStdioChannelFactory @Inject constructor(
     private val commandBuilder: McpCommandBuilder,
 ) : McpStdioChannelFactory {
     override suspend fun open(server: McpServerConfig): McpStdioChannel {
+        if (!awaitLinuxRuntimeReady(linuxRuntime.state)) {
+            throw IllegalStateException("Linux runtime is not ready. Call initialize() first.")
+        }
         val session = linuxRuntime.startSession(
             SessionConfig(
                 workingDirectory = "/root",

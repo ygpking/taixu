@@ -590,6 +590,8 @@ class SettingsDataStore @Inject constructor(
     private val contextCompactionEnabledKey = booleanPreferencesKey("agent_context_compaction_enabled")
     private val contextCompactionThresholdKey = androidx.datastore.preferences.core.intPreferencesKey("agent_context_compaction_threshold")
     private val maxToolRoundsKey = androidx.datastore.preferences.core.intPreferencesKey("agent_max_tool_rounds")
+    private val roundLimitAutoContinuationsKey =
+        androidx.datastore.preferences.core.intPreferencesKey("agent_round_limit_auto_continuations")
     private val autoWorkspaceCwdKey = booleanPreferencesKey("agent_auto_workspace_cwd")
     private val commandOutputCompressionEnabledKey = booleanPreferencesKey("agent_command_output_compression_enabled")
     private val baseCommandTimeoutSecondsKey = androidx.datastore.preferences.core.intPreferencesKey("agent_base_command_timeout_seconds")
@@ -604,6 +606,13 @@ class SettingsDataStore @Inject constructor(
     /** 最大工具执行轮次（默认 100 轮） */
     val maxToolRounds: Flow<Int> = context.settingsDataStore.data.map { it[maxToolRoundsKey] ?: 100 }
     suspend fun setMaxToolRounds(value: Int) { context.settingsDataStore.edit { it[maxToolRoundsKey] = value.coerceIn(10, 300) } }
+
+    /** 轮次预算用尽后自动续跑的次数（默认 2 次，0 表示触顶即停） */
+    val roundLimitAutoContinuations: Flow<Int> =
+        context.settingsDataStore.data.map { it[roundLimitAutoContinuationsKey] ?: DEFAULT_ROUND_LIMIT_AUTO_CONTINUATIONS }
+    suspend fun setRoundLimitAutoContinuations(value: Int) {
+        context.settingsDataStore.edit { it[roundLimitAutoContinuationsKey] = value.coerceIn(0, MAX_ROUND_LIMIT_AUTO_CONTINUATIONS) }
+    }
 
     /** 执行命令时是否自动注入工作区路径为 cwd */
     val autoWorkspaceCwd: Flow<Boolean> = context.settingsDataStore.data.map { it[autoWorkspaceCwdKey] ?: true }
@@ -933,5 +942,7 @@ class SettingsDataStore @Inject constructor(
         const val DEFAULT_BASE_COMMAND_TIMEOUT_SECONDS = 10 * 60
         const val MIN_BASE_COMMAND_TIMEOUT_SECONDS = 60
         const val MAX_BASE_COMMAND_TIMEOUT_SECONDS = 60 * 60
+        const val DEFAULT_ROUND_LIMIT_AUTO_CONTINUATIONS = 2
+        const val MAX_ROUND_LIMIT_AUTO_CONTINUATIONS = 10
     }
 }

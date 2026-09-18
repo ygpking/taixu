@@ -64,6 +64,9 @@ class HarnessWorkflowAgentExecutionPort @Inject constructor(
             workspace = request.workspacePath,
             modelId = request.modelId ?: session.modelId,
             modelVariant = request.modelVariant ?: session.modelVariant,
+            // 节点声明了写范围才启用闸门；未声明的推理节点维持原有可写行为，
+            // 否则存量工作流里"生成文件"类推理节点会被静默降级成只读。
+            writePaths = request.writePaths.takeIf { it.isNotEmpty() },
         )
         return WorkflowAgentResult(result.success, result.summary, result.toolCallCount)
     }

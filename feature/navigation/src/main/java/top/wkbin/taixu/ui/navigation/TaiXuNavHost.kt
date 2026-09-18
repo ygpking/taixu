@@ -5,9 +5,13 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.ime
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -75,6 +79,7 @@ sealed interface AppDestination : NavKey
 @Serializable data object AgentSkillSettingsDestination : AppDestination
 @Serializable data object McpSettingsDestination : AppDestination
 @Serializable data object ToolCenterDestination : AppDestination
+@Serializable data object CcSwitchDestination : AppDestination
 @Serializable data class ToolDetailDestination(val toolId: String) : AppDestination
 @Serializable data object DistroManagementDestination : AppDestination
 @Serializable data object StorageMountSettingsDestination : AppDestination
@@ -94,6 +99,7 @@ sealed interface AppDestination : NavKey
 @Serializable data object CustomIterationDestination : AppDestination
 @Serializable data class TerminalDestination(val toolId: String = "", val project: String = "") : AppDestination
 @Serializable data object BrowserDestination : AppDestination
+@Serializable data class GitRepositoryDestination(val projectName: String) : AppDestination
 @Serializable data class WorkflowDestination(
     val projectName: String = "",
     val workflowId: String? = null,
@@ -126,11 +132,32 @@ fun TaiXuNavHost(
     val settingsStack = rememberNavBackStack(SettingsDestination)
     var pendingHealingTask by remember { mutableStateOf<HealingTask?>(null) }
     var selectedMain by rememberSaveable { mutableStateOf(MainDestination.Home) } // 默认进入太墟开辟主界
+    var lastNavTime by remember { mutableLongStateOf(0L) }
+    var navTransitionLockedUntil by remember { mutableLongStateOf(0L) }
+
+    fun isNavTransitionLocked(): Boolean =
+        System.currentTimeMillis() < navTransitionLockedUntil
+
+    fun lockNavTransition() {
+        navTransitionLockedUntil =
+            System.currentTimeMillis() + NAV_TRANSITION_LOCK_MS
+    }
+
+    /** Programmatic stack mutation (bus / workflow) — still transition-locks. */
+    fun NavBackStack<NavKey>.pushRaw(destination: NavKey, lock: Boolean = true) {
+        if (isNavTransitionLocked()) return
+        if (lastOrNull() == destination) return
+        lastNavTime = System.currentTimeMillis()
+        add(destination)
+        if (lock) lockNavTransition()
+    }
 
     LaunchedEffect(chatViewModel) {
         chatViewModel.workflowLaunchRequests.collect { request ->
             selectedMain = MainDestination.Agent
-            agentStack.add(WorkflowDestination(request.projectName, request.workflowId, request.initialVariables))
+            agentStack.pushRaw(
+                WorkflowDestination(request.projectName, request.workflowId, request.initialVariables),
+            )
         }
     }
 
@@ -141,12 +168,12 @@ fun TaiXuNavHost(
                     selectedMain = MainDestination.Settings
                     if (settingsStack.lastOrNull() != AdbLogcatDestination) {
                         if (settingsStack.lastOrNull() == SettingsDestination) {
-                            settingsStack.add(SystemDevSettingsDestination)
+                            settingsStack.pushRaw(SystemDevSettingsDestination, lock = false)
                         }
                         if (settingsStack.lastOrNull() == SystemDevSettingsDestination) {
-                            settingsStack.add(AdbLogcatDestination)
+                            settingsStack.pushRaw(AdbLogcatDestination)
                         } else if (settingsStack.lastOrNull() != AdbLogcatDestination) {
-                            settingsStack.add(AdbLogcatDestination)
+                            settingsStack.pushRaw(AdbLogcatDestination)
                         }
                     }
                     globalNavigationBus.clearLatest(target)
@@ -154,8 +181,6 @@ fun TaiXuNavHost(
             }
         }
     }
-
-    var lastNavTime by remember { mutableStateOf(0L) }
 
     val activeStack = when (selectedMain) {
         MainDestination.Home -> homeStack
@@ -165,23 +190,29 @@ fun TaiXuNavHost(
     }
 
     fun navigateMain(destination: MainDestination) {
+        // Tab swaps are instantaneous (key(selectedMain)); do not transition-lock them.
         selectedMain = destination
     }
 
     fun NavBackStack<NavKey>.push(from: NavKey, destination: NavKey) {
+        if (isNavTransitionLocked()) return
         val now = System.currentTimeMillis()
         if (now - lastNavTime < 120L) return
         if (lastOrNull() == from && lastOrNull() != destination) {
             lastNavTime = now
             add(destination)
+            lockNavTransition()
         }
     }
 
     fun popBack() {
+        if (isNavTransitionLocked()) return
         val now = System.currentTimeMillis()
         if (now - lastNavTime < 120L) return
+        if (activeStack.size <= 1) return
         lastNavTime = now
-        if (activeStack.size > 1) activeStack.removeLastOrNull()
+        activeStack.removeLastOrNull()
+        lockNavTransition()
     }
 
     @Composable
@@ -244,6 +275,9 @@ fun TaiXuNavHost(
                         browserBackPressed = { browserViewModel.handleBackImmediate() },
                         onOpenFile = { projectName, relativePath ->
                             agentStack.push(AgentDestination, CodeEditorDestination(projectName, relativePath))
+                        },
+                        onOpenRepository = { projectName ->
+                            agentStack.push(AgentDestination, GitRepositoryDestination(projectName))
                         },
                     )
                 }
@@ -349,6 +383,7 @@ fun TaiXuNavHost(
                         onBack = ::popBack,
                         onOpenModelProfiles = { settingsStack.push(AgentEcoSettingsDestination, ModelProfilesDestination) },
                         onOpenLocalLlm = { settingsStack.push(AgentEcoSettingsDestination, LocalLlmDestination) },
+                        onOpenCcSwitch = { settingsStack.push(AgentEcoSettingsDestination, CcSwitchDestination) },
                         onOpenToolCenter = { settingsStack.push(AgentEcoSettingsDestination, ToolCenterDestination) },
                         onOpenAgentSettings = { settingsStack.push(AgentEcoSettingsDestination, AgentSettingsDestination) },
                         onOpenSubagentSettings = { settingsStack.push(AgentEcoSettingsDestination, AgentSubagentSettingsDestination) },
@@ -453,6 +488,26 @@ fun TaiXuNavHost(
                             val prompt = top.wkbin.taixu.ui.settings.ToolSelfHealingHelper.buildHealingPrompt(toolId, toolName, logs)
                             pendingHealingTask = HealingTask("🔧 自愈: $toolName", prompt)
                             selectedMain = MainDestination.Agent
+                        },
+                    )
+                }
+            }
+            entry<CcSwitchDestination> {
+                GuardedEntry(CcSwitchDestination) {
+                    val context = androidx.compose.ui.platform.LocalContext.current
+                    top.wkbin.taixu.ui.settings.CcSwitchScreen(
+                        onBack = ::popBack,
+                        onLaunchTerminal = { executable -> activeStack.push(CcSwitchDestination, TerminalDestination(toolId = executable)) },
+                        onOpenBrowser = { url ->
+                            val targetUrl = url.ifBlank { "http://127.0.0.1:19870" }
+                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(targetUrl)).apply {
+                                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            runCatching {
+                                context.startActivity(intent)
+                            }.onFailure {
+                                android.widget.Toast.makeText(context, "无法唤起外部浏览器: ${it.localizedMessage}", android.widget.Toast.LENGTH_SHORT).show()
+                            }
                         },
                     )
                 }
@@ -579,6 +634,14 @@ fun TaiXuNavHost(
                     BrowserScreen(onBack = ::popBack, viewModel = browserViewModel)
                 }
             }
+            entry<GitRepositoryDestination> { destination ->
+                GuardedEntry(destination) {
+                    top.wkbin.taixu.ui.git.GitScreen(
+                        projectName = destination.projectName,
+                        onBack = ::popBack,
+                    )
+                }
+            }
     }
 
     val density = LocalDensity.current
@@ -586,17 +649,30 @@ fun TaiXuNavHost(
     val showLiquidBottomBar = liquidGlassBackdrop != null &&
         activeStack.size == 1 &&
         WindowInsets.ime.getBottom(density) == 0
-    Box(Modifier.fillMaxSize()) {
-        NavDisplay(
-            backStack = activeStack,
+    // Hoist decorators so tab switches (key below) do not drop entry Saveable/ViewModel state.
+    // Explicit <NavKey>: outside NavDisplay's parameter context, listOf cannot infer T.
+    val entryDecorators = listOf(
+        rememberSaveableStateHolderNavEntryDecorator<NavKey>(),
+        rememberViewModelStoreNavEntryDecorator<NavKey>(),
+    )
+    Box(modifier = Modifier.fillMaxSize()) {
+        // App background under NavDisplay so a rare uncovered frame never shows window black.
+        Surface(
             modifier = Modifier.fillMaxSize(),
-            onBack = ::popBack,
-            entryDecorators = listOf(
-                rememberSaveableStateHolderNavEntryDecorator(),
-                rememberViewModelStoreNavEntryDecorator(),
-            ),
-            entryProvider = appEntryProvider,
-        )
+            color = MaterialTheme.colorScheme.background,
+        ) {
+            // key(selectedMain): swapping the bottom tab replaces NavDisplay instead of animating
+            // between two unrelated back stacks (which looked like a page transition).
+            key(selectedMain) {
+                NavDisplay(
+                    backStack = activeStack,
+                    modifier = Modifier.fillMaxSize(),
+                    onBack = ::popBack,
+                    entryDecorators = entryDecorators,
+                    entryProvider = appEntryProvider,
+                )
+            }
+        }
         if (liquidGlassBackdrop != null) {
             // Keep the expensive glass layers composed while a secondary destination is open.
             // Recreating both backdrop render layers in the same frame as the root screen was
@@ -625,3 +701,9 @@ private data class HealingTask(
     val title: String,
     val prompt: String,
 )
+
+/**
+ * 导航转场期间锁定新导航的时长：miuix NavDisplay 默认转场 500ms + 40ms 余量，
+ * 防止转场中连续入栈导致的栈错乱与视觉跳变。
+ */
+private const val NAV_TRANSITION_LOCK_MS = 540L

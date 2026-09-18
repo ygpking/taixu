@@ -44,3 +44,11 @@ internal fun formatTokenCount(tokens: Int): String = when {
     tokens >= 1_000 -> String.format(java.util.Locale.US, "%.2fk", tokens / 1000f)
     else -> tokens.toString()
 }
+
+internal fun formatContextWindow(tokens: Int): String = when {
+    tokens >= 1_000_000 && tokens % 1_000_000 == 0 -> "${tokens / 1_000_000}M"
+    tokens >= 1_000_000 -> String.format(java.util.Locale.US, "%.1fM", tokens / 1_000_000.0)
+    tokens >= 1_000 && tokens % 1_000 == 0 -> "${tokens / 1_000}K"
+    tokens >= 1_000 -> String.format(java.util.Locale.US, "%.1fK", tokens / 1_000.0)
+    else -> tokens.toString()
+}

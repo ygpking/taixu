@@ -120,6 +120,20 @@
     <string name="chat_isolated_sandbox">独立沙箱</string>
     <string name="chat_new_session">新建会话</string>
     <string name="chat_rename_session">重命名会话</string>
+    <string name="chat_drawer_new_task">新任务</string>
+    <string name="chat_drawer_projects">项目</string>
+    <string name="chat_drawer_recent">最近</string>
+    <string name="chat_drawer_no_projects">暂无关联项目</string>
+    <string name="chat_drawer_no_sessions_in_project">暂无会话，点击 + 新建</string>
+    <string name="chat_drawer_no_recent_sessions">暂无未关联项目的会话</string>
+    <string name="chat_drawer_create_in_project">在此项目中新建会话</string>
+    <string name="chat_drawer_quick_skills">扩展与技能</string>
+    <string name="chat_drawer_quick_runtime">运行活动</string>
+    <string name="chat_time_just_now">刚刚</string>
+    <string name="chat_time_minutes_ago">%1$d 分钟前</string>
+    <string name="chat_time_hours_ago">%1$d 小时前</string>
+    <string name="chat_time_yesterday">昨天</string>
+    <string name="chat_time_days_ago">%1$d 天前</string>
     <string name="chat_title_label">标题</string>
     <string name="chat_save">保存</string>
     <string name="chat_select_model">选择供应商</string>
@@ -361,6 +375,8 @@
     <string name="chat_menu_capabilities_subtitle">%1$d 项已激活</string>
     <string name="chat_menu_approval_mode">审批权限模式</string>
     <string name="chat_open_session_list">会话列表</string>
+    <string name="chat_repository">仓库</string>
+    <string name="chat_repository_no_project">当前会话未绑定工作区项目，请先在「开辟」中选择项目进入</string>
     <string name="chat_new_session_button">新建会话</string>
     <string name="chat_add_attachment">添加附件</string>
     <string name="chat_mount_capabilities">挂载能力</string>
@@ -379,6 +395,11 @@
     <string name="chat_mcp_badge">MCP</string>
     <string name="chat_capability_skill_fmt">Skill: %1$s</string>
     <string name="chat_capability_mcp_fmt">MCP: %1$s</string>
+    <string name="chat_model_switch_to_fmt">已切换到 %1$s</string>
+    <string name="chat_model_switch_from_to_fmt">从 %1$s 切换到 %2$s</string>
+    <string name="chat_model_switch_window_fmt">当前上下文窗口 %1$s</string>
+    <string name="chat_model_switch_compacted_fmt">已按 %1$s 窗口压缩 %2$d 条早期消息</string>
+    <string name="chat_model_switch_pending_fmt">将在下一轮按 %1$s 窗口压缩早期消息</string>
     <string name="chat_collapse">收起</string>
     <string name="chat_expand_more">展开更多 %1$d 步（共 %2$d 步）%3$s</string>
     <!-- 附件菜单与处理 -->

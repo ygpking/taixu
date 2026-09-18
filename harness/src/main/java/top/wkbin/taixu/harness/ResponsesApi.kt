@@ -47,20 +47,28 @@ internal class ResponsesApi(
     private val okHttpClient: OkHttpClient,
     private val json: Json,
 ) {
+    @OptIn(InternalCoroutinesApi::class)
     suspend fun chat(model: ModelConfig, messages: List<ApiMessage>): ChatResult =
         withContext(Dispatchers.IO) {
-            okHttpClient.newCall(buildRequest(model, messages, stream = false)).execute().use { response ->
-                val body = response.body.string()
-                if (!response.isSuccessful) {
-                    if (response.code == 429) {
-                        throw ProviderClient.rateLimitException(response.code, body, response.header("Retry-After"))
+            val call = okHttpClient.newCall(buildRequest(model, messages, stream = false))
+            // 与流式路径一致：取消时立即关闭 socket，避免"停止"后阻塞到读超时
+            val cancelHandle = coroutineContext[Job]?.invokeOnCompletion(onCancelling = true) { call.cancel() }
+            try {
+                call.execute().use { response ->
+                    val body = response.body.string()
+                    if (!response.isSuccessful) {
+                        if (response.code == 429) {
+                            throw ProviderClient.rateLimitException(response.code, body, response.header("Retry-After"))
+                        }
+                        if (response.code in 500..599) {
+                            throw ProviderClient.transientHttpException(response.code, body, response.header("Retry-After"))
+                        }
+                        throw IllegalStateException("Responses 请求失败 HTTP ${response.code}：${extractError(body)}")
                     }
-                    if (response.code in 500..599) {
-                        throw ProviderClient.transientHttpException(response.code, body, response.header("Retry-After"))
-                    }
-                    throw IllegalStateException("Responses 请求失败 HTTP ${response.code}：${extractError(body)}")
+                    parseFinalResponse(body)
                 }
-                parseFinalResponse(body)
+            } finally {
+                cancelHandle?.dispose()
             }
         }
 
@@ -269,25 +277,11 @@ internal class ResponsesApi(
                         index++
                     }
                     "assistant" -> {
-                        add(
-                            buildJsonObject {
-                                put("role", "assistant")
-                                put(
-                                    "content",
-                                    buildJsonArray {
-                                        if (!message.content.isNullOrBlank()) {
-                                            add(
-                                                buildJsonObject {
-                                                    put("type", "output_text")
-                                                    put("text", message.content)
-                                                },
-                                            )
-                                        }
-                                    },
-                                )
-                            },
-                        )
-                        // 推理内容回传为 reasoning item（可选；保持多轮上下文一致）
+                        // 推理内容回传为 reasoning item。限制：HarnessMessage 只持久化
+                        // reasoning 文本，不保留原始 rs_* item id，无法逐字透传，只能合成
+                        // 无 id 的 reasoning item（服务端按新推理内容处理）。
+                        // 顺序上必须放在 assistant 消息/function_call 之前（协议要求
+                        // reasoning 先于其推导出的输出），原先放在之后会被服务端 400。
                         if (!message.reasoning_content.isNullOrBlank()) {
                             add(
                                 buildJsonObject {
@@ -306,6 +300,24 @@ internal class ResponsesApi(
                                 },
                             )
                         }
+                        add(
+                            buildJsonObject {
+                                put("role", "assistant")
+                                put(
+                                    "content",
+                                    buildJsonArray {
+                                        if (!message.content.isNullOrBlank()) {
+                                            add(
+                                                buildJsonObject {
+                                                    put("type", "output_text")
+                                                    put("text", message.content)
+                                                },
+                                            )
+                                        }
+                                    },
+                                )
+                            },
+                        )
                         // 历史工具调用：以 function_call item 逐条回传
                         message.tool_calls.orEmpty().forEach { call ->
                             add(

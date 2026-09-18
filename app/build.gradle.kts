@@ -6,8 +6,8 @@ import java.util.Properties
 import org.gradle.kotlin.dsl.configure
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
-val appVersionName = "0.13.13"
-val appVersionCode = 32
+val appVersionName = "0.15.15"
+val appVersionCode = 33
 
 // TaiXuDev 双包构建开关：CI（.github/workflows/taixudev-build.yml）设 TAIXU_DEV_BUILD=1 时，
 // 产出独立预览包 top.wkbin.taixu.dev / 应用名 TaiXuDev / 版本后缀 -dev，
@@ -183,6 +183,7 @@ dependencies {
     implementation(project(":feature:custom_iteration"))
     implementation(project(":feature:onboarding"))
     implementation(project(":feature:theme"))
+    implementation(project(":feature:git"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.core.splashscreen)

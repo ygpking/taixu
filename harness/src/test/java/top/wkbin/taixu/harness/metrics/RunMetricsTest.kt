@@ -24,6 +24,8 @@ class RunMetricsTest {
         metrics.consecutiveFailuresObserved(3)
         metrics.consecutiveFailuresObserved(5)
         metrics.consecutiveFailuresObserved(2)
+        metrics.budgetContinued()
+        metrics.budgetContinued()
         metrics.circuitBreaker()
         metrics.finish("failed")
 
@@ -38,6 +40,7 @@ class RunMetricsTest {
         assertTrue(summary.contains("Steering=1"))
         assertTrue(summary.contains("FollowUps=3"))
         assertTrue(summary.contains("MaxConsecutiveFailures=5"))
+        assertTrue(summary.contains("BudgetContinuations=2"))
         assertTrue(summary.contains("CircuitBreaker=true"))
         assertTrue(summary.contains("Outcome=failed"))
     }

@@ -333,7 +333,8 @@ docs/AI_NAVIGATION.md, docs/ARCHITECTURE.md, docs/FILE_INDEX.md ── 同步新
 ### 9.5.2 CDP 断点与 Worker 级拦截（阶段 2，allowCdp 门禁）
 
 - **传输**：`CdpTransport`（LocalSocket 连 `webview_devtools_remote_<pid>`）→ 自实现 WS 握手与帧编解码（`WsFrameCodec`）→ `CdpSession`（命令关联/事件分发/断连清理）。
-- **生命周期**：`CdpManager` 管理 attach（上限 + DevTools socket 引用计数，`setWebContentsDebuggingEnabled` 按需开关）；`CdpTargetMatcher` 通过 `window.__taixuTabId` 标记把 MCP tab 匹配到 CDP target；`CdpTabConnection` 持单 tab 连接 + Worker 子会话（`Target.setAutoAttach` flatten）。
+- **生命周期**：Application 发起的 `BrowserMcpBootstrap` 在注册引擎、创建首个 tab 前，等待主线程按 `allowCdp` 应用进程级 WebView 调试开关；`CdpManager` 每次 attach 可重试开启，不再使用引用计数或主线程 latch。detach/shutdown 只释放会话，开关保持到进程结束，关闭偏好需重启。`CdpTargetMatcher` 通过 `window.__taixuTabId` 标记把 MCP tab 匹配到 CDP target；`CdpTabConnection` 持单 tab 连接 + Worker 子会话（`Target.setAutoAttach` flatten）。
+- **连接与诊断**：LocalSocket 必须先 connect 再设置读写超时；连接前设置超时会因客户端 fd 未创建而抛 `socket not created`，不能由此推断 WebView 服务端未监听。连接错误保留阶段、异常类型与原因，并记录 pid、WebView provider、开关状态和 `/proc/net/unix` 读取失败原因；当前进程 pid 候选不依赖 proc 可读性。WS 使用完整 `/devtools/page/...` 路径，marker 探测启动接收会话后再发求值命令。
 - **断点**：`CdpDebugController` —— set/remove/list 断点、暂停状态、单步（over/into/out）、暂停帧求值（`debug_eval`，可读写局部变量）、作用域读取。断点在 detach 后重 attach 自动重放。
 - **Worker 级拦截**：`CdpFetchInterceptor` 用 `Fetch.requestPaused` 做引擎级网络改写，与注入式规则共享 `HookRuleStore` 决策（`CdpFetchDecision`），覆盖 Worker/Service Worker 与注入盲区子资源。
 - **MCP 工具**：`browser.debug_attach / detach / set_breakpoint / remove_breakpoint / list_breakpoints / resume / step / state / eval / scope / status` 共 11 个。

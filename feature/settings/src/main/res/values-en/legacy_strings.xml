@@ -482,6 +482,11 @@
     <string name="settings_text_0334" formatted="false">📋 JSON Import</string>
     <string name="settings_text_0335" formatted="false">📝 Form Mode</string>
     <string name="settings_text_0336" formatted="false">🧠 AI self-healing</string>
+    <string name="settings_text_0337" formatted="false">Prevents the model from looping in complex tasks; when the round budget is used up, it enters the auto-continue checkpoint below</string>
+    <string name="settings_text_0338" formatted="false">Auto-continue after round budget is used up</string>
+    <string name="settings_text_0339" formatted="false">Stop and wait for confirmation when the round budget is used up; useful when you want to review each segment</string>
+    <string name="settings_text_0340" formatted="false">When the round budget is used up, the model first checkpoints progress, then continues automatically without a tap; total budget cap is %1$s rounds</string>
+    <string name="settings_text_0341" formatted="false">%1$s times</string>
     <string name="settings_long_001" formatted="false">, target.sizeBytes.toDouble ()/(1024 * 1024)} MB space). The code file in the/workspace workspace will not be affected in any way.</string>
     <string name="settings_long_002" formatted="false">1. Analyze the above PRoot sandbox for failures and errors (such as dpkg dependency corruption, lock residuals, blocked network downloads, missing commandLinks softlinks, or missing environment);</string>
     <string name="settings_long_003" formatted="false">2. Directly call the base tool to execute targeted repair commands (such as cleaning up the/var/lib/dpkg lock, dpkg --configure -a, apt-get --fix-broken install, manually pulling or patching soft links from alternate sources);</string>

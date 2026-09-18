@@ -173,10 +173,7 @@ internal fun ChatComposer(
             onSend()
             coroutineScope.launch {
                 delay(60)
-                val count = listState.layoutInfo.totalItemsCount
-                if (count > 0) {
-                    listState.animateScrollToItem(count - 1)
-                }
+                listState.safeScrollToLastItem(animated = true)
             }
         }
     }

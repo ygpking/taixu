@@ -105,6 +105,20 @@
     <string name="chat_isolated_sandbox">Isolated sandbox</string>
     <string name="chat_new_session">New session</string>
     <string name="chat_rename_session">Rename session</string>
+    <string name="chat_drawer_new_task">New Task</string>
+    <string name="chat_drawer_projects">Projects</string>
+    <string name="chat_drawer_recent">Recent</string>
+    <string name="chat_drawer_no_projects">No linked projects</string>
+    <string name="chat_drawer_no_sessions_in_project">No sessions yet; tap + to create</string>
+    <string name="chat_drawer_no_recent_sessions">No unlinked sessions</string>
+    <string name="chat_drawer_create_in_project">Create new session in this project</string>
+    <string name="chat_drawer_quick_skills">Extensions &amp; Skills</string>
+    <string name="chat_drawer_quick_runtime">Runtime Activity</string>
+    <string name="chat_time_just_now">Just now</string>
+    <string name="chat_time_minutes_ago">%1$dm ago</string>
+    <string name="chat_time_hours_ago">%1$dh ago</string>
+    <string name="chat_time_yesterday">Yesterday</string>
+    <string name="chat_time_days_ago">%1$dd ago</string>
     <string name="chat_title_label">Title</string>
     <string name="chat_save">Save</string>
     <string name="chat_select_model">Select provider</string>
@@ -337,6 +351,11 @@
     <string name="chat_mcp_badge">MCP</string>
     <string name="chat_capability_skill_fmt">Skill: %1$s</string>
     <string name="chat_capability_mcp_fmt">MCP: %1$s</string>
+    <string name="chat_model_switch_to_fmt">Switched to %1$s</string>
+    <string name="chat_model_switch_from_to_fmt">Switched from %1$s to %2$s</string>
+    <string name="chat_model_switch_window_fmt">Context window %1$s</string>
+    <string name="chat_model_switch_compacted_fmt">Compacted %2$d earlier messages for the %1$s window</string>
+    <string name="chat_model_switch_pending_fmt">Will compact earlier messages for the %1$s window on the next turn</string>
     <string name="chat_collapse">Collapse</string>
     <string name="chat_expand_more">Show %1$d more steps (of %2$d)%3$s</string>
     <!-- Attachment menu & processing -->

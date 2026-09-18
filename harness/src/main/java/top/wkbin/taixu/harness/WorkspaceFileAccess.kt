@@ -212,7 +212,11 @@ class WorkspaceFileAccess(
         if (trimmed.startsWith("/") && segments.isNotEmpty() && segments.first() != "workspace") return null
 
         val isWorkspacePrefixed = segments.isNotEmpty() && segments.first() == "workspace"
-        val baseRoot = if (isWorkspacePrefixed) (globalRootCanonical ?: rootCanonical) else root
+        // 仅绝对路径 /workspace/... 才解释为全局根相对；相对路径以 workspace/ 开头时
+        // 视为“当前工作区内相对路径”（strip 前缀后在当前工作区内解析），
+        // 避免被重解释为全局根相对而越过当前工作区读到其他项目的文件。
+        val useGlobalRoot = isWorkspacePrefixed && trimmed.startsWith("/")
+        val baseRoot = if (useGlobalRoot) (globalRootCanonical ?: rootCanonical) else root
         val relative = if (isWorkspacePrefixed) segments.drop(1) else segments
         var candidate = baseRoot
         for (segment in relative) {

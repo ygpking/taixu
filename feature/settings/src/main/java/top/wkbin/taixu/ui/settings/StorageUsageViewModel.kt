@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.Locale
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -18,9 +19,9 @@ import top.wkbin.taixu.runtime.StorageUsage
 
 enum class StorageFilter(val label: String) {
     ALL("全部"),
-    SAFE("可安全清理"),
+    SAFE("归档日志"),
     CAUTION("谨慎清理"),
-    SYSTEM_AND_SOURCE("系统与源码"),
+    SYSTEM_AND_SOURCE("保留与管理"),
 }
 
 sealed interface CleanupDialogTarget {
@@ -45,9 +46,9 @@ data class StorageUsageUiState(
             return categories.filter { category ->
                 when (activeFilter) {
                     StorageFilter.ALL -> true
-                    StorageFilter.SAFE -> category.riskLevel == StorageRiskLevel.SAFE || category.entries.any { it.riskLevel == StorageRiskLevel.SAFE && it.cleanable }
-                    StorageFilter.CAUTION -> category.riskLevel == StorageRiskLevel.CAUTION || category.entries.any { it.riskLevel == StorageRiskLevel.CAUTION && it.cleanable }
-                    StorageFilter.SYSTEM_AND_SOURCE -> category.riskLevel == StorageRiskLevel.READONLY || category.id == "linux_system" || category.id == "sdk_toolchains"
+                    StorageFilter.SAFE -> category.entries.any { it.riskLevel == StorageRiskLevel.SAFE && it.cleanable }
+                    StorageFilter.CAUTION -> category.entries.any { it.riskLevel == StorageRiskLevel.CAUTION && it.cleanable }
+                    StorageFilter.SYSTEM_AND_SOURCE -> category.entries.any { !it.cleanable }
                 }
             }
         }
@@ -77,7 +78,7 @@ class StorageUsageViewModel @Inject constructor(
     }
 
     fun refresh() {
-        if (_uiState.value.refreshing) return
+        if (_uiState.value.refreshing || _uiState.value.cleaningAction != null) return
         viewModelScope.launch {
             _uiState.update { it.copy(refreshing = true) }
             runCatching { storageManager.inspect() }
@@ -85,6 +86,7 @@ class StorageUsageViewModel @Inject constructor(
                     _uiState.update { it.copy(usage = usage, refreshing = false) }
                 }
                 .onFailure {
+                    if (it is CancellationException) throw it
                     android.util.Log.e("StorageUsage", "Inspect storage failed: ${it.message}", it)
                     _uiState.update {
                         it.copy(
@@ -98,10 +100,10 @@ class StorageUsageViewModel @Inject constructor(
     }
 
     /**
-     * 一键安全清理：清理所有包管理器依赖缓存、下载安装包、临时文件与日志
+     * 清理扫描计划中的过期归档日志
      */
     fun quickSafeClean() {
-        if (_uiState.value.cleaningAction != null) return
+        if (_uiState.value.cleaningAction != null || _uiState.value.refreshing) return
         viewModelScope.launch {
             _uiState.update { it.copy(cleaningAction = "quick_safe", dialogTarget = null) }
             val result = storageManager.quickSafeClean()
@@ -109,15 +111,15 @@ class StorageUsageViewModel @Inject constructor(
             val msg = if (result.isSuccess) {
                 val released = result.getOrNull() ?: 0L
                 if (released > 0) {
-                    "安全清理完成，已释放 ${released.formatSize()}"
+                    "归档日志清理完成，已删除 ${released.formatSize()}"
                 } else {
-                    "已执行安全清理，暂无可释放的临时缓存"
+                    "暂无符合条件的过期归档日志"
                 }
             } else {
                 android.util.Log.e("StorageUsage", "Quick safe clean failed: ${result.errorOrNull()?.message}")
-                "部分缓存清理失败，请稍后重试"
+                result.errorOrNull()?.message ?: "清理失败，请刷新后重试"
             }
-            val newUsage = runCatching { storageManager.inspect() }.getOrNull() ?: _uiState.value.usage
+            val newUsage = runCatching { storageManager.inspect() }.onFailure { if (it is CancellationException) throw it }.getOrNull() ?: _uiState.value.usage
             _uiState.update {
                 it.copy(
                     cleaningAction = null,
@@ -130,10 +132,10 @@ class StorageUsageViewModel @Inject constructor(
     }
 
     /**
-     * 清理工作区项目编译生成物 (build / target / .dart_tool 等)，保留全部源码
+     * 清理已识别项目的旧缓存，不根据通用目录名删除构建产物
      */
     fun cleanProjectBuilds(projectName: String? = null) {
-        if (_uiState.value.cleaningAction != null) return
+        if (_uiState.value.cleaningAction != null || _uiState.value.refreshing) return
         val actionKey = if (projectName != null) "project_build_$projectName" else "all_project_builds"
         viewModelScope.launch {
             _uiState.update { it.copy(cleaningAction = actionKey, dialogTarget = null) }
@@ -142,15 +144,15 @@ class StorageUsageViewModel @Inject constructor(
             val msg = if (result.isSuccess) {
                 val released = result.getOrNull() ?: 0L
                 if (projectName != null) {
-                    "已清理项目 $projectName 的编译产物，释放 ${released.formatSize()}"
+                    "已清理项目 $projectName 的缓存，删除 ${released.formatSize()}"
                 } else {
-                    "已清理所有项目的编译产物，释放 ${released.formatSize()}"
+                    "已清理已识别项目的缓存，删除 ${released.formatSize()}"
                 }
             } else {
                 android.util.Log.e("StorageUsage", "Clean project build failed: ${result.errorOrNull()?.message}")
-                "清理构建产物失败，请稍后重试"
+                result.errorOrNull()?.message ?: "清理项目缓存失败，请刷新后重试"
             }
-            val newUsage = runCatching { storageManager.inspect() }.getOrNull() ?: _uiState.value.usage
+            val newUsage = runCatching { storageManager.inspect() }.onFailure { if (it is CancellationException) throw it }.getOrNull() ?: _uiState.value.usage
             _uiState.update {
                 it.copy(
                     cleaningAction = null,
@@ -166,7 +168,7 @@ class StorageUsageViewModel @Inject constructor(
      * 按大类执行清理
      */
     fun clearCategory(categoryId: String) {
-        if (_uiState.value.cleaningAction != null) return
+        if (_uiState.value.cleaningAction != null || _uiState.value.refreshing) return
         viewModelScope.launch {
             _uiState.update { it.copy(cleaningAction = "category_$categoryId", dialogTarget = null) }
             val result = storageManager.clearCategory(categoryId)
@@ -175,9 +177,9 @@ class StorageUsageViewModel @Inject constructor(
                 "分类清理完成"
             } else {
                 android.util.Log.e("StorageUsage", "Clear category failed: ${result.errorOrNull()?.message}")
-                "分类清理失败，请稍后重试"
+                result.errorOrNull()?.message ?: "分类清理失败，请刷新后重试"
             }
-            val newUsage = runCatching { storageManager.inspect() }.getOrNull() ?: _uiState.value.usage
+            val newUsage = runCatching { storageManager.inspect() }.onFailure { if (it is CancellationException) throw it }.getOrNull() ?: _uiState.value.usage
             _uiState.update {
                 it.copy(
                     cleaningAction = null,
@@ -193,7 +195,7 @@ class StorageUsageViewModel @Inject constructor(
      * 按细项执行清理
      */
     fun clearEntry(categoryId: String, entryId: String, entryName: String) {
-        if (_uiState.value.cleaningAction != null) return
+        if (_uiState.value.cleaningAction != null || _uiState.value.refreshing) return
         viewModelScope.launch {
             _uiState.update { it.copy(cleaningAction = "entry_$entryId", dialogTarget = null) }
             val result = storageManager.clearEntry(categoryId, entryId)
@@ -202,9 +204,9 @@ class StorageUsageViewModel @Inject constructor(
                 "已清理 $entryName"
             } else {
                 android.util.Log.e("StorageUsage", "Clear entry failed: ${result.errorOrNull()?.message}")
-                "清理 $entryName 失败，请稍后重试"
+                result.errorOrNull()?.message ?: "清理 $entryName 失败，请刷新后重试"
             }
-            val newUsage = runCatching { storageManager.inspect() }.getOrNull() ?: _uiState.value.usage
+            val newUsage = runCatching { storageManager.inspect() }.onFailure { if (it is CancellationException) throw it }.getOrNull() ?: _uiState.value.usage
             _uiState.update {
                 it.copy(
                     cleaningAction = null,
@@ -220,18 +222,18 @@ class StorageUsageViewModel @Inject constructor(
      * 清理下载缓存
      */
     fun clearCache() {
-        if (_uiState.value.cleaningAction != null) return
+        if (_uiState.value.cleaningAction != null || _uiState.value.refreshing) return
         viewModelScope.launch {
             _uiState.update { it.copy(cleaningAction = "download_cache", dialogTarget = null) }
             val result = storageManager.clearCache()
             val isError = result.isFailure
             val msg = if (result.isSuccess) {
-                "下载与系统缓存已清理"
+                "符合条件的依赖缓存已清理"
             } else {
                 android.util.Log.e("StorageUsage", "Clear cache failed: ${result.errorOrNull()?.message}")
-                "清理缓存失败，请稍后重试"
+                result.errorOrNull()?.message ?: "清理缓存失败，请刷新后重试"
             }
-            val newUsage = runCatching { storageManager.inspect() }.getOrNull() ?: _uiState.value.usage
+            val newUsage = runCatching { storageManager.inspect() }.onFailure { if (it is CancellationException) throw it }.getOrNull() ?: _uiState.value.usage
             _uiState.update {
                 it.copy(
                     cleaningAction = null,

@@ -151,13 +151,21 @@ class McpServerRuntime @Inject constructor(
                 runCatching { srv.stop(100, 300) }
             }
         }
+        // B11: 全端口绑定失败时重置本次 start 写入/残留的状态，避免暴露过期的 token 与端口信息
         engine = null
+        currentToken = null
+        currentAllowRemote = false
+        boundPort = defaultPort
         return false
     }
 
     fun stop() {
         try { engine?.stop(100, 500) } catch (_: Throwable) {}
         engine = null
+        // B11: stop 时清理 token 等运行时状态，避免残留上一次启动的认证信息与绑定端口
+        currentToken = null
+        currentAllowRemote = false
+        boundPort = defaultPort
         BuiltinBrowserMcpAccess.port = null
     }
 
@@ -170,9 +178,11 @@ class McpServerRuntime @Inject constructor(
         val req = runCatching { Json.parseToJsonElement(body) }.getOrNull() as? JsonObject
             ?: return jsonrpcError(null, -32700, "bad-json")
         val method = (req["method"] as? JsonPrimitive)?.content ?: ""
-        // id 原样保留（数字/字符串都按原始 JsonElement 回显），避免把数字 id 序列化成字符串
+        // B11: 区分"id 字段缺失"（notification，不回响应体）与"id 显式为 null"（按 JSON-RPC 规范
+        // 属无效请求，回 -32600）；id 原样保留（数字/字符串都按原始 JsonElement 回显）
+        if (!req.containsKey("id")) return null
         val id = req["id"]?.takeUnless { it is kotlinx.serialization.json.JsonNull }
-        if (id == null) return null
+            ?: return jsonrpcError(kotlinx.serialization.json.JsonNull, -32600, "invalid request: id must not be null")
         return when (method) {
             "initialize" -> jsonrpcOk(id, buildJsonObject {
                 put("protocolVersion", JsonPrimitive(MCP_PROTOCOL_VERSION))

@@ -340,6 +340,7 @@ fun AgentEcoSettingsScreen(
     onOpenMcpSettings: () -> Unit,
     onOpenQuickPhrases: () -> Unit,
     onOpenStats: () -> Unit,
+    onOpenCcSwitch: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val models by viewModel.models.collectAsStateWithLifecycle()
@@ -405,9 +406,16 @@ fun AgentEcoSettingsScreen(
                 SettingsGroup {
                     SettingsRow(
                         icon = RuntimeIconName.Wrench,
-                        title = "插件与工具生态中心",
-                        subtitle = "一键安装 Claude Code、OpenClaw 等 AI CLI 与开发环境",
+                        title = "插件与底层工具中心",
+                        subtitle = "安装 llama.cpp、QEMU 与底层开发环境",
                         onClick = onOpenToolCenter,
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    SettingsRow(
+                        icon = RuntimeIconName.Sparkles,
+                        title = "智能体中枢 (CC-Switch)",
+                        subtitle = "统一管理 Claude Code、OpenClaw、Hermes 版本与模型多源热切",
+                        onClick = onOpenCcSwitch,
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                     SettingsRow(icon = RuntimeIconName.Bot, title = "Agent 执行与上下文", subtitle = "思考流、上下文压缩、工具调用限制与系统提示词", onClick = onOpenAgentSettings)

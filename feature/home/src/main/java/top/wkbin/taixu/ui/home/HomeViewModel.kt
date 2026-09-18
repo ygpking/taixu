@@ -9,6 +9,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -197,6 +198,8 @@ class HomeViewModel @Inject constructor(
             try {
                 val report = environmentDoctor.check()
                 _doctorReport.value = report
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 logger.w("Doctor check failed: ${e.message}", e)
             } finally {
@@ -285,6 +288,8 @@ class HomeViewModel @Inject constructor(
                     uptimeFormatted = uptime,
                 )
             }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 logger.w("HomeViewModel: Failed to refresh metrics: ${e.message}", e)
             }

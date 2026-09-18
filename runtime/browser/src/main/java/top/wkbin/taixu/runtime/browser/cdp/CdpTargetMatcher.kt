@@ -83,7 +83,7 @@ class CdpTargetMatcher(
 
     /** 临时 WS 会话读页内 marker；失败（未注入/连接失败）返回 null。 */
     private suspend fun probeMarker(target: CdpTargetInfo): String? = runCatching {
-        val path = target.webSocketDebuggerUrl.substringAfter("devtools", "").ifEmpty { return null }
+        val path = WsHandshake.targetPath(target.webSocketDebuggerUrl)
         val conn = transport.open()
         val ws = try {
             WsHandshake.open(conn, path)
@@ -92,6 +92,10 @@ class CdpTargetMatcher(
             return null
         }
         val session = CdpSession(ws, scope)
+        session.start(object : CdpSession.EventListener {
+            override suspend fun onEvent(method: String, params: kotlinx.serialization.json.JsonObject, sessionId: String?) = Unit
+            override suspend fun onClosed() = Unit
+        })
         try {
             val resp = session.send(
                 "Runtime.evaluate",

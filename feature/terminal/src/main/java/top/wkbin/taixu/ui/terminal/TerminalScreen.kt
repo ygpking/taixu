@@ -2,20 +2,17 @@ package top.wkbin.taixu.ui.terminal
 
 import top.wkbin.taixu.ui.components.RuntimeAlertDialog
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
-import android.view.View
-import android.view.inputmethod.InputMethodManager
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -27,20 +24,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import top.wkbin.taixu.ui.components.RuntimeIconButton as IconButton
 import top.wkbin.taixu.ui.components.RuntimeButton as Button
 import androidx.compose.material3.MaterialTheme
@@ -49,99 +40,46 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import top.wkbin.taixu.ui.components.RuntimeTextButton as TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.isCtrlPressed
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
-import top.wkbin.taixu.feature.terminal.R
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.font.FontStyle
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardCapitalization
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.delay
+import top.wkbin.taixu.feature.terminal.R
+import top.wkbin.taixu.runtime.terminal.TerminalSessionHandle
 import top.wkbin.taixu.ui.components.RuntimeIcon
 import top.wkbin.taixu.ui.components.RuntimeIconName
 import top.wkbin.taixu.ui.components.RuntimeTopBar
 import top.wkbin.taixu.ui.components.SpotlightGuideOverlay
 import top.wkbin.taixu.ui.components.rememberSpotlightAnchor
 import top.wkbin.taixu.ui.components.spotlightAnchor
-import top.wkbin.taixu.runtime.terminal.TerminalLine
-import top.wkbin.taixu.runtime.terminal.TerminalSessionHandle
 import kotlin.math.roundToInt
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-
 
 private const val MIN_TERMINAL_FONT_SIZE_SP = 10f
 private const val MAX_TERMINAL_FONT_SIZE_SP = 24f
 
 /**
- * Returns the text committed by the IME since the previous editor value.
- *
- * The hidden editor must retain its value while the keyboard is open. Clearing it
- * after every character makes some IMEs hide/disable the Send action. Composition
- * text is not part of the terminal input until the IME commits it, so when a
- * composition ends we diff from the text that existed before that composition.
- */
-private fun terminalInputDelta(previous: TextFieldValue, current: TextFieldValue): String {
-    if (current.text.isEmpty()) return ""
-
-    val committedPrefix = previous.composition?.let { composition ->
-        previous.text.substring(0, composition.start.coerceIn(0, previous.text.length))
-    } ?: previous.text
-
-    return if (current.text.startsWith(committedPrefix)) {
-        current.text.removePrefix(committedPrefix)
-    } else {
-        // The IME may replace the whole value when committing a composition.
-        // In that case the new value is the only safe payload to forward.
-        current.text
-    }
-}
-
-/**
- * 太墟 · 矩阵控制台 (Matrix Terminal)
- * 基于原生 Linux PTY，集成开发者快捷辅助按键栏
+ * 太墟 · 矩阵控制台 — Termux TerminalView + PRoot argv via TerminalSession JNI.
+ * Input is owned by TerminalView (same as Android-PRoot-Engine TerminalBridge).
  */
 @Composable
 fun TerminalScreen(
@@ -150,8 +88,6 @@ fun TerminalScreen(
     showBackButton: Boolean = true,
     viewModel: TerminalViewModel = hiltViewModel(),
 ) {
-    val screen by viewModel.screen.collectAsStateWithLifecycle()
-    val cursor by viewModel.cursor.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val handles by viewModel.handles.collectAsStateWithLifecycle()
     val activeId by viewModel.activeId.collectAsStateWithLifecycle()
@@ -163,12 +99,9 @@ fun TerminalScreen(
     val hapticsEnabled by viewModel.terminalHapticsEnabled.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
-    val view = LocalView.current
     val density = LocalDensity.current
 
     var fontSizeSp by remember { mutableFloatStateOf(configuredFontSize.toFloat()) }
-    var terminalPxWidth by remember { mutableFloatStateOf(0f) }
-    var terminalPxHeight by remember { mutableFloatStateOf(0f) }
     var sessionToClose by remember { mutableStateOf<String?>(null) }
 
     val sysSurfaceLowest = MaterialTheme.colorScheme.surfaceContainerLowest
@@ -184,23 +117,42 @@ fun TerminalScreen(
         }
     }
 
-    val (terminalCharWidth, terminalLineHeight) = remember(fontSizeSp) {
-        val paint = android.graphics.Paint().apply {
-            textSize = with(density) { fontSizeSp.sp.toPx() }
-            typeface = android.graphics.Typeface.MONOSPACE
-            isAntiAlias = true
+    val bridge = remember(context) {
+        TaiXuTerminalBridge(context, viewModel.sessionClientRouter)
+    }
+    // Attach before AndroidView layout so the first PTY callbacks aren't dropped.
+    bridge.attachToRouter()
+
+    DisposableEffect(bridge) {
+        bridge.onFontScale = { increase ->
+            fontSizeSp = (fontSizeSp + if (increase) 1f else -1f)
+                .coerceIn(MIN_TERMINAL_FONT_SIZE_SP, MAX_TERMINAL_FONT_SIZE_SP)
+            viewModel.setTerminalFontSize(fontSizeSp.roundToInt())
         }
-        val charWidth = paint.measureText("M")
-        val lineHeight = paint.fontMetrics.run { descent - ascent }
-        charWidth to lineHeight
+        onDispose {
+            bridge.onFontScale = null
+            bridge.detachFromRouter()
+        }
     }
 
-    var textFieldValue by remember { mutableStateOf(TextFieldValue()) }
+    // Match Android-PRoot-Engine / Termux Activity soft-input flags while this screen is visible.
+    DisposableEffect(Unit) {
+        val window = (context as? Activity)?.window
+        val previous = window?.attributes?.softInputMode
+        window?.setSoftInputMode(
+            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or
+                WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN,
+        )
+        onDispose {
+            if (previous != null) window?.setSoftInputMode(previous)
+        }
+    }
+
+    val activeHandle = handles.firstOrNull { it.id == activeId }
 
     val copyScreen = {
-        val text = screen.joinToString("\n") { line ->
-            line.cells.joinToString("") { it.character }.trimEnd()
-        }
+        val session = bridge.currentSession() ?: activeHandle?.termuxSession
+        val text = session?.emulator?.screen?.transcriptText?.trim().orEmpty()
         if (text.isNotBlank()) {
             (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
                 .setPrimaryClip(ClipData.newPlainText(context.getString(R.string.terminal_clipboard_label), text))
@@ -211,20 +163,11 @@ fun TerminalScreen(
     val pasteToTerminal = {
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val text = clipboard.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
-        if (text.isNotBlank()) viewModel.pasteText(text)
+        if (text.isNotBlank()) bridge.sendString(text)
     }
 
-    val terminalFocusRequester = remember { FocusRequester() }
-    val keyboard = LocalSoftwareKeyboardController.current
-    val coroutineScope = rememberCoroutineScope()
-    val listState = rememberLazyListState()
-    var visibleRows by remember { mutableStateOf(0) }
-    var inputFocused by remember { mutableStateOf(false) }
     var isLeaving by remember { mutableStateOf(false) }
-    var followOutput by remember { mutableStateOf(true) }
     var showSessions by remember { mutableStateOf(false) }
-
-    // 首次进入引导：高亮顶栏「会话列表」按钮
     val firstUseGuidesShown by viewModel.firstUseGuidesShown.collectAsStateWithLifecycle()
     val sessionsAnchor = rememberSpotlightAnchor()
     var showCreateSession by remember { mutableStateOf(false) }
@@ -237,373 +180,260 @@ fun TerminalScreen(
         fontSizeSp = configuredFontSize.toFloat()
     }
 
-    LaunchedEffect(listState) {
-        snapshotFlow { listState.isScrollInProgress to listState.canScrollForward }
-            .collect { (isScrolling, canScrollForward) ->
-                if (isScrolling) followOutput = !canScrollForward
-            }
-    }
-
-    LaunchedEffect(fontSizeSp, terminalPxWidth, terminalPxHeight, activeId) {
-        if (terminalPxWidth > 0f && terminalPxHeight > 0f) {
-            // Pinch gestures can emit many frames per second. Text updates immediately;
-            // native PTY resize follows the latest dimensions after a short debounce.
-            delay(80)
-            val renderWidthPx = terminalPxWidth - with(density) { 24.dp.toPx() }
-            val rows = (terminalPxHeight / terminalLineHeight).toInt().coerceIn(5, 200)
-            visibleRows = rows
-            viewModel.resize(
-                columns = (renderWidthPx / terminalCharWidth).toInt().coerceIn(20, 400),
-                rows = rows,
-            )
-        }
-    }
-
-    LaunchedEffect(screen.size, cursor.row, cursor.column, followOutput, activeId) {
-        val lastIndex = screen.lastIndex
-        if (followOutput && lastIndex >= 0) {
-            listState.scrollToItem(lastIndex)
-        }
-    }
-
-    LaunchedEffect(visibleRows, inputFocused) {
-        if (inputFocused && screen.isNotEmpty()) {
-            followOutput = true
-            withFrameNanos { }
-            // 等帧期间会话可能重建（如 root 环境初始化）导致 screen 清空，
-            // 此时 scrollToItem(-1) 会抛 Index should be non-negative，需重新校验。
-            val lastIndex = screen.lastIndex
-            if (lastIndex >= 0) {
-                listState.scrollToItem(lastIndex)
-            }
-        }
-    }
-
-    LaunchedEffect(inputFocused) {
-        if (inputFocused) {
-            doShowKeyboard(view, context)
-        }
-    }
-
-    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
-
     val navigateBack = {
         if (!isLeaving) {
             isLeaving = true
-            if (inputFocused) {
-                keyboard?.hide()
-                focusManager.clearFocus(force = true)
-                inputFocused = false
-                // Let the IME begin its close animation before removing the terminal page.
-                coroutineScope.launch {
-                    delay(180)
-                    onBack()
-                }
-            } else {
-                onBack()
-            }
+            onBack()
         }
     }
 
-    androidx.activity.compose.BackHandler(enabled = inputFocused) {
-        keyboard?.hide()
-        focusManager.clearFocus()
-        inputFocused = false
-    }
-
-    LaunchedEffect(Unit) {
-        terminalFocusRequester.requestFocus()
-    }
-
-    // 首次引导遮罩与 Scaffold 放在同一 Box 下（同层兄弟节点），保证聚光灯坐标与按钮 boundsInRoot 同一参照系
     Box(modifier = Modifier.fillMaxSize()) {
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            RuntimeTopBar(
-                title = if (project.isNotBlank()) stringResource(R.string.terminal_project_title, project) else stringResource(R.string.terminal_console_title),
-                // Agent 内嵌终端面板不属于导航栈节点，隐藏返回箭头避免「点了没反应」
-                onBack = if (showBackButton) navigateBack else null,
-                statusText = stringResource(R.string.terminal_engine_status, distributionName),
-            ) {
-                IconButton(
-                    onClick = { showSessions = true },
-                    modifier = Modifier.spotlightAnchor(sessionsAnchor),
-                    contentDescription = stringResource(R.string.terminal_sessions_desc),
+        Scaffold(
+            containerColor = MaterialTheme.colorScheme.background,
+            topBar = {
+                RuntimeTopBar(
+                    title = if (project.isNotBlank()) stringResource(R.string.terminal_project_title, project) else stringResource(R.string.terminal_console_title),
+                    onBack = if (showBackButton) navigateBack else null,
+                    statusText = stringResource(R.string.terminal_engine_status, distributionName),
                 ) {
-                    RuntimeIcon(RuntimeIconName.List, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
-                }
-            }
-        },
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = 10.dp, vertical = 6.dp)
-                .imePadding(),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            // 终端主窗口
-            Surface(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                color = termBg,
-                shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.dp, termBorder),
-            ) {
-                Column {
-                    // 终端窗口装饰条
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .background(termHeaderBg)
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                    IconButton(
+                        onClick = { showSessions = true },
+                        modifier = Modifier.spotlightAnchor(sessionsAnchor),
+                        contentDescription = stringResource(R.string.terminal_sessions_desc),
                     ) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            TerminalDot(Color(0xFFFF3366))
-                            TerminalDot(Color(0xFFFFB300))
-                            TerminalDot(Color(0xFF00E676))
-                        }
-                        Text(
-                            stringResource(
-                                R.string.terminal_pty_header,
-                                distributionName.substringBefore(" (").uppercase(),
-                                Build.SUPPORTED_ABIS.firstOrNull()?.uppercase() ?: "UNKNOWN",
-                            ),
-                            modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.SemiBold,
-                                letterSpacing = 1.sp,
-                            ),
-                            color = MaterialTheme.colorScheme.primary,
-                            textAlign = TextAlign.Center,
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(
-                                stringResource(R.string.terminal_copy),
-                                modifier = Modifier
-                                    .minimumInteractiveComponentSize()
-                                    .clip(RoundedCornerShape(4.dp))
-                                    .clickable(onClick = copyScreen)
-                                    .padding(horizontal = 6.dp, vertical = 2.dp),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = termTextDefault.copy(alpha = 0.6f),
-                            )
-                            Text(
-                                stringResource(R.string.terminal_paste),
-                                modifier = Modifier
-                                    .minimumInteractiveComponentSize()
-                                    .clip(RoundedCornerShape(4.dp))
-                                    .clickable(onClick = pasteToTerminal)
-                                    .padding(horizontal = 6.dp, vertical = 2.dp),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = termTextDefault.copy(alpha = 0.6f),
-                            )
-                        }
+                        RuntimeIcon(RuntimeIconName.List, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
                     }
+                }
+            },
+        ) { padding ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                    .imePadding(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Surface(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    color = termBg,
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, termBorder),
+                ) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .background(termHeaderBg)
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                TerminalDot(Color(0xFFFF3366))
+                                TerminalDot(Color(0xFFFFB300))
+                                TerminalDot(Color(0xFF00E676))
+                            }
+                            Text(
+                                stringResource(
+                                    R.string.terminal_pty_header,
+                                    distributionName.substringBefore(" (").uppercase(),
+                                    Build.SUPPORTED_ABIS.firstOrNull()?.uppercase() ?: "UNKNOWN",
+                                ),
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.SemiBold,
+                                    letterSpacing = 1.sp,
+                                ),
+                                color = MaterialTheme.colorScheme.primary,
+                                textAlign = TextAlign.Center,
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    stringResource(R.string.terminal_copy),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .clickable(onClick = copyScreen)
+                                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = termTextDefault.copy(alpha = 0.6f),
+                                )
+                                Text(
+                                    stringResource(R.string.terminal_paste),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .clickable(onClick = pasteToTerminal)
+                                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = termTextDefault.copy(alpha = 0.6f),
+                                )
+                            }
+                        }
 
-                    // 终端渲染区域
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
-                            .pointerInput(Unit) {
-                                awaitEachGesture {
-                                    awaitFirstDown(requireUnconsumed = false)
-                                    var zoomChanged = false
-                                    do {
-                                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                                        val pressedPointers = event.changes.count { it.pressed }
-                                        if (pressedPointers >= 2) {
-                                            val zoom = event.calculateZoom()
-                                            if (zoom != 1f) {
-                                                fontSizeSp = (fontSizeSp * zoom).coerceIn(
-                                                    MIN_TERMINAL_FONT_SIZE_SP,
-                                                    MAX_TERMINAL_FONT_SIZE_SP,
-                                                )
-                                                zoomChanged = true
-                                            }
-                                            event.changes.forEach { it.consume() }
-                                        }
-                                    } while (event.changes.any { it.pressed })
-
-                                    if (zoomChanged) {
-                                        viewModel.setTerminalFontSize(fontSizeSp.roundToInt())
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                                .padding(4.dp),
+                        ) {
+                            when {
+                                error != null -> Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    Text(
+                                        error.orEmpty(),
+                                        color = MaterialTheme.colorScheme.error,
+                                        fontFamily = FontFamily.Monospace,
+                                    )
+                                    Button(
+                                        onClick = { viewModel.retryInitialize(project) },
+                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                                    ) {
+                                        RuntimeIcon(RuntimeIconName.Refresh, Modifier.size(14.dp))
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(stringResource(R.string.terminal_retry))
                                     }
                                 }
-                            }
-                            .onSizeChanged { size ->
-                                terminalPxWidth = size.width.toFloat()
-                                terminalPxHeight = size.height.toFloat()
-                            },
-                    ) {
-                        when {
-                            error != null -> Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(12.dp),
-                                verticalArrangement = Arrangement.spacedBy(10.dp),
-                            ) {
-                                Text(
-                                    error.orEmpty(),
-                                    color = MaterialTheme.colorScheme.error,
+                                activeHandle == null -> Text(
+                                    stringResource(R.string.terminal_starting),
+                                    Modifier.padding(12.dp),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                                     fontFamily = FontFamily.Monospace,
                                 )
-                                Button(
-                                    onClick = { viewModel.retryInitialize(project) },
-                                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                                ) {
-                                    RuntimeIcon(RuntimeIconName.Refresh, Modifier.size(14.dp))
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(stringResource(R.string.terminal_retry))
-                                }
-                            }
-                            screen.isEmpty() || screen.all { it.cells.isEmpty() } -> Text(
-                                stringResource(R.string.terminal_starting),
-                                Modifier.padding(12.dp),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                                fontFamily = FontFamily.Monospace,
-                            )
-                            else -> LazyColumn(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .clickable {
-                                        followOutput = true
-                                        terminalFocusRequester.requestFocus()
-                                        keyboard?.show()
+                                else -> {
+                                    val session = activeHandle.termuxSession
+                                    val fontPx = with(density) { fontSizeSp.sp.toPx().roundToInt().coerceAtLeast(8) }
+                                    // key(session): recreate view only on session switch — avoids
+                                    // Compose update{} calling updateSize every frame (that resets mTopRow).
+                                    key(activeHandle.id) {
+                                        var appliedFontPx by remember { mutableStateOf(fontPx) }
+                                        AndroidView(
+                                            factory = { ctx ->
+                                                TaiXuTerminalHost(ctx).also { host ->
+                                                    // Client before attachSession (updateSize → onEmulatorSet).
+                                                    bridge.terminalView = host.terminalView
+                                                    host.terminalView.setTextSize(fontPx)
+                                                    appliedFontPx = fontPx
+                                                    host.terminalView.attachSession(session)
+                                                }
+                                            },
+                                            update = { host ->
+                                                val view = host.terminalView
+                                                if (bridge.terminalView !== view) {
+                                                    bridge.terminalView = view
+                                                }
+                                                if (appliedFontPx != fontPx) {
+                                                    view.setTextSize(fontPx)
+                                                    appliedFontPx = fontPx
+                                                }
+                                            },
+                                            modifier = Modifier.fillMaxSize(),
+                                        )
                                     }
-                                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                                state = listState,
-                            ) {
-                                itemsIndexed(
-                                    screen,
-                                    key = { index, line -> "$index-${line.cells.hashCode()}" },
-                                ) { index, line ->
-                                    TerminalLineRow(
-                                        line = line,
-                                        showCursor = cursor.visible && index == cursor.row,
-                                        cursorColumn = cursor.column,
-                                        fontSizeSp = fontSizeSp,
-                                        termBg = termBg,
-                                        termTextDefault = termTextDefault,
-                                        termCursor = MaterialTheme.colorScheme.primary,
-                                    )
                                 }
                             }
                         }
+                    }
+                }
 
-                        // 透明输入锚点
-                        BasicTextField(
-                            value = textFieldValue,
-                            onValueChange = { newValue ->
-                                val previousValue = textFieldValue
-                                if (newValue.composition != null) {
-                                    // 输入法正在组合输入（例如拼音输入中），暂不提交到终端
-                                    textFieldValue = newValue
-                                } else {
-                                    // 输入法已确认提交或直接输入字符
-                                    val textToSend = terminalInputDelta(previousValue, newValue)
-                                    if (textToSend.isNotEmpty()) {
-                                        viewModel.sendText(textToSend)
-                                    }
-                                    // 保留已提交文本，避免 IME 因编辑器瞬间变空而收起发送动作。
-                                    textFieldValue = newValue
-                                }
-                            },
-                            modifier = Modifier
-                                .size(1.dp)
-                                .align(Alignment.BottomStart)
-                                .alpha(0f)
-                                .focusRequester(terminalFocusRequester)
-                                .onFocusChanged { inputFocused = it.isFocused }
-                                .onPreviewKeyEvent { event ->
-                                    if (event.type == KeyEventType.KeyDown) {
-                                        when {
-                                            event.key == Key.Enter -> {
-                                                if (textFieldValue.composition == null) {
-                                                    viewModel.sendText("\r")
-                                                    textFieldValue = TextFieldValue("")
-                                                    true
-                                                } else {
-                                                    false
-                                                }
-                                            }
-                                            event.key == Key.Backspace && !event.isCtrlPressed -> {
-                                                if (textFieldValue.composition == null) {
-                                                    viewModel.sendText("\u007f")
-                                                    true
-                                                } else {
-                                                    // Let the IME edit an active composition (for example pinyin).
-                                                    false
-                                                }
-                                            }
-                                            else -> viewModel.onTerminalKey(event)
-                                        }
-                                    } else false
-                                },
-                            textStyle = TextStyle(color = Color.Transparent, fontSize = 14.sp),
-                            cursorBrush = SolidColor(Color.Transparent),
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(
-                                capitalization = KeyboardCapitalization.None,
-                                autoCorrectEnabled = false,
-                                keyboardType = KeyboardType.Text,
-                                imeAction = ImeAction.Send,
-                            ),
-                            keyboardActions = KeyboardActions(onSend = {
-                                if (textFieldValue.composition == null) {
-                                    viewModel.sendText("\r")
-                                    textFieldValue = TextFieldValue("")
-                                }
-                            }),
-                            decorationBox = { innerTextField -> innerTextField() },
-                        )
+                // PC-standard two-row ExtraKeys (Android-PRoot-Engine):
+                // Row1: ESC TAB / - ~ HOME ▲ END
+                // Row2: CTRL ALT | ^C ^D ◀ ▼ ▶
+                var ctrlActive by remember { mutableStateOf(false) }
+                var altActive by remember { mutableStateOf(false) }
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                    ) {
+                        ExtraKey("ESC", Modifier.weight(1f), isAccent = true, hapticsEnabled = hapticsEnabled) {
+                            bridge.sendEscape()
+                        }
+                        ExtraKey("TAB", Modifier.weight(1f), isAccent = true, hapticsEnabled = hapticsEnabled) {
+                            bridge.sendTab()
+                        }
+                        ExtraKey("/", Modifier.weight(1f), hapticsEnabled = hapticsEnabled) {
+                            bridge.sendString("/")
+                        }
+                        ExtraKey("-", Modifier.weight(1f), hapticsEnabled = hapticsEnabled) {
+                            bridge.sendString("-")
+                        }
+                        ExtraKey("~", Modifier.weight(1f), hapticsEnabled = hapticsEnabled) {
+                            bridge.sendString("~")
+                        }
+                        ExtraKey("HOME", Modifier.weight(1f), hapticsEnabled = hapticsEnabled) {
+                            bridge.sendHome()
+                        }
+                        ExtraKey("▲", Modifier.weight(1f), hapticsEnabled = hapticsEnabled) {
+                            bridge.sendArrowUp()
+                        }
+                        ExtraKey("END", Modifier.weight(1f), hapticsEnabled = hapticsEnabled) {
+                            bridge.sendEnd()
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                    ) {
+                        ExtraKey(
+                            "CTRL",
+                            Modifier.weight(1f),
+                            isAccent = true,
+                            isActive = ctrlActive,
+                            hapticsEnabled = hapticsEnabled,
+                        ) {
+                            bridge.toggleControlKey()
+                            ctrlActive = bridge.isControlKeyActive()
+                        }
+                        ExtraKey(
+                            "ALT",
+                            Modifier.weight(1f),
+                            isActive = altActive,
+                            hapticsEnabled = hapticsEnabled,
+                        ) {
+                            bridge.toggleAltKey()
+                            altActive = bridge.isAltKeyActive()
+                        }
+                        ExtraKey("|", Modifier.weight(1f), hapticsEnabled = hapticsEnabled) {
+                            bridge.sendString("|")
+                        }
+                        ExtraKey("^C", Modifier.weight(1f), isDanger = true, hapticsEnabled = hapticsEnabled) {
+                            bridge.sendSigInt()
+                        }
+                        ExtraKey("^D", Modifier.weight(1f), hapticsEnabled = hapticsEnabled) {
+                            bridge.sendEof()
+                        }
+                        ExtraKey("◀", Modifier.weight(1f), hapticsEnabled = hapticsEnabled) {
+                            bridge.sendArrowLeft()
+                        }
+                        ExtraKey("▼", Modifier.weight(1f), hapticsEnabled = hapticsEnabled) {
+                            bridge.sendArrowDown()
+                        }
+                        ExtraKey("▶", Modifier.weight(1f), hapticsEnabled = hapticsEnabled) {
+                            bridge.sendArrowRight()
+                        }
                     }
                 }
             }
+        }
 
-            // 移动端开发者辅助键盘条（Horizontal Key Strip with Haptics）
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                ExtraKey("ESC", isAccent = true, hapticsEnabled = hapticsEnabled) { viewModel.sendText("\u001B") }
-                ExtraKey("Tab", isAccent = true, hapticsEnabled = hapticsEnabled) { viewModel.sendText("\u0009") }
-                ExtraKey("Ctrl+C", isDanger = true, hapticsEnabled = hapticsEnabled) { viewModel.sendText("\u0003") }
-                ExtraKey("Ctrl+D", hapticsEnabled = hapticsEnabled) { viewModel.sendText("\u0004") }
-                ExtraKey("Ctrl+Z", hapticsEnabled = hapticsEnabled) { viewModel.sendText("\u001A") }
-                ExtraKey("↑", hapticsEnabled = hapticsEnabled) { viewModel.sendText("\u001B[A") }
-                ExtraKey("↓", hapticsEnabled = hapticsEnabled) { viewModel.sendText("\u001B[B") }
-                ExtraKey("←", hapticsEnabled = hapticsEnabled) { viewModel.sendText("\u001B[D") }
-                ExtraKey("→", hapticsEnabled = hapticsEnabled) { viewModel.sendText("\u001B[C") }
-                ExtraKey("|", hapticsEnabled = hapticsEnabled) { viewModel.sendText("|") }
-                ExtraKey("/", hapticsEnabled = hapticsEnabled) { viewModel.sendText("/") }
-                ExtraKey("-", hapticsEnabled = hapticsEnabled) { viewModel.sendText("-") }
-                ExtraKey("~", hapticsEnabled = hapticsEnabled) { viewModel.sendText("~") }
-                ExtraKey("$", hapticsEnabled = hapticsEnabled) { viewModel.sendText("$") }
-                ExtraKey("&&", hapticsEnabled = hapticsEnabled) { viewModel.sendText(" && ") }
-                ExtraKey("cd ..", hapticsEnabled = hapticsEnabled) { viewModel.sendText("cd ..\r") }
-                ExtraKey("Clear", hapticsEnabled = hapticsEnabled) { viewModel.sendText("clear\r") }
-            }
+        if ("terminal_sessions" !in firstUseGuidesShown) {
+            SpotlightGuideOverlay(
+                anchor = sessionsAnchor,
+                title = stringResource(R.string.terminal_guide_title),
+                message = stringResource(R.string.terminal_guide_message),
+                onDismiss = { viewModel.markFirstUseGuideShown("terminal_sessions") },
+            )
         }
     }
-
-    // 首次进入引导：高亮顶栏「会话列表」按钮
-    if ("terminal_sessions" !in firstUseGuidesShown) {
-        SpotlightGuideOverlay(
-            anchor = sessionsAnchor,
-            title = stringResource(R.string.terminal_guide_title),
-            message = stringResource(R.string.terminal_guide_message),
-            onDismiss = { viewModel.markFirstUseGuideShown("terminal_sessions") },
-        )
-    }
-    } // Box
 
     if (showSessions) {
         SessionListDialog(
@@ -619,7 +449,6 @@ fun TerminalScreen(
         )
     }
 
-    // 关闭会话二次确认：会话关闭会杀死其中运行的所有进程
     sessionToClose?.let { closingId ->
         CloseSessionConfirmDialog(
             onConfirm = {
@@ -724,7 +553,7 @@ private fun CreateTerminalDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
 
-                // 快捷预设标签
+                // å¿«æ·é¢„è®¾æ ‡ç­¾
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -996,8 +825,8 @@ private fun SessionListDialog(
 }
 
 /**
- * 关闭终端会话二次确认弹窗（样式对齐 DistroManagementScreen 的倒计时确认弹窗）：
- * 关闭会杀死会话中运行的所有进程，属破坏性操作。
+ * å…³é—­ç»ˆç«¯ä¼šè¯äºŒæ¬¡ç¡®è®¤å¼¹çª—ï¼ˆæ ·å¼å¯¹é½ DistroManagementScreen çš„å€’è®¡æ—¶ç¡®è®¤å¼¹çª—ï¼‰ï¼š
+ * å…³é—­ä¼šæ€æ­»ä¼šè¯ä¸­è¿è¡Œçš„æ‰€æœ‰è¿›ç¨‹ï¼Œå±žç ´åæ€§æ“ä½œã€‚
  */
 @Composable
 private fun CloseSessionConfirmDialog(
@@ -1053,32 +882,39 @@ private fun CloseSessionConfirmDialog(
 @Composable
 private fun ExtraKey(
     label: String,
+    modifier: Modifier = Modifier,
     isAccent: Boolean = false,
     isDanger: Boolean = false,
+    isActive: Boolean = false,
     hapticsEnabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
     val bg = when {
+        isActive && isAccent -> MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+        isActive -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.22f)
         isDanger -> MaterialTheme.colorScheme.errorContainer
-        isAccent -> MaterialTheme.colorScheme.primaryContainer
+        isAccent -> MaterialTheme.colorScheme.surfaceContainerHigh
         else -> MaterialTheme.colorScheme.surfaceContainerHigh
     }
     val textCol = when {
+        isActive && isAccent -> MaterialTheme.colorScheme.primary
+        isActive -> MaterialTheme.colorScheme.tertiary
         isDanger -> MaterialTheme.colorScheme.onErrorContainer
-        isAccent -> MaterialTheme.colorScheme.onPrimaryContainer
         else -> MaterialTheme.colorScheme.onSurface
     }
     val borderCol = when {
+        isActive && isAccent -> MaterialTheme.colorScheme.primary
+        isActive -> MaterialTheme.colorScheme.tertiary
         isDanger -> MaterialTheme.colorScheme.error.copy(alpha = 0.35f)
-        isAccent -> MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
         else -> MaterialTheme.colorScheme.outlineVariant
     }
 
     Surface(
-        modifier = Modifier
-            .minimumInteractiveComponentSize()
-            .clip(RoundedCornerShape(8.dp))
+        modifier = modifier
+            // Fixed short height → wider-than-tall keys (not square), saves console space.
+            .height(28.dp)
+            .clip(RoundedCornerShape(3.dp))
             .clickable(onClick = {
                 if (hapticsEnabled) {
                     haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
@@ -1086,76 +922,32 @@ private fun ExtraKey(
                 onClick()
             }),
         color = bg,
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(3.dp),
         border = BorderStroke(1.dp, borderCol),
     ) {
-        Text(
-            label,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-            style = MaterialTheme.typography.labelSmall.copy(
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 12.sp,
-            ),
-            color = textCol,
-        )
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 9.sp,
+                    lineHeight = 10.sp,
+                ),
+                color = textCol,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+            )
+        }
     }
 }
 
 @Composable
 private fun TerminalDot(color: Color) {
     Box(Modifier.size(8.dp).background(color, CircleShape))
-}
-
-@Composable
-private fun TerminalLineRow(
-    line: TerminalLine,
-    showCursor: Boolean,
-    cursorColumn: Int,
-    fontSizeSp: Float = 13.5f,
-    termBg: Color,
-    termTextDefault: Color,
-    termCursor: Color,
-) {
-    val annotatedLine = remember(line, showCursor, cursorColumn, fontSizeSp, termBg, termTextDefault, termCursor) {
-        buildAnnotatedString {
-            line.cells.forEachIndexed { cellIndex, cell ->
-                val isCursor = showCursor && cellIndex == cursorColumn
-                withStyle(
-                    SpanStyle(
-                        color = if (isCursor) termBg else (cell.foreground?.let(::Color) ?: termTextDefault),
-                        background = if (isCursor) termCursor else (cell.background?.let(::Color) ?: Color.Unspecified),
-                        fontWeight = if (cell.bold) FontWeight.Bold else FontWeight.Normal,
-                        fontStyle = if (cell.italic) FontStyle.Italic else FontStyle.Normal,
-                        textDecoration = when {
-                            cell.underline && cell.strikeThrough -> TextDecoration.combine(listOf(TextDecoration.Underline, TextDecoration.LineThrough))
-                            cell.underline -> TextDecoration.Underline
-                            cell.strikeThrough -> TextDecoration.LineThrough
-                            else -> TextDecoration.None
-                        },
-                    ).let { style -> if (cell.inverse) style.copy(color = cell.background?.let(::Color) ?: termBg, background = cell.foreground?.let(::Color) ?: termTextDefault) else style },
-                ) { append(cell.character) }
-            }
-            if (showCursor && cursorColumn >= line.cells.size) {
-                repeat(cursorColumn - line.cells.size) { append(" ") }
-                withStyle(SpanStyle(color = termBg, background = termCursor)) { append(" ") }
-            }
-        }
-    }
-    Text(
-        text = annotatedLine,
-        fontFamily = FontFamily.Monospace,
-        color = termTextDefault,
-        style = MaterialTheme.typography.bodySmall.copy(
-            fontSize = fontSizeSp.sp,
-            lineHeight = (fontSizeSp * 1.35f).sp,
-        ),
-    )
-}
-
-private fun doShowKeyboard(view: View, context: Context) {
-    val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager ?: return
-    imm.showSoftInput(view, 0)
 }
 
 

@@ -22,8 +22,13 @@ class ToolCallLoopDetector(
         val toolName: String,
         val argsJson: String,
         var success: Boolean? = null,
+        /** 相同 (tool, args) 的上一次调用输出是否发生了变化：变了 = 有进展，不计入空转。 */
+        var outputChanged: Boolean = false,
         val timestamp: Long = System.currentTimeMillis(),
     )
+
+    /** (toolName:argsJson) → 上一次输出的指纹，用于识别"参数相同但结果在变"的合法轮询。 */
+    private val lastOutputFingerprints = mutableMapOf<String, Int>()
 
     sealed interface LoopVerdict {
         data object Pass : LoopVerdict
@@ -41,7 +46,9 @@ class ToolCallLoopDetector(
     @Synchronized
     fun evaluate(toolName: String, args: JsonObject): LoopVerdict {
         val currentArgsJson = canonical(args).toString()
-        val recentCalls = callHistory.takeLast(10)
+        // 窗口须显著大于单轮工具上限（默认 12）：跨轮震荡的模式可能被同轮后续调用推出
+        // 小窗口而逃过检测；上限 50 条历史内取 30 是覆盖与噪声的平衡。
+        val recentCalls = callHistory.takeLast(30)
 
         // 1. 检测连续相同调用的失败历史
         val sameFailedStreak = recentCalls.reversed().takeWhile { record ->
@@ -68,15 +75,18 @@ class ToolCallLoopDetector(
             )
         }
 
-        // 2. 检测完全相同的调用连续出现（即使成功也可能是无进展空转）
+        // 2. 检测完全相同的调用连续出现（即使成功也可能是无进展空转）。
+        // 输出有变化的不计入：`process logs`/`read` 轮询增长中的日志时参数完全相同，
+        // 但每次输出都在变，这正是被提示词鼓励的合法用法，按字面判空转会误杀。
         val identicalStreak = recentCalls.reversed().takeWhile { record ->
             record.toolName.equals(toolName, ignoreCase = true) &&
-                record.argsJson == currentArgsJson
+                record.argsJson == currentArgsJson &&
+                !record.outputChanged
         }.count()
 
         if (identicalStreak >= maxIdenticalCallsStreak) {
             return LoopVerdict.Block(
-                reason = "检测到重复空转：工具 `$toolName` 已连续执行 $identicalStreak 次且无状态变化",
+                reason = "检测到重复空转：工具 `$toolName` 已连续执行 $identicalStreak 次，参数与输出均无变化",
                 guidance = buildString {
                     append("【已强制拦截该无进展重复调用】\n")
                     append("你已连续 $identicalStreak 次执行完全相同的操作 `$toolName`，系统检测到任务陷入停滞空转。\n")
@@ -125,19 +135,39 @@ class ToolCallLoopDetector(
 
     /**
      * 记录单次工具调用的结算结果。
+     *
+     * @param output 工具输出正文（可空）。相同 (tool, args) 之间输出发生变化时标记
+     *  [CallRecord.outputChanged]，使结果感知的空转检测不再误杀合法轮询。
      */
     @Synchronized
-    fun recordSettled(toolName: String, args: JsonObject, success: Boolean) {
+    fun recordSettled(toolName: String, args: JsonObject, success: Boolean, output: String? = null) {
         val currentArgsJson = canonical(args).toString()
         val lastRecord = callHistory.lastOrNull {
             it.toolName.equals(toolName, ignoreCase = true) && it.argsJson == currentArgsJson && it.success == null
         }
         if (lastRecord != null) {
             lastRecord.success = success
+            lastRecord.outputChanged = markOutputProgress(toolName, currentArgsJson, output)
         } else {
-            callHistory.add(CallRecord(toolName = toolName, argsJson = currentArgsJson, success = success))
+            callHistory.add(
+                CallRecord(
+                    toolName = toolName,
+                    argsJson = currentArgsJson,
+                    success = success,
+                    outputChanged = markOutputProgress(toolName, currentArgsJson, output),
+                ),
+            )
             if (callHistory.size > 50) callHistory.removeAt(0)
         }
+    }
+
+    /** 相同 (tool, args) 的输出与上一次相比是否发生变化；同时滚动更新指纹。 */
+    private fun markOutputProgress(toolName: String, argsJson: String, output: String?): Boolean {
+        if (output == null) return false
+        val key = "${toolName.lowercase()}:$argsJson"
+        val fingerprint = output.hashCode()
+        val previous = lastOutputFingerprints.put(key, fingerprint)
+        return previous != null && previous != fingerprint
     }
 
     /**
@@ -146,6 +176,7 @@ class ToolCallLoopDetector(
     @Synchronized
     fun reset() {
         callHistory.clear()
+        lastOutputFingerprints.clear()
     }
 
     private fun canonical(value: JsonElement): JsonElement = when (value) {

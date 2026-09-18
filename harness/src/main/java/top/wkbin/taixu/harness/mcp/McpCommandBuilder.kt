@@ -17,7 +17,9 @@ class McpCommandBuilder @Inject constructor() {
     }
 
     fun fingerprint(server: McpServerConfig) =
-        server.command + "|" + server.args.joinToString(",") + "|" + server.env.entries.joinToString(",") { it.key + "=" + it.value }
+        server.command + "|" + server.args.joinToString(",") + "|" +
+            // B9: env 按 key 排序后再拼接，消除 map 迭代序不稳定导致的指纹抖动（与 McpManager 的 toSortedMap 对齐）
+            server.env.entries.sortedBy { it.key }.joinToString(",") { it.key + "=" + it.value }
 
     /**
      * 将内置 MCP 的默认 `--repository /workspace` 绑定到当前会话工作区。

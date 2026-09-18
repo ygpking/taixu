@@ -113,16 +113,22 @@ class CheckpointStore @Inject constructor() {
     fun planCodeRewind(sessionId: String, turn: Int): List<FileSnap> {
         val state = stateOf(sessionId)
         val open = state.active
-        val totalTurns = state.checkpoints.size + if (open != null) 1 else 0
-        if (turn < 0 || turn >= totalTurns) return emptyList()
+        // 轮号全局单调（活动轮 = activeTurn = lastTurn+1），MAX_KEPT 裁剪或空轮缺号后
+        // 与 checkpoints.size/下标错位；必须按轮号比较，否则目标轮/活动轮会被错误纳入或漏掉。
+        val newestClosedTurn = state.checkpoints.lastOrNull()?.turn ?: -1
+        val newestTurn = if (open != null) maxOf(newestClosedTurn, state.activeTurn) else newestClosedTurn
+        if (turn < 0 || turn > newestTurn) return emptyList()
         val merged = LinkedHashMap<String, FileSnap>()
-        for (index in turn until state.checkpoints.size) {
-            for (snap in state.checkpoints[index].files) {
-                merged.putIfAbsent(snap.path, snap)
+        for (checkpoint in state.checkpoints) {
+            if (checkpoint.turn >= turn) {
+                for (snap in checkpoint.files) {
+                    merged.putIfAbsent(snap.path, snap)
+                }
             }
         }
-        // 当前（尚未关闭）的轮次也纳入回滚范围
-        if (open != null && turn <= state.checkpoints.size) {
+        // 当前（尚未关闭）的轮次也纳入回滚范围：用 activeTurn 判断而非 checkpoints.size
+        //（活动轮轮号是 lastTurn+1，裁剪后远大于 checkpoints.size，原条件会漏掉当前进行轮的改动）
+        if (open != null && turn <= state.activeTurn) {
             for (snap in open.values) merged.putIfAbsent(snap.path, snap)
         }
         return merged.values.toList()
@@ -141,6 +147,9 @@ class CheckpointStore @Inject constructor() {
                 if (missing.isNotEmpty()) {
                     state.checkpoints.addAll(0, missing.sortedBy { it.turn })
                 }
+                // 恢复后裁剪到 MAX_KEPT（保留最新），与 write() 的 keptFloor 磁盘清理窗口对齐，
+                // 避免恢复列表超过 100 项且与磁盘清理错位
+                while (state.checkpoints.size > MAX_KEPT) state.checkpoints.removeAt(0)
                 restored.maxOfOrNull { it.turn }?.let { if (it > state.lastTurn) state.lastTurn = it }
             }
         }

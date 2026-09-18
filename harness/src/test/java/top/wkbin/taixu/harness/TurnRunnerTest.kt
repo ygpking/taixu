@@ -22,7 +22,7 @@ class TurnRunnerTest {
             remainingRounds = 1,
         )
         assertTrue(executed)
-        assertTrue(outcome is TurnOutcome.Failed)
+        assertTrue(outcome is TurnOutcome.RoundLimit)
     }
 
     @Test
@@ -34,7 +34,7 @@ class TurnRunnerTest {
             enforceToolLimit = { calls, _ -> calls }, executeTools = { _, _ -> true },
             remainingRounds = 1,
         )
-        assertTrue(outcome is TurnOutcome.Failed)
+        assertTrue(outcome is TurnOutcome.RoundLimit)
     }
 
     @Test
@@ -58,7 +58,7 @@ class TurnRunnerTest {
             enforceToolLimit = { calls, _ -> calls }, executeTools = { _, _ -> error("must not execute") },
             remainingRounds = 0,
         )
-        assertTrue(outcome is TurnOutcome.Failed)
+        assertTrue(outcome is TurnOutcome.RoundLimit)
     }
 
     @Test

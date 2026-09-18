@@ -54,6 +54,13 @@ data class AiModelEntity(
     val apiKeyCount: Int = 0,
     /** 单个 Key 每分钟最多发起的请求数；0 表示不做客户端限制。 */
     val requestsPerMinutePerKey: Int = 0,
+    /**
+     * 每模型压缩预算覆盖（对齐 pi compaction.modelOverrides）：
+     * 压缩触发时保留的最近 token 上限；null = 不启用收紧（跟随全局预算行为）。
+     */
+    val compactionKeepRecentTokens: Int? = null,
+    /** 压缩预算线中为 LLM 响应预留的 token；null = 使用内置默认。 */
+    val compactionReserveTokens: Int? = null,
 )
 
 @Dao

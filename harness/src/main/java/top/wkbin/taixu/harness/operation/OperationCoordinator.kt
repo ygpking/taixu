@@ -3,6 +3,8 @@ package top.wkbin.taixu.harness.operation
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import top.wkbin.taixu.core.database.HarnessEntryEntity
 import top.wkbin.taixu.core.database.HarnessLaneEntity
@@ -23,7 +25,14 @@ class OperationCoordinator @Inject constructor(
     private val json: Json,
     private val eventBus: HarnessEventBus,
 ) {
-    suspend fun acceptRun(sessionId: String, userMessage: HarnessMessage, laneName: String = SessionTreeStore.MAIN_LANE): String {
+    /**
+     * 串行化 accept 类入口的 check-then-act：并发 accept 同一 lane 时，
+     * “检查 currentOperationId == null → 写入”之间无保护会产生孤儿 RUNNING 操作。
+     * 用 Mutex 而非 synchronized：临界区内含 suspend 的 repository 调用，不能阻塞线程。
+     */
+    private val acceptMutex = Mutex()
+
+    suspend fun acceptRun(sessionId: String, userMessage: HarnessMessage, laneName: String = SessionTreeStore.MAIN_LANE): String = acceptMutex.withLock {
         val lane = reclaimInterruptedLane(sessionId, laneName)
         check(lane.currentOperationId == null) { "Lane ${lane.name} is busy" }
         val now = System.currentTimeMillis()
@@ -39,7 +48,7 @@ class OperationCoordinator @Inject constructor(
         return operationId
     }
 
-    suspend fun acceptQueuedRun(sessionId: String, queueItemId: String, userMessage: HarnessMessage): String {
+    suspend fun acceptQueuedRun(sessionId: String, queueItemId: String, userMessage: HarnessMessage): String = acceptMutex.withLock {
         val lane = reclaimInterruptedLane(sessionId, SessionTreeStore.MAIN_LANE)
         check(lane.currentOperationId == null) { "Lane ${lane.name} is busy" }
         val now = System.currentTimeMillis()
@@ -56,7 +65,7 @@ class OperationCoordinator @Inject constructor(
         return operationId
     }
 
-    suspend fun beginRun(sessionId: String, laneName: String = SessionTreeStore.MAIN_LANE): String {
+    suspend fun beginRun(sessionId: String, laneName: String = SessionTreeStore.MAIN_LANE): String = acceptMutex.withLock {
         val lane = repository.ensureLane(sessionId, laneName)
         lane.currentOperationId?.let { return it }
         val now = System.currentTimeMillis()
@@ -323,4 +332,5 @@ private fun HarnessMessage.serialType(): String = when (this) {
     is top.wkbin.taixu.harness.ToolCall -> "tool_call"
     is top.wkbin.taixu.harness.ToolResult -> "tool_result"
     is top.wkbin.taixu.harness.CapabilityEvent -> "capability_event"
+    is top.wkbin.taixu.harness.ModelSwitchEvent -> "model_switch"
 }

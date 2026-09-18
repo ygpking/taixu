@@ -1050,10 +1050,6 @@ private fun ToolBrandAvatar(
             Triple(top.wkbin.taixu.feature.components.R.drawable.components_ic_provider_anthropic, null, Color(0xFFD97757))
         key.contains("codex") || key.contains("openai") ->
             Triple(top.wkbin.taixu.feature.components.R.drawable.components_ic_provider_openai, null, Color(0xFF10A37F))
-        key.contains("openclaw") ->
-            Triple(null, "🦞", Color(0xFFFF4757))
-        key.contains("hermes") ->
-            Triple(null, "🪽", Color(0xFF8B5CF6))
         key.contains("android") ->
             Triple(null, "🤖", Color(0xFF3DDC84))
         key.contains("devtools") || key.contains("base-devtools") ->

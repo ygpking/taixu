@@ -8,6 +8,7 @@ import top.wkbin.taixu.harness.CapabilityEvent
 import top.wkbin.taixu.harness.ContextWindowPolicy
 import top.wkbin.taixu.harness.HarnessApiMapper
 import top.wkbin.taixu.harness.ModelConfig
+import top.wkbin.taixu.harness.ModelSwitchEvent
 import top.wkbin.taixu.harness.ProviderClient
 import top.wkbin.taixu.harness.ToolCall
 import top.wkbin.taixu.harness.ToolCallMode
@@ -17,6 +18,7 @@ import top.wkbin.taixu.harness.ApiFunctionCall
 import top.wkbin.taixu.harness.ApiMessage
 import top.wkbin.taixu.harness.ApiToolCall
 import top.wkbin.taixu.harness.MentionExtractor
+import top.wkbin.taixu.harness.TextToolCallCodec
 import top.wkbin.taixu.harness.compaction.CompactionManager
 import top.wkbin.taixu.harness.prompt.SystemPromptBuilder
 
@@ -42,8 +44,9 @@ class ApiContextAssembler @Inject constructor(
         thinkingMode: Boolean = false,
     ): List<ApiMessage> {
         val compactionEnabled = runCatching { settingsDataStore.contextCompactionEnabled.first() }.getOrDefault(true)
-        // 单一真相源：用户为该模型填写的「上下文上限」即预算，不再静默砍到 200000。
-        // 仅在模型未单独配置时回退到全局设置，再兜底 DEFAULT_CONTEXT_BUDGET。
+        // 与 SessionModelSwitcher/clampedBudget、ChatViewModel 面板同源：占用判定、面板显示、
+        // 实际请求组装必须走同一预算口径，否则会出现「显示 500K、实际按 96K 折叠」两张皮。
+        // 预算来源：模型单独配置优先，否则全局设置，再兜底 DEFAULT_CONTEXT_BUDGET。
         val declaredTokens = model.contextTokens
             ?: runCatching { settingsDataStore.contextBudgetTokens.first() }.getOrDefault(ContextWindowPolicy.DEFAULT_CONTEXT_BUDGET)
         val budgetTokens = ContextWindowPolicy.resolveEffectiveBudget(declaredTokens)
@@ -90,30 +93,55 @@ class ApiContextAssembler @Inject constructor(
                 it.id to ((it.rawToolName ?: HarnessApiMapper.apiName(it.tool)) to it.args)
             }
 
+            // 老轮次工具结果截断（先于压缩判定）：预算线未越过时，历史轮的大输出（浏览器快照、
+            // 长 read）仍会原样重复发送。最近若干条原样保留，更老的超过按工具阈值即压缩并附
+            // history_read 指针——只影响发给 Provider 的正文，落库 transcript 与 UI 不变。
+            // 关闭上下文压缩 = 用户要原始历史，此时同样不截断。
+            // 顺序必须在压缩判定之前：只需截断即可回到预算线内的会话，不应再触发整段压缩
+            // （一次额外 LLM 调用 + 历史永久降级为摘要）。
+            if (compactionEnabled) {
+                msgs = ContextWindowPolicy.truncateStaleToolResults(msgs, toolCallDetails)
+            }
+
             // 预算驱动的滑动窗口：从最近一轮往回累加 token，超出预算则更早的历史进入压缩态。
             // 是否裁剪原文只由真实 token 预算决定，不再按用户轮次阈值强制折叠。
+            // 每模型压缩预算覆盖（pi 式 modelOverrides）：keepRecent 收紧 + reserve 预留。
             val computedKeepFromIndex = if (compactionEnabled) {
                 ContextWindowPolicy.computeKeepFromIndex(
                     msgs,
                     budgetTokens,
                     ContextWindowPolicy.estimateTokens(systemPrompt) +
-                        ContextWindowPolicy.estimateTokens(compactedContext.summary.orEmpty()),
+                        ContextWindowPolicy.estimateTokens(compactedContext.summaryLayer),
                     minKeepMessages = minKeepMessages,
                     foldingRatioPercent = foldingRatioPercent,
                     maxKeepTokens = maxKeepTokens,
+                    keepRecentTokens = model.compactionKeepRecentTokens ?: 0,
+                    reserveTokens = model.compactionReserveTokens,
                 )
             } else {
                 0
             }
             if (computedKeepFromIndex > 0) {
-                compactedContext = compactionManager.compact(sessId, compactedContext, computedKeepFromIndex)
+                // LLM 结构化压缩摘要（pi 式）：当前模型生成，失败回退机械摘要
+                compactedContext = compactionManager.compact(
+                    sessId,
+                    compactedContext,
+                    computedKeepFromIndex,
+                    model = model,
+                )
                 msgs = compactedContext.messages
+                // compact 返回的保留窗口来自原始 transcript（未截断），重放一次截断，
+                // 保证与压缩判定时同一口径。
+                if (compactionEnabled) {
+                    msgs = ContextWindowPolicy.truncateStaleToolResults(msgs, toolCallDetails)
+                }
             }
-            if (!compactedContext.summary.isNullOrBlank()) {
+            val summaryLayer = compactedContext.summaryLayer
+            if (summaryLayer.isNotBlank()) {
                 add(
                     ApiMessage(
                         role = "system",
-                        content = compactedContext.summary,
+                        content = summaryLayer,
                     ),
                 )
             }
@@ -131,7 +159,7 @@ class ApiContextAssembler @Inject constructor(
             )
             while (i < msgs.size) {
                 val message = msgs[i]
-                if (message is CapabilityEvent) {
+                if (message is CapabilityEvent || message is ModelSwitchEvent) {
                     i++
                     continue
                 }
@@ -139,6 +167,20 @@ class ApiContextAssembler @Inject constructor(
                     when (message) {
                         is ToolCall -> {
                             toolNames[message.id] = message.rawToolName ?: HarnessApiMapper.apiName(message.tool)
+                            // 回放调用意图：落库的 assistant 文本已剥离工具标记，跳过会让模型
+                            // 看不到自己上一轮调用了什么参数，结果无法与调用关联，易重复调用。
+                            // 与 NATIVE 分支同口径：无结果的悬空调用不回放。
+                            if (message.id in answeredIds) {
+                                add(
+                                    ApiMessage(
+                                        role = "assistant",
+                                        content = TextToolCallCodec.encodeCall(
+                                            message.rawToolName ?: HarnessApiMapper.apiName(message.tool),
+                                            message.args.toString(),
+                                        ),
+                                    ),
+                                )
+                            }
                             i++
                         }
                         is ToolResult -> {

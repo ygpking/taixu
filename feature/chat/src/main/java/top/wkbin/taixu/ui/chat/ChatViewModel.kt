@@ -116,6 +116,7 @@ class ChatViewModel @Inject constructor(
     private val approvalRepository: AgentApprovalRepository,
     private val agentContextDao: top.wkbin.taixu.core.database.AgentContextRepository,
     private val compactionManager: top.wkbin.taixu.harness.compaction.CompactionManager,
+    private val sessionModelSwitcher: top.wkbin.taixu.harness.session.SessionModelSwitcher,
     private val quickPhraseRepository: top.wkbin.taixu.core.database.QuickPhraseRepository,
     private val laneManager: LaneManager,
 
@@ -1255,11 +1256,13 @@ class ChatViewModel @Inject constructor(
 
     fun selectModel(id: String, subModel: String? = null) {
         viewModelScope.launch {
-            val entity = aiModelDao.findById(id) ?: return@launch
             val sessionId = currentSessionId.value.takeIf { it.isNotBlank() } ?: return@launch
-            val variant = subModel?.trim()?.takeIf { it.isNotBlank() }
-                ?: entity.model.substringBefore(',').trim().takeIf { it.isNotBlank() }
-            sessionDao.setModelSelection(sessionId, entity.id, variant, System.currentTimeMillis())
+            sessionModelSwitcher.switchModel(
+                sessionId = sessionId,
+                profileId = id,
+                variant = subModel,
+                compactIfNeeded = !running.value,
+            )
         }
     }
 
@@ -1316,9 +1319,13 @@ class ChatViewModel @Inject constructor(
         val trimmed = modelId.trim()
         if (trimmed.isBlank()) return
         viewModelScope.launch {
-            val profile = aiModelDao.findById(profileId) ?: return@launch
             val sessionId = currentSessionId.value.takeIf { it.isNotBlank() } ?: return@launch
-            sessionDao.setModelSelection(sessionId, profile.id, trimmed, System.currentTimeMillis())
+            sessionModelSwitcher.switchModel(
+                sessionId = sessionId,
+                profileId = profileId,
+                variant = trimmed,
+                compactIfNeeded = !running.value,
+            )
             closeProviderModelPicker()
         }
     }

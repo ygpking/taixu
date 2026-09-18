@@ -11,6 +11,12 @@ object ContextWindowPolicy {
     private const val MAX_SYSTEM_PROMPT_FRACTION = 0.60
     private const val MIN_SYSTEM_PROMPT_TOKENS = 512
     /**
+     * 输入预算占模型窗口的比例（上游 v0.15.0 口径，0.75）。
+     * 折叠触发线同时取本地 [foldingLimitFor] 与 `budget × 本比例 − 预留` 两者中更严的一条，
+     * 使不同窗口档位下都不会把历史挤到 completion/工具 schema 的空间里。
+     */
+    private const val INPUT_BUDGET_FRACTION = 0.75
+    /**
      * 上下文预算的单一真相源（single source of truth）。
      *
      * 语义约定（用户可见、可预期）：
@@ -105,6 +111,12 @@ object ContextWindowPolicy {
         val safeRounds = rounds?.takeIf { it > 0 } ?: 0
         return (safeRounds * MESSAGES_PER_ROUND).coerceAtLeast(MIN_KEEP_MESSAGES)
     }
+    /**
+     * 历史消息占用的绝对安全上限（token）。无论模型标称窗口多高，压缩触发线都不超过此值，
+     * 避免 flash 级模型在超高 token 下参数生成崩塌（上游 v0.15.0 引入的护栏）。
+     * 与本地 [foldingLimitFor] 的预算护栏取更严者生效，两者并存不互斥。
+     */
+    const val SAFE_GENERATION_CAP = 96_000
     private const val APPROX_CHARS_PER_TOKEN = 4
 
     /**
@@ -184,6 +196,61 @@ object ContextWindowPolicy {
         }
     }
 
+    /**
+     * 老轮次工具结果截断时原样保留的最近结果条数（下限兜底）。
+     *
+     * 主保护是轮次语义：最后一条用户消息之后的所有结果（活跃任务的全部工作轮，
+     * 可达 maxToolsPerRound 条并行调用）一律原样。此下限只服务新用户消息到达后的
+     * 「继续」式续跑——保留最近几条让模型知道当前状态；更早的结果压缩后头部仍
+     * 保留关键状态（如浏览器快照 JSON 开头的 tab/url），全文可 history_read 回读。
+     */
+    const val KEEP_RECENT_TOOL_RESULTS = 4
+
+    /**
+     * 组装请求前的老轮次工具结果截断。
+     *
+     * 预算驱动的压缩（computeKeepFromIndex）只有越过 token 预算线才触发，
+     * 在此之前每个历史轮的大输出（如浏览器快照、长 read）都会原样重复发送：
+     * 一轮 2.7KB 的快照随对话增长累积，既烧 token 又稀释注意力。
+     *
+     * 策略：受保护 = 最后一条用户消息之后的全部结果（当前轮）∪ 最近
+     * [keepRecentResults] 条结果（steering 兜底）；其余结果超过
+     * [compactThresholdFor] 阈值时按 [compactToolOutput] 语义压缩，并附
+     * history_read 指针。不改变消息条数与顺序（NATIVE 协议下丢消息会产生
+     * 非法 transcript），只替换输出正文。
+     *
+     * @param toolCallDetails toolCallId → (工具名, 参数)，用于按工具类型选阈值与压缩形态
+     * @return 变换后的消息列表；无命中时原样返回同一实例（避免无谓复制）
+     */
+    fun truncateStaleToolResults(
+        messages: List<HarnessMessage>,
+        toolCallDetails: Map<String, Pair<String, JsonObject>>,
+        keepRecentResults: Int = KEEP_RECENT_TOOL_RESULTS,
+    ): List<HarnessMessage> {
+        if (messages.isEmpty()) return messages
+        val lastUserIndex = messages.indexOfLast { it is UserMessage }
+        val protectedIds = messages.filterIsInstance<ToolResult>()
+            .takeLast(keepRecentResults.coerceAtLeast(0))
+            .mapTo(mutableSetOf()) { it.id }
+        // 当前工作轮的结果（最后一条用户消息之后）全部保护：模型下一步决策就靠它们，
+        // 一轮并行调用可达 maxToolsPerRound 条，固定条数覆盖不了。
+        messages.forEachIndexed { index, message ->
+            if (index > lastUserIndex && message is ToolResult) protectedIds.add(message.id)
+        }
+        var changed = false
+        val transformed = messages.map { message ->
+            if (message !is ToolResult || message.id in protectedIds) return@map message
+            val (name, args) = toolCallDetails[message.toolCallId] ?: (null to null)
+            if (message.output.length <= compactThresholdFor(name)) return@map message
+            changed = true
+            message.copy(
+                output = compactToolOutput(name, args, message.output, message.success) +
+                    "\n[老轮次工具输出已压缩；全文在会话记录中，需要细节时调用 history_read(message_id=\"${message.id}\") 回读]",
+            )
+        }
+        return if (changed) transformed else messages
+    }
+
     /** Conservative multilingual estimate used when a provider tokenizer is unavailable. */
     fun estimateTokens(text: String): Int {
         if (text.isBlank()) return 0
@@ -205,6 +272,30 @@ object ContextWindowPolicy {
     const val DEFAULT_NATIVE_TOOL_TOKENS = 3_600
     const val DEFAULT_RULES_TOKENS = 1_400
     const val DEFAULT_SUBAGENT_TOKENS = 1_100
+
+    /** Session occupancy and compaction must share the same budget: current model, then the global fallback. */
+    fun resolveBudget(profileContextTokens: Int?, defaultBudget: Int): Int =
+        (profileContextTokens ?: defaultBudget).coerceAtLeast(1)
+
+    /**
+     * 会话占用判定（SessionModelSwitcher）与实际请求组装（ApiContextAssembler）共用的
+     * 预算钳制：先按当前模型/全局回退取值，再统一钳制到 [1, MAX_CONTEXT_BUDGET]。
+     * 两处必须走同一口径，否则会出现"切换模型判定无需压缩、实际请求又压缩"。
+     */
+    fun clampedBudget(profileContextTokens: Int?, defaultBudget: Int): Int =
+        resolveBudget(profileContextTokens, defaultBudget).coerceIn(1, MAX_CONTEXT_BUDGET)
+
+    fun estimateReservedPromptTokens(
+        pureChat: Boolean,
+        toolDisabled: Boolean,
+        skillTokens: Int = 0,
+        mcpTokens: Int = 0,
+        summaryTokens: Int = 0,
+    ): Int {
+        if (pureChat) return summaryTokens
+        val toolTokens = if (toolDisabled) 0 else DEFAULT_NATIVE_TOOL_TOKENS + DEFAULT_SUBAGENT_TOKENS
+        return DEFAULT_SYSTEM_PROMPT_TOKENS + DEFAULT_RULES_TOKENS + toolTokens + skillTokens + mcpTokens + summaryTokens
+    }
 
     /** Estimate the payload after the same token-budget compaction used by [HarnessLoop]. */
     fun estimateEffectiveUsage(
@@ -236,7 +327,7 @@ object ContextWindowPolicy {
         var toolTokens = 0
         messages.drop(keepFrom).forEach { message ->
             when (message) {
-                is CapabilityEvent -> Unit
+                is CapabilityEvent, is ModelSwitchEvent -> Unit
                 is UserMessage -> {
                     conversationTokens += estimateTokens(message.text) + message.imageUrls.size * 1_000
                 }
@@ -286,16 +377,17 @@ object ContextWindowPolicy {
     /**
      * 计算滑动窗口起点。
      *
+     * 参数为两侧（本地 fork 与上游 v0.15.0）并集，缺省值即各自历史默认行为：
      * @param minKeepMessages 强制保留的最近消息条数下限。默认 [MIN_KEEP_MESSAGES]；
-     *   调用方可由用户设置「压缩触发阈值（用户轮次）」经 [keepMessagesForRounds] 换算后传入，
-     *   使该设置真正影响折叠行为（此前引擎完全不读该设置，属僵尸设置）。
+     *   调用方可由用户设置「压缩触发阈值（用户轮次）」经 [keepMessagesForRounds] 换算后传入。
      * @param foldingRatioPercent 折叠线比例（百分比，默认 100 = 与旧行为一致）。
-     *   由用户设置「折叠线比例」传入，使历史可在预算的一部分处就开始折叠，
-     *   避免长会话长期以数十万 token 的请求运行。
      * @param maxKeepTokens 保留窗口的 token 总量上限（默认 [DEFAULT_MAX_KEEP_TOKENS]，参考 OMP
      *   的 keepRecentTokens=20000）。这是「条数下限」之上的第二道护栏：只按条数保留会失控
-     *   （单条 tool_result 可达上万 token，10 条就可能留下十几万 token），
-     *   导致压缩执行了但下一轮请求依然巨大。
+     *   （单条 tool_result 可达上万 token，10 条就可能留下十几万 token）。
+     * @param keepRecentTokens 上游的「压缩触发后保留最近 N token」口径（对齐 pi，默认 0 = 不启用）。
+     *   仅在压缩触发（预算边界 > 0）时生效：保留历史不超过该值，更早的进入摘要。
+     * @param reserveTokens 为 LLM 响应预留的 token（对齐 pi reserveTokens）。null = 使用内置默认；
+     *   每模型覆盖时替换全局保留值参与预算线计算。
      */
     fun computeKeepFromIndex(
         messages: List<HarnessMessage>,
@@ -304,14 +396,20 @@ object ContextWindowPolicy {
         minKeepMessages: Int = MIN_KEEP_MESSAGES,
         foldingRatioPercent: Int = DEFAULT_FOLDING_RATIO_PERCENT,
         maxKeepTokens: Int = DEFAULT_MAX_KEEP_TOKENS,
+        keepRecentTokens: Int = 0,
+        reserveTokens: Int? = null,
     ): Int {
         if (messages.size <= 1) return 0
         if (budget <= 0) {
             return alignKeepFromIndex(messages, minimalKeepFromIndex(messages))
         }
-        val rawLimit = foldingLimitFor(budget, foldingRatioPercent) - systemTokens
-        // 预算耗尽（rawLimit<=0）时只保留最小近轮。
-        // 「防失忆」职责由 minKeepMessages 强制保留最近若干条 + alignKeepFromIndex 的工具对闭合共同覆盖。
+        // 折叠触发线同时受本地预算护栏与上游输入预算线约束，取更严者（见 [foldingLimitFor]）。
+        val localLimit = foldingLimitFor(budget, foldingRatioPercent) - systemTokens
+        val upstreamLimit = (budget * INPUT_BUDGET_FRACTION).toInt() -
+            systemTokens - (reserveTokens ?: RESERVED_OUTPUT_TOKENS) - TOOL_SCHEMA_RESERVE_TOKENS
+        // rawLimit<=0 时只保留最小近轮：「防失忆」由 minKeepMessages 强制保留最近若干条
+        // + alignKeepFromIndex 的工具对闭合共同覆盖。
+        val rawLimit = minOf(localLimit, upstreamLimit)
         if (rawLimit <= 0) {
             return alignKeepFromIndex(messages, minimalKeepFromIndex(messages))
         }
@@ -320,29 +418,32 @@ object ContextWindowPolicy {
         val limit = rawLimit
         var used = 0
         for (index in messages.indices.reversed()) {
-            val tokens = when (val message = messages[index]) {
-                is CapabilityEvent -> 0
-                is UserMessage -> estimateTokens(message.text) + message.imageUrls.size * 1_000
-                is AssistantText -> estimateTokens(assistantTextForContext(message.text)) +
-                    estimateTokens(message.reasoning.orEmpty())
-                is ToolResult -> estimateTokens(message.output)
-                is ToolCall -> estimateTokens(message.args.toString()) + estimateTokens(message.reasoning.orEmpty())
-            }
+            val tokens = tokensOf(messages[index])
             if (used + tokens > limit) {
                 // 强制保留最近 minKeepMessages 条（即使已超 limit），避免「只留 2 条」导致
                 // 模型记不住前因。上限受预算约束：小窗口模型自动少保，但至少保住最近一轮。
                 //
                 // ⚠️ 关键：条数下限必须再受「保留 token 上限」约束（参考 OMP 的 keepRecentTokens）。
                 // 只按条数保留会失控——真实数据里单条 tool_result 可达 1.2 万 token，
-                // MIN_KEEP_MESSAGES=10 条就可能留下十几万 token，导致「压缩看起来执行了、
-                // 但下一轮请求依然几十万 token」，这是历史摘要压不下去的根因。
-                // 因此在满足条数下限的同时，把保留窗口的 token 总量也夹到 maxKeepTokens 以内；
-                // 若单条消息本身就超上限，则至少保住它自身（不产生空窗口）。
+                // MIN_KEEP_MESSAGES=10 条就可能留下十几万 token。
                 val forcedFloor = ((messages.size - minKeepMessages).coerceAtLeast(0))
                 var candidate = (index + 1).coerceIn(0, messages.lastIndex).coerceAtMost(forcedFloor)
                 candidate = shrinkToTokenCap(messages, candidate, maxKeepTokens)
-                val tokenBoundary = alignKeepFromIndex(messages, candidate)
-                return tokenBoundary
+                var boundary = alignKeepFromIndex(messages, candidate)
+                // Split-turn（对齐 pi）：单个用户轮次自身超预算时，按用户轮次对齐会把
+                // 整个巨型轮次保留下来，kept 仍超限，下一次请求必然溢出。
+                // 此刻降级为轮内切割：切点回退到最近的合法边界（assistant 消息或工具调用），
+                // 工具调用/结果配对由 closeToolPairs 保证不被拆散。
+                // Split-turn 仅当边界已收敛到「最后一个用户轮次起点」时才有意义：此时
+                // 整个窗口就是这一个超预算的轮次，轮内切割换回的是 token 收益。
+                // 若边界跨多个轮次却仍超限，则预算上限本身过紧，此时保持轮次起点、宁可
+                // 短暂略超限，也不能把窗口首条切到 assistant，破坏「窗口从 user 轮次开始」。
+                val lastUserStart = messages.indexOfLast { it is UserMessage }
+                if (boundary == lastUserStart && keptTokens(messages, boundary) > limit) {
+                    val splitBoundary = alignSplitTurnBoundary(messages, candidate)
+                    if (splitBoundary > 0) boundary = splitBoundary
+                }
+                return applyKeepRecentCap(messages, boundary, keepRecentTokens, limit)
             }
             used += tokens
         }
@@ -380,12 +481,63 @@ object ContextWindowPolicy {
 
     /** 单条消息的 token 估算（与 computeKeepFromIndex 内的口径保持一致）。 */
     private fun messageTokens(message: HarnessMessage): Int = when (message) {
-        is CapabilityEvent -> 0
+        is CapabilityEvent, is ModelSwitchEvent -> 0
         is UserMessage -> estimateTokens(message.text) + message.imageUrls.size * 1_000
         is AssistantText -> estimateTokens(assistantTextForContext(message.text)) +
             estimateTokens(message.reasoning.orEmpty())
         is ToolResult -> estimateTokens(message.output)
         is ToolCall -> estimateTokens(message.args.toString()) + estimateTokens(message.reasoning.orEmpty())
+    }
+
+    /**
+     * 压缩触发后的 keepRecentTokens 收紧（对齐 pi：压缩时保留最近 N token，更早的进摘要）。
+     * 取预算边界与 keepRecent 边界中更激进者；收紧后若超出预算线则放弃收紧（预算优先）。
+     */
+    private fun applyKeepRecentCap(
+        messages: List<HarnessMessage>,
+        keepFrom: Int,
+        keepRecentTokens: Int,
+        limit: Int,
+    ): Int {
+        if (keepRecentTokens <= 0 || keepFrom <= 0) return keepFrom
+        var used = 0
+        for (index in messages.indices.reversed()) {
+            used += tokensOf(messages[index])
+            if (used > keepRecentTokens) {
+                val keepRecentBoundary = alignSplitTurnBoundary(messages, index + 1).coerceAtLeast(1)
+                val tightened = maxOf(keepRecentBoundary, keepFrom)
+                return if (keptTokens(messages, tightened) > limit) keepFrom else tightened
+            }
+        }
+        return keepFrom
+    }
+
+    private fun tokensOf(message: HarnessMessage): Int = when (message) {
+        is CapabilityEvent, is ModelSwitchEvent -> 0
+        is UserMessage -> estimateTokens(message.text) + message.imageUrls.size * 1_000
+        is AssistantText -> estimateTokens(assistantTextForContext(message.text)) +
+            estimateTokens(message.reasoning.orEmpty())
+        is ToolResult -> estimateTokens(message.output)
+        is ToolCall -> estimateTokens(message.args.toString()) + estimateTokens(message.reasoning.orEmpty())
+    }
+
+    private fun keptTokens(messages: List<HarnessMessage>, keepFrom: Int): Int =
+        messages.drop(keepFrom).sumOf(::tokensOf)
+
+    /**
+     * Split-turn 轮内切割：从 [candidate] 向后回退到最近的合法切点。
+     * 合法切点 = user / assistant / tool_call 消息（绝不切在 tool_result 上，
+     * 否则结果与其调用分离，产生非法 transcript）。
+     */
+    private fun alignSplitTurnBoundary(messages: List<HarnessMessage>, candidate: Int): Int {
+        var boundary = candidate.coerceIn(0, messages.lastIndex)
+        while (boundary > 0 && messages[boundary] !is UserMessage &&
+            messages[boundary] !is AssistantText && messages[boundary] !is ToolCall
+        ) {
+            boundary--
+        }
+        if (boundary <= 0) return 0
+        return closeToolPairs(messages, boundary)
     }
 
     private fun minimalKeepFromIndex(messages: List<HarnessMessage>): Int {
@@ -420,23 +572,29 @@ object ContextWindowPolicy {
         val boundedCandidate = candidate.coerceIn(0, messages.lastIndex)
         val nextUser = (boundedCandidate..messages.lastIndex).firstOrNull { messages[it] is UserMessage }
         val previousUser = (boundedCandidate downTo 0).firstOrNull { messages[it] is UserMessage }
-        var boundary = nextUser ?: previousUser ?: boundedCandidate
+        val boundary = nextUser ?: previousUser ?: boundedCandidate
+        return closeToolPairs(messages, boundary)
+    }
 
-        // Defensive closure for persisted/interrupted histories where a result may have
-        // crossed a user boundary. Repeat because moving back can reveal another result
-        // from the same parallel tool-call group.
+    /**
+     * Keep a tool call/result exchange together: if a kept ToolResult's call sits before
+     * the boundary, pull the boundary back to that call. Repeat because moving back can
+     * reveal another result from the same parallel tool-call group.
+     */
+    private fun closeToolPairs(messages: List<HarnessMessage>, boundary: Int): Int {
+        var closed = boundary.coerceIn(0, messages.size)
         do {
-            val previousBoundary = boundary
-            messages.subList(boundary, messages.size)
+            val previousBoundary = closed
+            messages.subList(closed, messages.size)
                 .filterIsInstance<ToolResult>()
                 .forEach { result ->
                     val callIndex = messages.indexOfLast {
                         it is ToolCall && it.id == result.toolCallId
                     }
-                    if (callIndex in 0 until boundary) boundary = callIndex
+                    if (callIndex in 0 until closed) closed = callIndex
                 }
-        } while (boundary < previousBoundary)
-        return boundary
+        } while (closed < previousBoundary)
+        return closed
     }
 
     /**

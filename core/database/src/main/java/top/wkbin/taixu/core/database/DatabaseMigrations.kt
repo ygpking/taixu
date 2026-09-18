@@ -271,3 +271,15 @@ val MIGRATION_46_47 = object : Migration(46, 47) {
     }
 }
 
+/** Adds per-model compaction budget overrides (pi-style compaction.modelOverrides). */
+val MIGRATION_47_48 = object : Migration(47, 48) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "ALTER TABLE `harness_models` ADD COLUMN `compactionKeepRecentTokens` INTEGER",
+        )
+        db.execSQL(
+            "ALTER TABLE `harness_models` ADD COLUMN `compactionReserveTokens` INTEGER",
+        )
+    }
+}
+

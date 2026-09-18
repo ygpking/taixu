@@ -149,6 +149,7 @@ class AgentPreferences @Inject constructor(private val store: SettingsDataStore)
     val contextCompactionEnabled get() = store.contextCompactionEnabled
     val contextCompactionThreshold get() = store.contextCompactionThreshold
     val maxToolRounds get() = store.maxToolRounds
+    val roundLimitAutoContinuations get() = store.roundLimitAutoContinuations
     val autoWorkspaceCwd get() = store.autoWorkspaceCwd
     val commandOutputCompressionEnabled get() = store.commandOutputCompressionEnabled
     val baseCommandTimeoutSeconds get() = store.baseCommandTimeoutSeconds

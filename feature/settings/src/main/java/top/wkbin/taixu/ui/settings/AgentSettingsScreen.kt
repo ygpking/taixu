@@ -91,6 +91,7 @@ fun AgentSettingsScreen(
     val compactionEnabled by viewModel.contextCompactionEnabled.collectAsStateWithLifecycle()
     val compactionThreshold by viewModel.contextCompactionThreshold.collectAsStateWithLifecycle()
     val maxToolRounds by viewModel.maxToolRounds.collectAsStateWithLifecycle()
+    val roundLimitAutoContinuations by viewModel.roundLimitAutoContinuations.collectAsStateWithLifecycle()
     val autoWorkspaceCwd by viewModel.autoWorkspaceCwd.collectAsStateWithLifecycle()
     val commandOutputCompressionEnabled by viewModel.commandOutputCompressionEnabled.collectAsStateWithLifecycle()
     val baseCommandTimeoutSeconds by viewModel.baseCommandTimeoutSeconds.collectAsStateWithLifecycle()
@@ -218,6 +219,12 @@ fun AgentSettingsScreen(
                     RoundsSliderRow(
                         currentValue = maxToolRounds,
                         onValueChange = viewModel::setMaxToolRounds,
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    AutoContinuationSliderRow(
+                        currentValue = roundLimitAutoContinuations,
+                        roundsPerSegment = maxToolRounds,
+                        onValueChange = viewModel::setRoundLimitAutoContinuations,
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     ToolsPerRoundSliderRow(
@@ -938,7 +945,7 @@ private fun RoundsSliderRow(
             )
         }
         Text(
-            "防止复杂任务中模型陷入死循环；达到轮次后将输出总结并请用户分步进行",
+            "防止复杂任务中模型陷入死循环；达到轮次后进入下方的自动续跑检查点",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -951,8 +958,54 @@ private fun RoundsSliderRow(
             value = sliderVal,
             onValueChange = { sliderVal = it },
             onValueChangeFinished = { onValueChange(sliderVal.toInt()) },
-            valueRange = 10f..250f,
-            steps = 23, // 10, 20, 30 ... 250
+            valueRange = 10f..300f,
+            steps = 28, // 10, 20, 30 ... 300
+        )
+    }
+}
+
+@Composable
+private fun AutoContinuationSliderRow(
+    currentValue: Int,
+    roundsPerSegment: Int,
+    onValueChange: (Int) -> Unit,
+) {
+    var sliderVal by remember(currentValue) { mutableFloatStateOf(currentValue.toFloat()) }
+    val continuations = sliderVal.toInt()
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("轮次用尽后自动续跑", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold))
+            Text(
+                if (continuations == 0) "关闭" else "$continuations 次",
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        Text(
+            if (continuations == 0) {
+                "轮次用尽即停下等待用户确认；适合希望逐段把关的场景"
+            } else {
+                "轮次用尽时先让模型收束并记录进度，再自动续跑，无需用户点击继续；" +
+                    "总预算上限 ${roundsPerSegment * (continuations + 1)} 轮"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Slider(
+            value = sliderVal,
+            onValueChange = { sliderVal = it },
+            onValueChangeFinished = { onValueChange(sliderVal.toInt()) },
+            valueRange = 0f..10f,
+            steps = 9, // 0, 1, 2 ... 10
         )
     }
 }

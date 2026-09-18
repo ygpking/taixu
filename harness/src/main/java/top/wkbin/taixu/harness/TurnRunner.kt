@@ -15,6 +15,16 @@ sealed interface TurnOutcome {
         val toolsHadSuccess: Boolean,
         val followUpCount: Int = 0,
     ) : TurnOutcome
+
+    /**
+     * 本段工具轮次预算用尽，任务尚未收尾。本轮已完成的工作（工具结果、消费掉的追问）
+     * 都已落库，因此这不是失败，而是交由上层决定：续一段新预算，还是就此停下。
+     */
+    data class RoundLimit(
+        val effectiveToolCallCount: Int = 0,
+        val toolsHadSuccess: Boolean = true,
+    ) : TurnOutcome
+
     data class Failed(val message: String) : TurnOutcome
 }
 
@@ -37,7 +47,7 @@ class TurnRunner @Inject constructor(
         executeTools: suspend (List<ApiToolCallSpec>, ChatResult) -> Boolean,
         remainingRounds: Int = Int.MAX_VALUE,
     ): TurnOutcome {
-        if (remainingRounds <= 0) return roundLimitReached()
+        if (remainingRounds <= 0) return TurnOutcome.RoundLimit()
         val provider = callProvider()
         if (provider is TurnProviderOutcome.Failed) return TurnOutcome.Failed(provider.message)
         provider as TurnProviderOutcome.Success
@@ -56,7 +66,7 @@ class TurnRunner @Inject constructor(
             return if (followUpCount == 0) {
                 TurnOutcome.Complete
             } else if (remainingRounds == 1) {
-                roundLimitReached()
+                TurnOutcome.RoundLimit()
             } else {
                 TurnOutcome.Continue(
                     effectiveToolCallCount = 0,
@@ -68,12 +78,15 @@ class TurnRunner @Inject constructor(
 
         val effectiveCalls = enforceToolLimit(normalized.toolCalls, normalized.result)
         val toolsHadSuccess = executeTools(effectiveCalls, normalized.result)
-        if (remainingRounds == 1) return roundLimitReached()
+        if (remainingRounds == 1) {
+            return TurnOutcome.RoundLimit(
+                effectiveToolCallCount = effectiveCalls.size,
+                toolsHadSuccess = toolsHadSuccess,
+            )
+        }
         return TurnOutcome.Continue(
             effectiveToolCallCount = effectiveCalls.size,
             toolsHadSuccess = toolsHadSuccess,
         )
     }
-
-    private fun roundLimitReached() = TurnOutcome.Failed("已达到最大工具轮数，任务尚未确认完成。请简化任务或分步继续。")
 }

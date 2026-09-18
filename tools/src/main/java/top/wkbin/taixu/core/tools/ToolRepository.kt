@@ -1,4 +1,4 @@
-﻿package top.wkbin.taixu.core.tools
+package top.wkbin.taixu.core.tools
 
 import top.wkbin.taixu.core.database.ToolDao
 import top.wkbin.taixu.core.database.ToolEntity
@@ -24,6 +24,7 @@ class ToolRepository @Inject constructor(
     suspend fun updateStateAndInstalledVersion(distroId: String, id: String, state: String, installedVersion: String?) =
         toolDao.updateStateAndInstalledVersion(distroId, id, state, installedVersion)
     suspend fun deleteByDistro(distroId: String) = toolDao.deleteByDistro(distroId)
+    suspend fun deleteByIds(ids: Collection<String>) = toolDao.deleteByIds(ids)
     fun manifests(): List<ToolManifest> = toolRegistry.load()
     fun manifest(id: String): ToolManifest? = manifests().firstOrNull { it.id == id }
     suspend fun importLocal(

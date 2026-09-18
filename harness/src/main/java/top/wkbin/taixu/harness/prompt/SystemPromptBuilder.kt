@@ -91,7 +91,7 @@ class SystemPromptBuilder @Inject constructor(
 
         // 系统核心 MCP 能力引导：内置 MCP 默认关闭，但 harness 必须知道其存在；
         // 未授权时引导 LLM 提示用户开启，授权开启后常驻本会话随时可调用。
-        val mcpCapabilitySection = buildMcpCapabilitySection(mcpTools)
+        val mcpCapabilitySection = buildMcpCapabilitySection(mcpTools, toolCallMode)
 
         val memories = runCatching {
             agentContextDao.getMemoriesForContext(
@@ -275,8 +275,15 @@ class SystemPromptBuilder @Inject constructor(
      * - 已启用的服务（内置 + 自定义）逐个列出**实际可调用的 mcp__ 工具名**，模型无需猜测；
      * - 明确说明无需 @ 提及即可直接调用（@ 提及仅会把当轮注入裁剪到被提及的服务）；
      * - 未启用的内置能力按「使用时机」引导请求授权，未授权前不得绕过或模拟。
+     *
+     * NATIVE 模式下工具全名与参数 schema 本来就在本轮 tools 列表里，逐个枚举纯属重复
+     * （浏览器一个服务 30+ 个工具名就是 2KB+）；超过 [MCP_NAME_ENUM_THRESHOLD] 的服务只报
+     * 数量并指向工具列表。JSON_TEXT 模式是拿不到原生 tools 数组的兜底通道，仍枚举全名。
      */
-    private suspend fun buildMcpCapabilitySection(mcpTools: List<McpToolInfo>): String {
+    private suspend fun buildMcpCapabilitySection(
+        mcpTools: List<McpToolInfo>,
+        toolCallMode: ToolCallMode,
+    ): String {
         val enabledIds = runCatching {
             mcpServerRepository.servers.first().filter { it.isEnabled }.map { it.id }.toSet()
         }.getOrDefault(emptySet())
@@ -284,19 +291,24 @@ class SystemPromptBuilder @Inject constructor(
         fun apiNamesOf(serverId: String): String =
             toolsByServer[serverId].orEmpty().joinToString("、") { "`${McpToolApiName.encode(it)}`" }
 
+        /** 已启用服务的"可直接调用"说明：小服务枚举全名，大服务只报数量。 */
+        fun usageOf(serverId: String): String {
+            val names = apiNamesOf(serverId)
+            if (names.isBlank()) return "已授权常驻，工具名见本轮工具列表。"
+            val count = toolsByServer[serverId].orEmpty().size
+            if (toolCallMode != ToolCallMode.JSON_TEXT && count > MCP_NAME_ENUM_THRESHOLD) {
+                return "已授权常驻，共 $count 个工具，名称与参数见本轮工具列表。"
+            }
+            return "已授权常驻，可直接调用：$names。"
+        }
+
         val builtinIds = BuiltinMcpPresets.presets.map { it.id }.toSet()
         val builtinLines = BuiltinMcpPresets.presets.map { preset ->
             val enabled = preset.id in enabledIds
             val status = if (enabled) "已启用·常驻" else "未启用（默认关闭）"
             val trigger = mcpUsageGuidance[preset.id]
             val triggerLine = if (!trigger.isNullOrBlank()) "使用时机：$trigger。" else ""
-            val usage = if (enabled) {
-                val names = apiNamesOf(preset.id)
-                if (names.isBlank()) "已授权常驻，工具名见本轮工具列表。"
-                else "已授权常驻，可直接调用：$names。"
-            } else {
-                "未授权：一旦任务命中上述使用时机，请先向用户说明该能力并请求其到「设置 → MCP 插件与协议生态」开启，授权常驻后再调用；未授权前不得绕过或模拟。"
-            }
+            val usage = if (enabled) usageOf(preset.id) else "未授权：一旦任务命中上述使用时机，请先向用户说明该能力并请求其到「设置 → MCP 插件与协议生态」开启，授权常驻后再调用；未授权前不得绕过或模拟。"
             val desc = preset.description.replace(Regex("\\s+"), " ").trim()
             val brief = if (desc.length > 120) desc.take(117) + "…" else desc
             "- [${status}] ${preset.name}：${brief}。${triggerLine}${usage}"
@@ -304,7 +316,7 @@ class SystemPromptBuilder @Inject constructor(
         // 自定义（非内置）已启用服务：内置章节不覆盖，这里按真实发现的工具列出
         val customLines = toolsByServer.keys.filter { it !in builtinIds }.map { serverId ->
             val serverName = toolsByServer[serverId]!!.firstOrNull()?.serverName ?: serverId
-            "- [已启用·常驻] $serverName：可直接调用 ${apiNamesOf(serverId)}。"
+            "- [已启用·常驻] $serverName：${usageOf(serverId)}"
         }
         if (builtinLines.isEmpty() && customLines.isEmpty()) return ""
         return "\n\n## 系统核心 MCP 能力（内置，授权后常驻生效）\n" +
@@ -357,17 +369,29 @@ class SystemPromptBuilder @Inject constructor(
     private suspend fun loadProjectContext(workspacePath: String): String {
         if (workspacePath.isBlank()) return ""
         val sections = buildList {
-            for (name in listOf("AGENTS.md", "CLAUDE.md", "README.md")) {
+            for (name in listOf("AGENTS.md", "CLAUDE.md")) {
                 val content = runCatching {
                     // WorkspaceFileAccess understands the canonical /workspace/... form.
                     fileAccess.read("$workspacePath/$name").getOrNull()
                 }.getOrNull() ?: continue
                 val trimmed = content.take(PROJECT_CONTEXT_MAX_BYTES)
-                val tag = if (name == "README.md") "project_reference" else "project_instructions"
                 add(
-                    "<$tag path=\"" + name + "\">\n" + trimmed +
+                    "<project_instructions path=\"" + name + "\">\n" + trimmed +
                         (if (content.length > PROJECT_CONTEXT_MAX_BYTES) "\n…（文件过长已截断）" else "") +
-                        "\n</$tag>",
+                        "\n</project_instructions>",
+                )
+            }
+            // README 是参考资料而非指令，整篇注入只会撑大每轮上下文（典型 8KB+）；
+            // 只保留存在性引用，需要时模型自行 read，与 AGENTS.md 的「导航 + 按需读」模式一致。
+            val hasReadme = runCatching {
+                fileAccess.list(workspacePath).getOrNull().orEmpty().any { it.name.equals("README.md", ignoreCase = true) }
+            }.getOrDefault(false)
+            if (hasReadme) {
+                add(
+                    "<project_reference path=\"README.md\">\n" +
+                        "项目自述文档（简介 / 能力 / 构建说明），正文不注入以节省上下文。" +
+                        "需要了解项目背景或构建方式时用 read 读取 \"$workspacePath/README.md\"，不要凭猜测引用其内容。\n" +
+                        "</project_reference>",
                 )
             }
         }
@@ -437,6 +461,9 @@ class SystemPromptBuilder @Inject constructor(
         private const val MAX_PROMPT_RECALL_QUERY_CHARS = 256
         private const val MAX_WORKSPACE_CACHE_ENTRIES = 16
         const val PROJECT_CONTEXT_MAX_BYTES = 16 * 1024
+
+        /** MCP 能力清单里逐个枚举工具全名的数量上限，超过则只报数量（NATIVE 模式下工具列表已含全名与 schema）。 */
+        internal const val MCP_NAME_ENUM_THRESHOLD = 8
 
         /**
          * 内置 MCP 的「使用时机」引导：让 harness 在任务发生前就知道该优先调用哪个系统核心能力，

@@ -33,6 +33,7 @@ import top.wkbin.taixu.harness.metrics.RunMetrics
 import top.wkbin.taixu.harness.task.AgentStateMachine
 
 import top.wkbin.taixu.core.datastore.AgentPreferences
+import top.wkbin.taixu.core.datastore.SettingsDataStore
 import top.wkbin.taixu.harness.session.SessionTreeStore
 import top.wkbin.taixu.harness.effects.RetryPolicy
 import top.wkbin.taixu.harness.operation.OperationCoordinator
@@ -67,6 +68,7 @@ class HarnessLoop @Inject constructor(
     private val foregroundLauncher: AgentForegroundLauncher,
     private val providerClient: ProviderClient,
     private val toolExecutor: ToolExecutor,
+    private val toolRoundDispatcher: ToolRoundDispatcher,
     private val messageStore: SessionTreeStore,
     private val sessionDao: HarnessSessionRepository,
     private val modelRepository: top.wkbin.taixu.core.database.AiModelRepository,
@@ -85,6 +87,7 @@ class HarnessLoop @Inject constructor(
     private val agentTaskStateMachine: AgentStateMachine,
     private val turnRunner: TurnRunner,
     private val rewindController: top.wkbin.taixu.harness.checkpoint.RewindController,
+    private val branchSummarizer: top.wkbin.taixu.harness.compaction.BranchSummarizer,
 ) {
     private val loopScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -403,6 +406,10 @@ class HarnessLoop @Inject constructor(
     }
 
     suspend fun deleteSession(id: String) {
+        // 注意：这里不能全程持有会话互斥锁——cancelAndJoin 会等待 runLoop 的 finally
+        // 段，而 finally 段需要抢同一把锁，全程持锁必然死锁。因此采用 tombstone +
+        // 结束时移除 tombstone 的方案；对"协程在删除完成后才拿到锁"的窗口，
+        // 由 startSessionRun 锁内的 DB 存在性检查兜底（见该函数注释）。
         // Mark tombstoned first so finishRun on the dying job cannot drain pending
         // messages and start a fresh run after we have already begun cleanup.
         tombstonedSessions.add(id)
@@ -461,7 +468,11 @@ class HarnessLoop @Inject constructor(
         loopScope.launch {
             val mutex = sessionMutexes.getOrPut(sessId) { Mutex() }
             mutex.withLock {
+                // 与 startSessionRun 同款幽灵会话防线：deleteSession 先删 DB 行、后移除 tombstone，
+                // 等锁的 steer/followUp 协程拿到锁时 tombstone 已不在——不查库就会给已删除会话
+                // 重建 durable task 并发起真实 LLM 调用（幽灵运行）。
                 if (tombstonedSessions.contains(sessId)) return@withLock
+                if (sessionDao.findById(sessId) == null) return@withLock
                 if (isSessionBusy(sessId)) {
                     // Steering/follow-up belongs to the currently active durable task.
                     promptQueueManager.enqueue(sessId, queue, PendingMessage(trimmed, imageUrls))
@@ -519,7 +530,21 @@ class HarnessLoop @Inject constructor(
     suspend fun activateBranch(leafId: String?, targetSessionId: String? = null): Boolean {
         val sessId = targetSessionId?.ifBlank { null } ?: sessionTracker.currentSessionId.value
         if (sessId.isBlank() || isSessionBusy(sessId)) return false
+        val oldLeafId = messageStore.laneLeafId(sessId)
         messageStore.moveTo(sessId, leafId)
+        // 分支摘要（对齐 pi /tree）：切换后把被放弃分支生成摘要注入新位置，
+        // 保留旧方案的关键结论。失败不影响切换本身。
+        if (leafId != null && oldLeafId != null && oldLeafId != leafId) {
+            runCatching {
+                val session = sessionDao.findById(sessId)
+                val model = session?.modelId?.let { boundId ->
+                    runCatching { providerClient.resolveConfigured(boundId, session.modelVariant) }.getOrNull()
+                }
+                branchSummarizer.summarizeAbandonedBranch(sessId, oldLeafId, leafId, model = model)
+            }.onFailure { throwable ->
+                logger.w("分支摘要生成失败（不影响分支切换）：${throwable.message}")
+            }
+        }
         val history = messageProjector.loadHistory(sessId)
         messageProjector.replaceAll(sessId, history)
         return true
@@ -732,6 +757,17 @@ class HarnessLoop @Inject constructor(
         incrementTaskAttempt: Boolean = true,
         block: suspend () -> RunResult,
     ) {
+        // 占用护栏：已有活跃 Job 时拒绝再启动。审批恢复（startClaimedSessionRun）在
+        // claimPending 与拿会话锁之间留有窗口——用户同时点「批准」与「停止」时，
+        // cancel 的 startNextQueuedLocked 先启动了新 run，这里若再无条件覆盖
+        // sessionJobs[sessId]，两个 run 会并发写同一 lane（历史交错损坏 + 双倍消耗）。
+        sessionJobs[sessId]?.takeIf { it.isActive }?.let { active ->
+            logger.w(
+                "Session $sessId already has an active run; skipping duplicate launch " +
+                    "(taskId=$taskId). This indicates an approval/cancel race — the earlier run wins.",
+            )
+            return
+        }
         if (taskId != null && !agentTaskStateMachine.markRunning(
                 id = taskId,
                 operationId = operationId,
@@ -772,6 +808,11 @@ class HarnessLoop @Inject constructor(
             var refreshQueue = false
             mutex.withLock {
                 if (tombstonedSessions.contains(sessId)) return@withLock
+                // 幽灵复活防线：send() 的协程可能在 deleteSession 全部完成后才拿到锁，
+                // 此时 tombstone 已被移除、且并发方可能各自 getOrPut 出不同的 Mutex，
+                // tombstone 检查形同虚设。再查一次 DB：会话已删除则拒绝启动 runLoop，
+                // 否则会重建数据并发起真实的 LLM 调用。
+                if (sessionDao.findById(sessId) == null) return@withLock
                 if (isSessionBusy(sessId)) {
                     enqueueOnBusy?.let {
                         promptQueueManager.enqueue(sessId, PromptQueue.NEXT_RUN, it)
@@ -940,7 +981,7 @@ class HarnessLoop @Inject constructor(
         imageUrls: List<String> = emptyList(),
         taskId: String? = null,
     ): RunResult {
-        sessionLoopDetectors.getOrPut(sessId) { ToolCallLoopDetector() }.reset()
+        // 拦截器重置已移至 runLoopInternal 入口（覆盖 regenerate/retry/branch 等直达路径）。
         agentEventLogger.log(sessId, "UserPrompt", userText)
         val userMessage = UserMessage(id = newId(), createdAt = now(), text = userText, imageUrls = imageUrls)
         rewindController.beginTurn(sessId, userText, userMessage.id)
@@ -956,6 +997,10 @@ class HarnessLoop @Inject constructor(
         operationId: String? = null,
         taskId: String? = null,
     ): RunResult {
+        // 死循环拦截器在每次运行入口重置：regenerateLast / retryToolCall / activateBranch
+        // 直接进入本函数，不重置会带着上一轮的失败连击——用户点"重试工具调用"重新发起的
+        // 同一调用会立即命中 sameFailedStreak >= 2 被误杀，重试功能在最该生效时失效。
+        sessionLoopDetectors.getOrPut(sessId) { ToolCallLoopDetector() }.reset()
         // Phase 0 基线埋点：每次运行汇总过程指标并写入 Agent 日志（不受日志开关影响），
         // 为"自主完成率 / 自恢复率 / 人工干预次数"等 2.0 目标指标提供 1.0 真实基线。
         val metrics = RunMetrics(startedAt = startedAt)
@@ -993,6 +1038,9 @@ class HarnessLoop @Inject constructor(
     ): RunResult {
         val activeOperationId = operationId ?: operationCoordinator.beginRun(sessId)
         val maxRounds = runCatching { settingsDataStore.maxToolRounds.first() }.getOrDefault(MAX_ROUNDS)
+        val autoContinuations = runCatching { settingsDataStore.roundLimitAutoContinuations.first() }
+            .getOrDefault(SettingsDataStore.DEFAULT_ROUND_LIMIT_AUTO_CONTINUATIONS)
+        val budget = RoundBudget(maxRounds, autoContinuations)
         val autoCwd = runCatching { settingsDataStore.autoWorkspaceCwd.first() }.getOrDefault(true)
         val sessionEntity = sessionDao.findById(sessId)
         val sessionWorkspace = sessionEntity?.workspace.orEmpty()
@@ -1004,22 +1052,23 @@ class HarnessLoop @Inject constructor(
         val retryPolicy = RetryPolicy.NETWORK_DEFAULT
         var consecutiveFailures = 0
 
-        var round = 0
-        while (round < maxRounds) {
+        while (true) {
+            val round = budget.totalRounds
             taskId?.let {
                 agentTaskStateMachine.checkpoint(
                     id = it,
                     operationId = activeOperationId,
                     round = round,
-                    maxRounds = maxRounds,
+                    maxRounds = budget.totalBudget,
                     detail = "第 ${round + 1} 轮 · 思考中",
                 )
             }
             metrics.roundStarted()
             metrics.steeringInjected(drainSteeringMessages(sessId))
             stateMirrors.setStatus(sessId, "思考中")
+            val latestBinding = sessionDao.findById(sessId) ?: sessionEntity
             val model = try {
-                providerClient.resolveConfigured(sessionEntity?.modelId, sessionEntity?.modelVariant)
+                providerClient.resolveConfigured(latestBinding?.modelId, latestBinding?.modelVariant)
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (throwable: Throwable) {
@@ -1032,7 +1081,7 @@ class HarnessLoop @Inject constructor(
             val assistantAt = now()
 
             val turn = turnRunner.run(
-                remainingRounds = maxRounds - round,
+                remainingRounds = budget.remainingInSegment,
                 toolsEnabled = !effectiveModel.pureChatMode &&
                     effectiveModel.toolCallMode != ToolCallMode.DISABLED,
                 callProvider = {
@@ -1109,45 +1158,98 @@ class HarnessLoop @Inject constructor(
                     )
                 },
             )
+            // 连续失败熔断：当一轮内所有工具调用均失败时计数。
+            suspend fun tripCircuitBreaker(toolCallCount: Int, toolsHadSuccess: Boolean): RunResult? {
+                if (toolCallCount <= 0 || toolsHadSuccess) {
+                    consecutiveFailures = 0
+                    return null
+                }
+                consecutiveFailures++
+                metrics.consecutiveFailuresObserved(consecutiveFailures)
+                if (consecutiveFailures < maxConsecutiveFailures) return null
+                metrics.circuitBreaker()
+                messageProjector.append(
+                    sessId,
+                    AssistantText(
+                        id = newId(),
+                        createdAt = now(),
+                        text = "连续 $consecutiveFailures 轮工具调用均失败，已主动停止以避免陷入死循环。" +
+                            "请检查：命令是否正确、工作区路径是否存在、依赖是否已安装，或简化任务后重试。",
+                        totalMs = now() - startedAt,
+                    ),
+                )
+                return RunResult.Failed("连续 $consecutiveFailures 轮工具调用均失败，已主动停止")
+            }
+
             when (turn) {
                 is TurnOutcome.Failed -> return RunResult.Failed(turn.message)
                 TurnOutcome.Complete -> return RunResult.Completed
                 is TurnOutcome.Continue -> {
-                    // 连续失败熔断：当一轮内所有工具调用均失败时计数。
-                    if (turn.effectiveToolCallCount > 0 && !turn.toolsHadSuccess) {
-                        consecutiveFailures++
-                        metrics.consecutiveFailuresObserved(consecutiveFailures)
-                        if (consecutiveFailures >= maxConsecutiveFailures) {
-                            metrics.circuitBreaker()
-                            messageProjector.append(
-                                sessId,
-                                AssistantText(
-                                    id = newId(),
-                                    createdAt = now(),
-                                    text = "连续 $consecutiveFailures 轮工具调用均失败，已主动停止以避免陷入死循环。" +
-                                        "请检查：命令是否正确、工作区路径是否存在、依赖是否已安装，或简化任务后重试。",
-                                    totalMs = now() - startedAt,
-                                ),
-                            )
-                            return RunResult.Failed("连续 $consecutiveFailures 轮工具调用均失败，已主动停止")
-                        }
-                    } else {
-                        consecutiveFailures = 0
-                    }
+                    tripCircuitBreaker(turn.effectiveToolCallCount, turn.toolsHadSuccess)?.let { return it }
+                    budget.advance()
+                }
+                is TurnOutcome.RoundLimit -> {
+                    tripCircuitBreaker(turn.effectiveToolCallCount, turn.toolsHadSuccess)?.let { return it }
+                    budget.advance()
+                    if (!budget.canContinue()) return roundBudgetExhausted(sessId, startedAt, budget)
+                    val attempt = budget.beginNextSegment()
+                    metrics.budgetContinued()
+                    injectBudgetCheckpoint(sessId, budget, attempt)
                 }
             }
-            round++
         }
+    }
+
+    /**
+     * 轮次预算用尽且不再续跑：这是本次运行的终点，给出带具体数字的说明，便于用户判断
+     * 到底是预算设小了还是模型跑偏了。
+     */
+    private suspend fun roundBudgetExhausted(
+        sessId: String,
+        startedAt: Long,
+        budget: RoundBudget,
+    ): RunResult {
+        val detail = if (budget.maxContinuations > 0) {
+            "已用尽全部工具轮次预算（每段 ${budget.roundsPerSegment} 轮 × ${budget.maxContinuations + 1} 段，" +
+                "共 ${budget.totalBudget} 轮）"
+        } else {
+            "已达到最大工具轮数（${budget.roundsPerSegment}）"
+        }
+        agentEventLogger.log(sessId, "RoundBudgetExhausted", detail)
         messageProjector.append(
             sessId,
             AssistantText(
                 id = newId(),
                 createdAt = now(),
-                text = "已达到最大工具轮数（$maxRounds），请简化任务或分步进行。",
+                text = "$detail，请简化任务、调高轮次预算或分步进行。",
                 totalMs = now() - startedAt,
             ),
         )
-        return RunResult.Failed("已达到最大工具轮数（$maxRounds），任务尚未确认完成")
+        return RunResult.Failed("$detail，任务尚未确认完成")
+    }
+
+    /**
+     * 软检查点：把"预算用尽"从硬停机改成一次收束。续跑提示以 steering 消息入队，下一轮开头
+     * 被消费成持久化的用户消息——既让模型在新一段预算前先落盘进度，也让这次自动续跑在
+     * 会话记录里留痕，进程被杀后同样可恢复。
+     */
+    private suspend fun injectBudgetCheckpoint(sessId: String, budget: RoundBudget, attempt: Int) {
+        val rounds = budget.roundsPerSegment
+        val prompt = buildString {
+            append("[自动续跑 $attempt/${budget.maxContinuations}] 本段 $rounds 轮工具预算已用尽，任务尚未收尾。\n\n")
+            append("继续之前请先收束一次：\n")
+            append("1. 用几句话说明已完成什么、当前进展、还剩哪些没做；\n")
+            append("2. 若任务还要跨段执行，把上述进度写入工作区的 PROGRESS.md，确保中断后可以接着干；\n")
+            append("3. 如果任务其实已经完成，直接给出最终结论，不要再调用工具。\n\n")
+            append("收束之后你会获得新的 $rounds 轮预算，可以直接继续，无需等待用户确认。")
+        }
+        promptQueueManager.enqueue(sessId, PromptQueue.STEER, PendingMessage(text = prompt))
+        agentEventLogger.log(
+            sessId,
+            "RoundBudgetContinued",
+            "attempt=$attempt/${budget.maxContinuations}, roundsPerSegment=$rounds",
+        )
+        stateMirrors.setStatus(sessId, "轮次预算用尽，自动续跑 $attempt/${budget.maxContinuations}…")
     }
 
     private suspend fun drainSteeringMessages(sessId: String): Int {
@@ -1218,13 +1320,18 @@ class HarnessLoop @Inject constructor(
                         val args = json.parseToJsonElement(request.argumentsJson) as? JsonObject
                             ?: error("审批参数不是 JSON 对象")
                         val tool = HarnessApiMapper.toolByName(request.toolName)
-                        toolExecutor.execute(
-                            ToolCall(request.toolCallId, request.createdAt, tool, args, rawToolName = request.toolName),
-                            sessId,
-                            request.workspace,
-                            bypassApproval = true,
-                            operationId = request.operationId,
-                        )
+                        // 被批准的通常是 write/base/mcp 等变更类工具：必须与 ToolRoundDispatcher
+                        // 走同一把（按工作区分片的）变更互斥锁，否则用户批准的写入会与并发
+                        // 会话的同工作区命令并发执行，正是互斥锁要防的写踩踏。
+                        toolRoundDispatcher.withMutationLock(request.workspace) {
+                            toolExecutor.execute(
+                                ToolCall(request.toolCallId, request.createdAt, tool, args, rawToolName = request.toolName),
+                                sessId,
+                                request.workspace,
+                                bypassApproval = true,
+                                operationId = request.operationId,
+                            )
+                        }
                     } else {
                         ToolResult(
                             id = newId(),

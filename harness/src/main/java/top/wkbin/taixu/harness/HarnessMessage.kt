@@ -49,6 +49,21 @@ data class CapabilityEvent(
     enum class Kind { SKILL, MCP }
 }
 
+/** UI-only model switch record. Persisted in the transcript, never sent to the provider. */
+@Serializable
+@SerialName("model_switch")
+data class ModelSwitchEvent(
+    override val id: String,
+    override val createdAt: Long,
+    val fromLabel: String = "",
+    val toLabel: String,
+    val fromContextTokens: Int? = null,
+    val toContextTokens: Int,
+    val compacted: Boolean = false,
+    val foldedMessageCount: Int = 0,
+    val compactionPending: Boolean = false,
+) : HarnessMessage
+
 @Serializable
 @SerialName("user")
 data class UserMessage(
@@ -104,6 +119,11 @@ data class ToolResult(
     /** Host approval gate paused this tool call; the model loop must wait for the user. */
     val awaitingApproval: Boolean = false,
     val approvalRequestId: String? = null,
+    /**
+     * 该调用需要审批，但执行环境无法承载审批暂停（子智能体后台 Lane），因此未执行。
+     * 与 [awaitingApproval] 的区别：这里没有待审批请求可供用户批准，必须由主智能体重新发起。
+     */
+    val approvalDeferred: Boolean = false,
     /**
      * 工具产物中的图片附件引用列表（如 mcp__browser__screenshot 落盘的 PNG）。
      * 持久化兼容：旧数据无此字段；序列化与 Room payload 默认空数组。

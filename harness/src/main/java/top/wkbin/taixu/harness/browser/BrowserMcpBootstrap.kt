@@ -14,6 +14,7 @@ import top.wkbin.taixu.runtime.browser.BrowserRegistry
 import top.wkbin.taixu.runtime.browser.BrowserRegistryImpl
 import top.wkbin.taixu.runtime.browser.engine.AndroidInAppBrowserEngine
 import top.wkbin.taixu.runtime.browser.engine.WebViewTabPool
+import top.wkbin.taixu.runtime.browser.cdp.WebViewDebugging
 import top.wkbin.taixu.core.browser.BrowserFamily
 
 /**
@@ -35,12 +36,21 @@ class BrowserMcpBootstrap @Inject constructor(
     private val browserPrefs: top.wkbin.taixu.core.datastore.BrowserPreferences,
 ) {
     /** 注册引擎并启动 HTTP server；幂等。按用户偏好（#4）决定绑定面：allowRemote 时绑定 0.0.0.0。 */
-    fun bootstrap(): Boolean {
+    suspend fun bootstrap(): Boolean {
         val server = runtime.get()
         if (server.isRunning) return true
         val regImpl = registry as? BrowserRegistryImpl ?: return false
         val prefs = readPrefs()
         if (registry.get(BrowserFamily.IN_APP) == null) {
+            // Application 启动任务中先在主线程应用偏好，再公布引擎，首个 tab 不会抢跑。
+            // 开启失败不阻断普通浏览；错误已留日志，debug_attach 会再次尝试并透传原因。
+            try {
+                WebViewDebugging.setEnabled(prefs.allowCdp)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "初始化 WebView 调试开关失败", e)
+            }
             // hooksEnabled/cdpEnabled 与 desktopUserAgent 一样：池级开关，切换需重启（或新引擎注册）才生效
             val pool = WebViewTabPool(
                 context, registry.eventBus,

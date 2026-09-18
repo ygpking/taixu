@@ -11,6 +11,21 @@ import top.wkbin.taixu.core.model.McpToolInfo
 
 class ToolSchemaValidatorTest {
 
+    @Test
+    fun `MCP hook target and script parameters do not gain builtin aliases`() {
+        val hookSchema = """{"type":"object","properties":{"type":{"type":"string"},"target":{"type":"string"}},"required":["type","target"]}"""
+        val hook = McpToolInfo("browser", "Browser", "browser.hook_create", "", parametersJson = hookSchema)
+        val raw = args("type" to "fetch", "target" to "*/api/*")
+        assertTrue(ToolSchemaValidator.problemsFor("mcp__browser__browser.hook_create", raw, listOf(hook)).isEmpty())
+        assertEquals(raw, ToolSchemaValidator.normalizeArgs(raw, applyAliases = false))
+        assertTrue(ToolSchemaValidator.validate(schema(hookSchema), raw).isEmpty())
+        val script = args("script" to "window.fetch", "timeout" to 10)
+        assertEquals(script, ToolSchemaValidator.normalizeArgs(script, applyAliases = false))
+        assertTrue(ToolSchemaValidator.problemsFor(
+            "mcp__browser__browser.hook_create", args("type" to "fetch", "target" to "*", "path" to "bad"), listOf(hook),
+        ).any { it.contains("不接受参数 path") })
+    }
+
     private fun args(vararg pairs: Pair<String, Any?>): JsonObject = buildJsonObject {
         pairs.forEach { (key, value) ->
             when (value) {

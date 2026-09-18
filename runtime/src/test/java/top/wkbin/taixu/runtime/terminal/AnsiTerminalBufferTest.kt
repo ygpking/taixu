@@ -29,11 +29,36 @@ class AnsiTerminalBufferTest {
 
     @Test
     fun scrollbackIsBounded() {
-        val buffer = AnsiTerminalBuffer(columns = 20, maxRows = 3)
+        val buffer = AnsiTerminalBuffer(columns = 20, rows = 3, maxRows = 3)
         val screen = buffer.append("one\ntwo\nthree\nfour")
 
         assertTrue(screen.size <= 3)
         assertEquals("four", screen.last().cells.joinToString("") { it.character })
+    }
+
+    @Test
+    fun absoluteCursorUsesViewportNotScrollback() {
+        val buffer = AnsiTerminalBuffer(columns = 40, rows = 5, maxRows = 50)
+        buffer.append("banner\nprompt> ")
+        // Codex-style redraw: home + clear-down + multi-line paint inside the viewport.
+        val screen = buffer.append("\u001B[H\u001B[Jline1\nline2\nline3")
+
+        assertEquals("line1", screen[0].cells.joinToString("") { it.character })
+        assertEquals("line2", screen[1].cells.joinToString("") { it.character })
+        assertEquals("line3", screen[2].cells.joinToString("") { it.character })
+        assertEquals(3, buffer.cursor().row)
+    }
+
+    @Test
+    fun cupCanAddressRowsBeyondCurrentContent() {
+        val buffer = AnsiTerminalBuffer(columns = 40, rows = 8, maxRows = 50)
+        buffer.append("a")
+        val screen = buffer.append("\u001B[5;1Hhello")
+
+        assertEquals("a", screen[0].cells.joinToString("") { it.character })
+        assertEquals("hello", screen[4].cells.joinToString("") { it.character })
+        assertEquals(4, buffer.cursor().row)
+        assertEquals(5, buffer.cursor().column)
     }
 
     @Test

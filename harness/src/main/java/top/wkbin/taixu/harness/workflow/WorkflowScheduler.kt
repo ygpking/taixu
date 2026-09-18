@@ -1,6 +1,7 @@
 package top.wkbin.taixu.harness.workflow
 
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -24,6 +25,7 @@ import top.wkbin.taixu.core.model.workflow.WorkflowApprovalRequest
 import top.wkbin.taixu.core.model.workflow.WorkflowDefinition
 import top.wkbin.taixu.core.model.workflow.WorkflowEdgeCondition
 import top.wkbin.taixu.core.model.workflow.WorkflowNode
+import top.wkbin.taixu.core.model.workflow.WorkflowNodeType
 import top.wkbin.taixu.core.model.workflow.WorkflowNodeRunState
 import top.wkbin.taixu.core.model.workflow.WorkflowRunStatus
 import top.wkbin.taixu.core.model.workflow.WorkflowRuntimeContext
@@ -60,10 +62,14 @@ class WorkflowScheduler @Inject constructor(
         val executionId = "wf_${UUID.randomUUID()}"
         val mutableState = MutableStateFlow(WorkflowRuntimeState.initial(executionId, definition))
         val jobRef = AtomicReference<Job?>()
+        // cancel() 与 jobRef.set() 之间的竞态标志：set 之前 cancel 只能取到 null 导致 job 未取消，
+        // 置位后由 set 完成侧再检查一次补 cancel 兜底
+        val cancelled = AtomicBoolean(false)
         val job = scope.launch {
             runWorkflow(executionId, definition, initialVariables, workspacePath, mutableState)
         }
         jobRef.set(job)
+        if (cancelled.get()) job.cancel(CancellationException("用户取消工作流"))
         job.invokeOnCompletion { cause ->
             approvalBroker.cancelExecution(executionId)
             if (cause is CancellationException) mutableState.update { current ->
@@ -73,9 +79,11 @@ class WorkflowScheduler @Inject constructor(
         }
         return WorkflowRunHandle(
             state = mutableState.asStateFlow(),
-            approvalRequest = approvalBroker.currentRequest,
+            // 按本执行过滤审批请求：全局单值会串扰并发工作流（A 的 UI 可能显示 B 的请求）
+            approvalRequest = approvalBroker.currentRequestFor(executionId),
             cancelAction = {
                 approvalBroker.cancelExecution(executionId)
+                cancelled.set(true)
                 jobRef.get()?.cancel(CancellationException("用户取消工作流"))
             },
             decisionAction = { nodeId, decision -> approvalBroker.decide(executionId, nodeId, decision) },
@@ -206,16 +214,29 @@ class WorkflowScheduler @Inject constructor(
             attempts++
             updateNode(state, node.id, NodeRunStatus.RUNNING, if (attempts > 1) "正在重试" else "正在执行")
             val started = System.nanoTime()
+            // 人工等待类节点（HUMAN_APPROVAL）默认不限时等待用户决定：默认 300s 超时会在用户
+            // 迟迟未批准时把节点误判 FAILED，此后 decide() 永远无效。
+            // 显式限时走 config["timeoutSeconds"]：WorkflowValidation（清单外）强制
+            // timeoutSeconds ∈ 1..3600，无法用 0/-1 哨兵区分“未显式配置”，故另辟 config 通道。
+            val timeoutMs = if (node.type == WorkflowNodeType.HUMAN_APPROVAL) {
+                node.config["timeoutSeconds"]?.toLongOrNull()?.takeIf { it > 0 }?.times(1_000L)
+            } else {
+                node.timeoutSeconds * 1_000L
+            }
+            val onProgress: suspend (NodeRunStatus, String) -> Unit = { status, message ->
+                updateNode(state, node.id, status, message)
+                state.update { current ->
+                    val waiting = current.nodeStates.values.any { it.status == NodeRunStatus.WAITING_APPROVAL }
+                    current.copy(status = if (waiting) WorkflowRunStatus.WAITING_APPROVAL else WorkflowRunStatus.RUNNING)
+                }
+            }
             output = try {
-                withTimeoutOrNull(node.timeoutSeconds * 1_000L) {
-                    executor.execute(node, context) { status, message ->
-                        updateNode(state, node.id, status, message)
-                        state.update { current ->
-                            val waiting = current.nodeStates.values.any { it.status == NodeRunStatus.WAITING_APPROVAL }
-                            current.copy(status = if (waiting) WorkflowRunStatus.WAITING_APPROVAL else WorkflowRunStatus.RUNNING)
-                        }
-                    }
-                } ?: NodeExecutionOutput(NodeRunStatus.FAILED, exitCode = 124, error = "节点超时（${node.timeoutSeconds} 秒）")
+                if (timeoutMs == null) {
+                    executor.execute(node, context, onProgress)
+                } else {
+                    withTimeoutOrNull(timeoutMs) { executor.execute(node, context, onProgress) }
+                        ?: NodeExecutionOutput(NodeRunStatus.FAILED, exitCode = 124, error = "节点超时（${timeoutMs / 1_000} 秒）")
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
@@ -226,6 +247,11 @@ class WorkflowScheduler @Inject constructor(
 
         if (output.status == NodeRunStatus.FAILED && node.failurePolicy == FailurePolicy.ASK_USER) {
             updateNode(state, node.id, NodeRunStatus.WAITING_APPROVAL, "执行失败，等待决定是否重试")
+            // ASK_USER 等待期间 workflow 级状态也应反映 WAITING_APPROVAL（此前只有节点级）
+            state.update { current ->
+                val waiting = current.nodeStates.values.any { it.status == NodeRunStatus.WAITING_APPROVAL }
+                current.copy(status = if (waiting) WorkflowRunStatus.WAITING_APPROVAL else WorkflowRunStatus.RUNNING)
+            }
             val decision = approvalBroker.await(
                 WorkflowApprovalRequest(context.executionId, node.id, "重试“${node.title}”？", output.error.orEmpty()),
             )

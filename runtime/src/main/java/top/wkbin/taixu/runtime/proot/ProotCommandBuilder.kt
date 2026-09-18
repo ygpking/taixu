@@ -217,21 +217,7 @@ class ProotCommandBuilder private constructor(
     /** Android host paths used by the PRoot tracer and Android linker. */
     private fun MutableList<String>.addHostSystemBindings() {
         val skipped = mutableListOf<String>()
-        listOf(
-            "/apex",
-            "/data/app",
-            "/data/dalvik-cache",
-            "/data/misc/apexdata/com.android.art/dalvik-cache",
-            "/system",
-            "/system_ext",
-            "/vendor",
-            "/product",
-            "/odm",
-            "/linkerconfig/com.android.art/ld.config.txt",
-            "/linkerconfig/ld.config.txt",
-            "/plat_property_contexts",
-            "/property_contexts",
-        ).forEach { path ->
+        ProotMountLayout.hostSystemPaths.forEach { path ->
             val hostPath = File(path)
             if (hostPath.exists() && hostPath.canRead()) {
                 add("-b")

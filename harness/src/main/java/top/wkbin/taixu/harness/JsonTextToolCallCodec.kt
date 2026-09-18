@@ -84,6 +84,17 @@ object TextToolCallCodec {
 
     fun stripMarkers(text: String): String = normalize(Json { isLenient = true }, text).displayText
 
+    /**
+     * 把结构化调用编码回文本协议形态，用于 JSON_TEXT 模式的历史回放。
+     *
+     * 落库的 AssistantText 是剥离了工具标记的 displayText；若回放时直接跳过 ToolCall
+     * 消息，模型看不到自己上一轮调用了什么参数，结果无法与调用关联，极易重复调用。
+     * 以模型自己输出的同一协议格式（可被 [normalize] 完整还原）回放成 assistant 消息。
+     */
+    fun encodeCall(name: String, argumentsJson: String): String =
+        "[[tool_call]]{\"name\":" + JsonPrimitive(name) +
+            ",\"arguments\":" + (argumentsJson.trim().ifBlank { "{}" }) + "}[[/tool_call]]"
+
     private fun xmlSegments(text: String): List<ProtocolSegment> = buildList {
         var searchFrom = 0
         while (searchFrom < text.length) {

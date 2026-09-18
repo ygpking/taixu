@@ -44,21 +44,28 @@ internal class AnthropicApi(
     private val okHttpClient: OkHttpClient,
     private val json: Json,
 ) {
+    @OptIn(InternalCoroutinesApi::class)
     suspend fun chat(model: ModelConfig, messages: List<ApiMessage>): ChatResult =
         withContext(Dispatchers.IO) {
             val call = okHttpClient.newCall(buildRequest(model, messages, stream = false))
-            call.execute().use { response ->
-                val body = response.body.string()
-                if (!response.isSuccessful) {
-                    if (response.code == 429) {
-                        throw ProviderClient.rateLimitException(response.code, body, response.header("Retry-After"))
+            // 与流式路径一致：取消时立即关闭 socket，避免"停止"后阻塞到读超时
+            val cancelHandle = coroutineContext[Job]?.invokeOnCompletion(onCancelling = true) { call.cancel() }
+            try {
+                call.execute().use { response ->
+                    val body = response.body.string()
+                    if (!response.isSuccessful) {
+                        if (response.code == 429) {
+                            throw ProviderClient.rateLimitException(response.code, body, response.header("Retry-After"))
+                        }
+                        if (response.code in 500..599) {
+                            throw ProviderClient.transientHttpException(response.code, body, response.header("Retry-After"))
+                        }
+                        throw IllegalStateException("Claude 请求失败 HTTP ${response.code}：${extractError(body)}")
                     }
-                    if (response.code in 500..599) {
-                        throw ProviderClient.transientHttpException(response.code, body, response.header("Retry-After"))
-                    }
-                    throw IllegalStateException("Claude 请求失败 HTTP ${response.code}：${extractError(body)}")
+                    parseFinalResponse(body)
                 }
-                parseFinalResponse(body)
+            } finally {
+                cancelHandle?.dispose()
             }
         }
 
@@ -241,6 +248,23 @@ internal class AnthropicApi(
                                                 },
                                             )
                                         }
+                                    } else if (url.startsWith("https://", ignoreCase = true) ||
+                                        url.startsWith("http://", ignoreCase = true)
+                                    ) {
+                                        // Messages API 支持 url 类型 source：https 图片直接透传，
+                                        // 不再无声丢弃（本地无图可发时用户会以为模型"看不见"图）
+                                        add(
+                                            buildJsonObject {
+                                                put("type", "image")
+                                                put(
+                                                    "source",
+                                                    buildJsonObject {
+                                                        put("type", "url")
+                                                        put("url", url)
+                                                    },
+                                                )
+                                            },
+                                        )
                                     }
                                 }
                             },

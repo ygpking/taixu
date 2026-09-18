@@ -156,7 +156,7 @@ fun ModelEditorScreen(
             testResult = testResult,
             discover = { provider, url, key -> viewModel.discoverModels(provider, url, key) },
             test = { url, model, key, respApi, providerId -> viewModel.testConnection(url, model, key, respApi, providerId) },
-            save = { name, provider, modelsList, url, key, rpmLimit, temperature, maxTokens, topP, reasoningMode, reasoningEffort, toolCallMode, contextTokens, customHeaders, pureChatMode, visionEnabled, imageGenerationEnabled, responseApiEnabled ->
+            save = { name, provider, modelsList, url, key, rpmLimit, temperature, maxTokens, topP, reasoningMode, reasoningEffort, toolCallMode, contextTokens, compactionKeepRecent, compactionReserve, customHeaders, pureChatMode, visionEnabled, imageGenerationEnabled, responseApiEnabled ->
                 viewModel.saveModels(
                     id = modelId,
                     models = modelsList,
@@ -172,6 +172,8 @@ fun ModelEditorScreen(
                     reasoningEffort = reasoningEffort,
                     toolCallMode = toolCallMode,
                     contextTokens = contextTokens,
+                    compactionKeepRecentTokens = compactionKeepRecent,
+                    compactionReserveTokens = compactionReserve,
                     customHeaders = customHeaders,
                     pureChatMode = pureChatMode,
                     visionEnabled = visionEnabled,
@@ -220,7 +222,7 @@ private fun ModelEditorContent(
     testResult: String?,
     discover: (String, String, String) -> Unit,
     test: (String, String, String, Boolean, String?) -> Unit,
-    save: (String, String, List<String>, String, String, Int, Float?, Int?, Float?, String?, String?, String?, Int?, String, Boolean, Boolean, Boolean, Boolean) -> Unit,
+    save: (String, String, List<String>, String, String, Int, Float?, Int?, Float?, String?, String?, String?, Int?, Int?, Int?, String, Boolean, Boolean, Boolean, Boolean) -> Unit,
     onFillFromJson: (String) -> AiModelProfileExport?,
     showImportDialog: Boolean,
     onDismissImportDialog: () -> Unit,
@@ -296,6 +298,12 @@ private fun ModelEditorContent(
     var temperature by rememberSaveable(modelId) { mutableFloatStateOf(existing?.temperature ?: 0.7f) }
     var maxTokensText by rememberSaveable(modelId) { mutableStateOf(existing?.maxTokens?.toString().orEmpty()) }
     var contextTokensText by rememberSaveable(modelId) { mutableStateOf(existing?.contextTokens?.toString().orEmpty()) }
+    var compactionKeepRecentText by rememberSaveable(modelId) {
+        mutableStateOf(existing?.compactionKeepRecentTokens?.toString().orEmpty())
+    }
+    var compactionReserveText by rememberSaveable(modelId) {
+        mutableStateOf(existing?.compactionReserveTokens?.toString().orEmpty())
+    }
     var topP by rememberSaveable(modelId) { mutableFloatStateOf(existing?.topP ?: 1.0f) }
 
     var reasoningModeText by rememberSaveable(modelId) { mutableStateOf(existing?.reasoningMode ?: "auto") }
@@ -1111,6 +1119,40 @@ private fun ModelEditorContent(
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             )
 
+                            // 每模型压缩预算覆盖（对齐 pi compaction.modelOverrides）
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                OutlinedTextField(
+                                    value = compactionKeepRecentText,
+                                    onValueChange = { compactionKeepRecentText = it.filter(Char::isDigit) },
+                                    modifier = Modifier.weight(1f),
+                                    label = { Text("压缩保留上限") },
+                                    placeholder = { Text("20000") },
+                                    singleLine = true,
+                                    shape = compactFieldShape,
+                                    colors = fieldColors,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                )
+                                OutlinedTextField(
+                                    value = compactionReserveText,
+                                    onValueChange = { compactionReserveText = it.filter(Char::isDigit) },
+                                    modifier = Modifier.weight(1f),
+                                    label = { Text("响应预留 Token") },
+                                    placeholder = { Text("16384") },
+                                    singleLine = true,
+                                    shape = compactFieldShape,
+                                    colors = fieldColors,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                )
+                            }
+                            Text(
+                                "仅本模型的压缩预算覆盖：触发压缩时保留最近 N token 进上下文、为回复预留 N token；留空使用全局默认。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+
                             // 特性开关列表
                             EditorToggleRow(
                                 title = "支持函数调用 (Tool Call)",
@@ -1254,6 +1296,8 @@ private fun ModelEditorContent(
             }
             val parsedMaxTokens = maxTokensText.trim().toIntOrNull()
             val parsedContextTokens = contextTokensText.trim().toIntOrNull()
+            val parsedCompactionKeepRecent = compactionKeepRecentText.trim().toIntOrNull()?.takeIf { it > 0 }
+            val parsedCompactionReserve = compactionReserveText.trim().toIntOrNull()?.takeIf { it > 0 }
             val parsedRpmLimit = rpmLimitText.trim().toIntOrNull() ?: 0
 
             val buttonText = if (effectiveModels.size > 1) {
@@ -1278,6 +1322,8 @@ private fun ModelEditorContent(
                         reasoningEffortText.ifBlank { null },
                         if (toolCallEnabled) "native" else "disabled",
                         parsedContextTokens,
+                        parsedCompactionKeepRecent,
+                        parsedCompactionReserve,
                         customHeaders,
                         pureChatMode,
                         visionEnabled,

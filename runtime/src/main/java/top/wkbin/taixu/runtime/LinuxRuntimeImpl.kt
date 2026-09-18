@@ -18,6 +18,7 @@ import top.wkbin.taixu.runtime.proot.ProotInstaller
 import top.wkbin.taixu.runtime.rootfs.RootfsInstaller
 import top.wkbin.taixu.runtime.terminal.terminalBanner
 import top.wkbin.taixu.runtime.shell.CommandResult
+import top.wkbin.taixu.runtime.shell.InteractiveLaunchSpec
 import top.wkbin.taixu.runtime.shell.LinuxSession
 import top.wkbin.taixu.runtime.shell.ManagedProcess
 import top.wkbin.taixu.runtime.shell.ProcessType
@@ -67,6 +68,7 @@ class LinuxRuntimeImpl @Inject constructor(
     override val installedDistros: StateFlow<List<top.wkbin.taixu.core.model.InstalledDistro>> = _installedDistros.asStateFlow()
 
     private val initializeMutex = Mutex()
+    private val storageActivities = StorageActivityGate()
     private val interactiveSessions = ConcurrentHashMap<LinuxSession, String>()
 
     override fun refreshInstalledDistros() {
@@ -490,12 +492,12 @@ class LinuxRuntimeImpl @Inject constructor(
         healthChecker.check()
     }
 
-    override suspend fun execute(command: ShellCommand, distroId: String?): CommandResult {
+    override suspend fun execute(command: ShellCommand, distroId: String?): CommandResult = storageActivities.activity {
         ensureReady()
         val safeDistro = distroId?.lowercase()?.trim()?.takeIf { it.isNotBlank() } ?: _activeDistroId.value
         val mounts = storageMounts()
         val execution = resolveExecutionLayout(safeDistro, command.useQemuCompatibility)
-        return shellExecutor.execute(
+        shellExecutor.execute(
             command = prootCommandBuilder.build(
                 prootBinary = pathManager.activeProotFile(),
                 rootfsDir = execution.rootfsDir,
@@ -556,7 +558,72 @@ class LinuxRuntimeImpl @Inject constructor(
             }
         }.getOrElse { emptyList() }
 
-    override suspend fun startSession(config: SessionConfig, distroId: String?): LinuxSession {
+    override suspend fun startSession(config: SessionConfig, distroId: String?): LinuxSession = storageActivities.activity {
+        val prepared = prepareInteractiveSession(config, distroId)
+        try {
+            val session = if (ptyManager.nativeAvailable) {
+                ptyManager.openNative(
+                    command = prepared.command,
+                    hostEnvironment = prepared.hostEnvironment,
+                    config = prepared.effectiveConfig,
+                    cleanup = { prepared.markerFile.delete() },
+                )
+            } else {
+                ptyManager.open(
+                    command = prepared.fallbackCommand,
+                    hostEnvironment = prepared.hostEnvironment,
+                    config = prepared.effectiveConfig,
+                    resize = { columns, rows ->
+                        resizePty(prepared.markerPath, columns, rows, prepared.distroId)
+                    },
+                    cleanup = { prepared.markerFile.delete() },
+                )
+            }
+            trackInteractiveSession(session, prepared.distroId)
+        } catch (throwable: Throwable) {
+            prepared.markerFile.delete()
+            throw throwable
+        }
+    }
+
+    override suspend fun buildInteractiveLaunch(
+        config: SessionConfig,
+        distroId: String?,
+    ): InteractiveLaunchSpec = storageActivities.activity {
+        val prepared = prepareInteractiveSession(config, distroId)
+        // Termux JNI owns the PTY; marker file is unused for this path.
+        prepared.markerFile.delete()
+        // Termux JNI createSubprocess replaces the process environment entirely.
+        // Merge Android env + our PRoot host vars (same shape as Android-PRoot-Engine).
+        val mergedEnv = LinkedHashMap<String, String>().apply {
+            System.getenv().forEach { (k, v) -> put(k, v) }
+            putAll(prepared.hostEnvironment)
+            putIfAbsent("HOME", pathManager.baseDir.parentFile?.absolutePath ?: "/")
+            putIfAbsent("PATH", System.getenv("PATH") ?: "/system/bin:/system/xbin")
+        }
+        InteractiveLaunchSpec(
+            executable = prepared.command.first(),
+            arguments = prepared.command.toTypedArray(),
+            workingDirectory = pathManager.baseDir.parentFile?.absolutePath
+                ?: pathManager.baseDir.absolutePath,
+            environment = mergedEnv.map { "${it.key}=${it.value}" }.toTypedArray(),
+        )
+    }
+
+    private data class PreparedInteractive(
+        val distroId: String,
+        val effectiveConfig: SessionConfig,
+        val command: List<String>,
+        val fallbackCommand: List<String>,
+        val hostEnvironment: Map<String, String>,
+        val markerFile: File,
+        val markerPath: String,
+    )
+
+    private suspend fun prepareInteractiveSession(
+        config: SessionConfig,
+        distroId: String?,
+    ): PreparedInteractive {
         ensureReady()
         val safeDistro = distroId?.lowercase()?.trim()?.takeIf { it.isNotBlank() } ?: _activeDistroId.value
         val effectiveConfig = if (config.commandLine == "/bin/bash -i") {
@@ -574,7 +641,6 @@ class LinuxRuntimeImpl @Inject constructor(
         val markerFile = File(pathManager.taixuRootDir(safeDistro), ".pty-$markerId")
         val markerPath = "/opt/taixu/.pty-$markerId"
         val mounts = storageMounts()
-        // 宿主补充 GID 不在 guest /etc/group 里会导致登录 shell 打 groups 警告，会话启动前幂等补齐。
         runCatching {
             syncGuestGroups(
                 rootfsDir = pathManager.rootfsDir(safeDistro),
@@ -590,52 +656,39 @@ class LinuxRuntimeImpl @Inject constructor(
                 logger.w("写入终端横幅失败，本次会话将无横幅", it)
             }
         }
-        return try {
-            val session = if (ptyManager.nativeAvailable) {
-                ptyManager.openNative(
-                    command = prootCommandBuilder.buildInteractive(
-                        prootBinary = pathManager.activeProotFile(),
-                        rootfsDir = pathManager.rootfsDir(safeDistro),
-                        workspaceDir = pathManager.workspaceDir,
-                        homeDir = pathManager.homeDir(safeDistro),
-                        optDir = pathManager.taixuRootDir(safeDistro),
-                        tmpDir = pathManager.tmpDir,
-                        attachmentsDir = pathManager.attachmentsDir,
-                        config = effectiveConfig,
-                        nativePty = true,
-                        mounts = mounts,
-                    ),
-                    hostEnvironment = pathManager.hostProcessEnvironment(safeDistro),
-                    config = effectiveConfig,
-                    cleanup = { markerFile.delete() },
-                )
-            } else {
-                ptyManager.open(
-                    command = prootCommandBuilder.buildInteractive(
-                        prootBinary = pathManager.activeProotFile(),
-                        rootfsDir = pathManager.rootfsDir(safeDistro),
-                        workspaceDir = pathManager.workspaceDir,
-                        homeDir = pathManager.homeDir(safeDistro),
-                        optDir = pathManager.taixuRootDir(safeDistro),
-                        tmpDir = pathManager.tmpDir,
-                        attachmentsDir = pathManager.attachmentsDir,
-                        config = effectiveConfig,
-                        ptyMarker = markerPath,
-                        mounts = mounts,
-                    ),
-                    hostEnvironment = pathManager.hostProcessEnvironment(safeDistro),
-                    config = effectiveConfig,
-                    resize = { columns, rows ->
-                        resizePty(markerPath, columns, rows, safeDistro)
-                    },
-                    cleanup = { markerFile.delete() },
-                )
-            }
-            trackInteractiveSession(session, safeDistro)
-        } catch (throwable: Throwable) {
-            markerFile.delete()
-            throw throwable
-        }
+        val command = prootCommandBuilder.buildInteractive(
+            prootBinary = pathManager.activeProotFile(),
+            rootfsDir = pathManager.rootfsDir(safeDistro),
+            workspaceDir = pathManager.workspaceDir,
+            homeDir = pathManager.homeDir(safeDistro),
+            optDir = pathManager.taixuRootDir(safeDistro),
+            tmpDir = pathManager.tmpDir,
+            attachmentsDir = pathManager.attachmentsDir,
+            config = effectiveConfig,
+            nativePty = true,
+            mounts = mounts,
+        )
+        val fallbackCommand = prootCommandBuilder.buildInteractive(
+            prootBinary = pathManager.activeProotFile(),
+            rootfsDir = pathManager.rootfsDir(safeDistro),
+            workspaceDir = pathManager.workspaceDir,
+            homeDir = pathManager.homeDir(safeDistro),
+            optDir = pathManager.taixuRootDir(safeDistro),
+            tmpDir = pathManager.tmpDir,
+            attachmentsDir = pathManager.attachmentsDir,
+            config = effectiveConfig,
+            ptyMarker = markerPath,
+            mounts = mounts,
+        )
+        return PreparedInteractive(
+            distroId = safeDistro,
+            effectiveConfig = effectiveConfig,
+            command = command,
+            fallbackCommand = fallbackCommand,
+            hostEnvironment = pathManager.hostProcessEnvironment(safeDistro),
+            markerFile = markerFile,
+            markerPath = markerPath,
+        )
     }
 
     private suspend fun storageMounts(): List<StorageMountBinding> = buildList {
@@ -684,10 +737,10 @@ class LinuxRuntimeImpl @Inject constructor(
         toolId: String?,
         type: ProcessType,
         distroId: String?,
-    ): ManagedProcess {
+    ): ManagedProcess = storageActivities.activity {
         ensureReady()
         val mounts = storageMounts()
-        return processRegistry.start(
+        processRegistry.start(
             id = id,
             command = command,
             toolId = toolId,
@@ -719,6 +772,21 @@ class LinuxRuntimeImpl @Inject constructor(
         hostBridge.stop()
         _state.value = RuntimeState.NotInitialized
         logger.i("Linux runtime shut down")
+    }
+
+    override suspend fun withStorageCleanup(block: suspend () -> Unit) {
+        check(initializeMutex.tryLock()) { "正在安装、更新或管理环境，请完成后再清理" }
+        try {
+            storageActivities.cleanup {
+                check(interactiveSessions.keys.none { it.isAlive } && processRegistry.list().none { it.session.isAlive }) {
+                    "请先关闭终端并停止后台服务，再清理存储"
+                }
+                check(_state.value !is RuntimeState.Initializing) { "环境正在初始化，请稍后再清理" }
+                block()
+            }
+        } finally {
+            initializeMutex.unlock()
+        }
     }
 
     private fun trackInteractiveSession(session: LinuxSession, distroId: String): LinuxSession {

@@ -13,8 +13,7 @@ import androidx.lifecycle.viewModelScope
 import top.wkbin.taixu.core.datastore.TerminalPreferences
 import top.wkbin.taixu.runtime.DistributionCatalog
 import top.wkbin.taixu.runtime.WorkspaceManager
-import top.wkbin.taixu.runtime.terminal.TerminalCursor
-import top.wkbin.taixu.runtime.terminal.TerminalLine
+import top.wkbin.taixu.runtime.terminal.TerminalSessionClientRouter
 import top.wkbin.taixu.runtime.terminal.TerminalSessionHandle
 import top.wkbin.taixu.runtime.terminal.TerminalSessionManager
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -29,7 +28,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -38,6 +36,7 @@ import kotlinx.coroutines.launch
 class TerminalViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val terminalManager: TerminalSessionManager,
+    val sessionClientRouter: TerminalSessionClientRouter,
     private val workspaceManager: WorkspaceManager,
     private val settingsDataStore: TerminalPreferences,
     private val appSettingsDataStore: top.wkbin.taixu.core.datastore.SettingsDataStore,
@@ -45,7 +44,6 @@ class TerminalViewModel @Inject constructor(
 ) : ViewModel() {
     private var initialized = false
 
-    /** 首次使用引导登记（统一存于 SettingsDataStore，设置页可整体清空重看）。 */
     val firstUseGuidesShown: StateFlow<Set<String>> = appSettingsDataStore.firstUseGuidesShown
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
 
@@ -77,51 +75,13 @@ class TerminalViewModel @Inject constructor(
     val terminalHapticsEnabled: StateFlow<Boolean> = settingsDataStore.terminalHapticsEnabled
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
-    val screen: StateFlow<List<TerminalLine>> = activeHandle
-        .flatMapLatest { it?.screen ?: flowOf(emptyList()) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
-    val cursor: StateFlow<TerminalCursor> = activeHandle
-        .flatMapLatest { it?.cursor ?: flowOf(TerminalCursor(0, 0, false)) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TerminalCursor(0, 0, false))
-    val screenRevision: StateFlow<Long> = activeHandle
-        .flatMapLatest { it?.revision ?: flowOf(0L) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0L)
-
-    private val _activeLabel = MutableStateFlow("")
-    val activeLabel: StateFlow<String> = activeHandle
-        .flatMapLatest { it?.let { h -> flowOf(h.label) } ?: flowOf("") }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "")
-
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
-
-    /**
-     * 尺寸待应用缓存：首帧 resize 触发时会话往往尚未建立（PRoot 启动是异步的），
-     * activeId 为 null 时 resize 直接丢弃会让 PTY 停留在默认 80 列，
-     * 而 UI 可视宽度约 40 列——bash 不换行、输入超出可视区。这里把请求存起来，
-     * 会话就绪或切换时自动补上。
-     */
-    private var pendingResize: Pair<Int, Int>? = null
-
-    init {
-        viewModelScope.launch {
-            activeHandle.collect { handle ->
-                if (handle != null) {
-                    pendingResize?.let { (columns, rows) ->
-                        pendingResize = null
-                        terminalManager.resizeSession(handle.id, columns, rows)
-                        terminalManager.resizeBuffer(handle.id, columns)
-                    }
-                }
-            }
-        }
-    }
 
     fun initialize(project: String) {
         initializeInternal(project, force = false)
     }
 
-    /** 用户主动重试：清除错误并允许在失败后重新初始化。 */
     fun retryInitialize(project: String) {
         initializeInternal(project, force = true)
     }
@@ -174,10 +134,10 @@ class TerminalViewModel @Inject constructor(
         val bytes: ByteArray? = when {
             ctrl && codePoint in 'a'.code..'z'.code -> byteArrayOf((codePoint - 96).toByte())
             ctrl && event.key == Key.Spacebar -> byteArrayOf(0)
-            event.key == Key.DirectionUp -> seq(if (alt) "\u001B\u001B[A" else "\u001B[A")
-            event.key == Key.DirectionDown -> seq(if (alt) "\u001B\u001B[B" else "\u001B[B")
-            event.key == Key.DirectionLeft -> seq(if (alt) "\u001B\u001B[D" else "\u001B[D")
-            event.key == Key.DirectionRight -> seq(if (alt) "\u001B\u001B[C" else "\u001B[C")
+            event.key == Key.DirectionUp -> seq(if (alt) "\u001B\u001B[A" else "\u001B[A]")
+            event.key == Key.DirectionDown -> seq(if (alt) "\u001B\u001B[B" else "\u001B[B]")
+            event.key == Key.DirectionLeft -> seq(if (alt) "\u001B\u001B[D" else "\u001B[D]")
+            event.key == Key.DirectionRight -> seq(if (alt) "\u001B\u001B[C" else "\u001B[C]")
             event.key == Key.MoveHome -> seq("\u001B[1~")
             event.key == Key.MoveEnd -> seq("\u001B[4~")
             event.key == Key.PageUp -> seq("\u001B[5~")
@@ -201,17 +161,6 @@ class TerminalViewModel @Inject constructor(
 
     private fun seq(value: String): ByteArray = value.toByteArray(Charsets.UTF_8)
 
-    fun resize(columns: Int, rows: Int) {
-        val id = activeIdOrNull()
-        if (id == null) {
-            // 会话尚未建立：缓存待应用（见 pendingResize 注释），就绪后由 init 里的 collector 补上
-            pendingResize = columns to rows
-            return
-        }
-        terminalManager.resizeSession(id, columns, rows)
-        terminalManager.resizeBuffer(id, columns)
-    }
-
     val workspaces: StateFlow<List<top.wkbin.taixu.runtime.WorkspaceProject>> = workspaceManager.observeProjects()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -232,10 +181,6 @@ class TerminalViewModel @Inject constructor(
 
     fun switchSession(id: String) = terminalManager.switchTo(id)
 
-    /**
-     * 关闭会话。[onResult] 在异步关闭完成后回调（成功为 true），
-     * 供 UI 在确认真正成功后再提示，而非点击瞬间弹 Toast。
-     */
     fun closeSession(id: String, onResult: ((Boolean) -> Unit)? = null) {
         viewModelScope.launch {
             val success = runCatching { terminalManager.closeSession(id) }

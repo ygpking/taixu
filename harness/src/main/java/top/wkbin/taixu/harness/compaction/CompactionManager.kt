@@ -10,6 +10,7 @@ import top.wkbin.taixu.core.database.HarnessEntryEntity
 import top.wkbin.taixu.core.database.HarnessRuntimeRepository
 import top.wkbin.taixu.harness.ContextWindowPolicy
 import top.wkbin.taixu.harness.HarnessMessage
+import top.wkbin.taixu.harness.ModelConfig
 import top.wkbin.taixu.harness.session.SessionTreeStore
 
 /** Persists compaction as an immutable tree entry and projects provider context from it. */
@@ -17,6 +18,7 @@ import top.wkbin.taixu.harness.session.SessionTreeStore
 class CompactionManager @Inject constructor(
     private val repository: HarnessRuntimeRepository,
     private val json: Json,
+    private val summarizer: CompactionSummarizer? = null,
 ) {
     suspend fun project(sessionId: String, laneName: String = SessionTreeStore.MAIN_LANE): CompactedContext {
         val lane = repository.ensureLane(sessionId, laneName)
@@ -25,15 +27,25 @@ class CompactionManager @Inject constructor(
         // The latest compaction is still fetched separately to recover its retained snapshot.
         val latestCompaction = repository.latestBranchEntryOfType(sessionId, lane.leafId, ENTRY_TYPE)
         val entries = repository.branch(sessionId, lane.leafId)
-        if (latestCompaction == null) return CompactedContext(messages = entries.mapNotNull(::decodeMessage))
+        if (latestCompaction == null) {
+            return CompactedContext(
+                messages = entries.mapNotNull(::decodeMessage),
+                branchSummaries = branchSummariesWithin(entries, afterSequence = null),
+            )
+        }
 
         val payload = json.decodeFromString(CompactionPayload.serializer(), latestCompaction.payloadJson)
         val retained = json.decodeFromString(ListSerializer(HarnessMessage.serializer()), payload.retainedMessagesJson)
-        val after = entries.asSequence()
+        val afterMessages = entries.asSequence()
             .filter { it.sequence > latestCompaction.sequence }
             .mapNotNull(::decodeMessage)
             .toList()
-        return CompactedContext(summary = payload.summary, messages = retained + after)
+        // 压缩之后的分支摘要原样注入；之前的已在 compact() 时折叠进压缩摘要，避免重复
+        return CompactedContext(
+            summary = payload.summary,
+            messages = retained + afterMessages,
+            branchSummaries = branchSummariesWithin(entries, afterSequence = latestCompaction.sequence),
+        )
     }
 
     /**
@@ -61,13 +73,39 @@ class CompactionManager @Inject constructor(
         context: CompactedContext,
         keepFromIndex: Int,
         laneName: String = SessionTreeStore.MAIN_LANE,
+        model: ModelConfig? = null,
     ): CompactedContext {
         require(keepFromIndex in 1..context.messages.size) { "Compaction must remove at least one message" }
         val lane = repository.ensureLane(sessionId, laneName)
         val collapsed = context.messages.take(keepFromIndex)
         val retained = context.messages.drop(keepFromIndex)
-        val incrementalSummary = ContextWindowPolicy.buildHistorySummary(collapsed)
-        val summary = mergeRollingSummary(context.summary, incrementalSummary)
+        // 上一份摘要层（压缩摘要 + 尚未折叠的分支摘要）作为迭代上下文传入 LLM，
+        // 天然实现滚动合并；LLM 不可用时机械摘要 + 字符串拼接兜底。
+        val previousSummaries = buildList {
+            context.summary?.takeIf { it.isNotBlank() }?.let { add(it) }
+            addAll(context.branchSummaries.filter { it.isNotBlank() })
+        }
+        val llmSummary = if (model != null && summarizer != null && collapsed.isNotEmpty()) {
+            try {
+                summarizer.generateSummary(model, collapsed, previousSummaries)
+            } catch (cancellation: kotlinx.coroutines.CancellationException) {
+                throw cancellation
+            } catch (throwable: Throwable) {
+                Log.w(
+                    "ContextCompaction",
+                    "LLM 结构化摘要失败，回退机械摘要：${throwable.message}",
+                )
+                null
+            }
+        } else {
+            null
+        }
+        val summary = if (llmSummary != null) {
+            llmSummary
+        } else {
+            val incrementalSummary = ContextWindowPolicy.buildHistorySummary(collapsed)
+            mergeRollingSummary(previousSummaries.joinToString("\n\n"), incrementalSummary)
+        }
         val now = System.currentTimeMillis()
         val previousFoldedCount = repository.latestBranchEntryOfType(sessionId, lane.leafId, ENTRY_TYPE)
             ?.let { entry ->
@@ -98,7 +136,10 @@ class CompactionManager @Inject constructor(
         Log.d(
             "ContextCompaction",
             "压缩会话 $sessionId：折叠 ${collapsed.size} 条（累计 ${payload.cumulativeCompactedMessageCount}），" +
-                "保留 ${retained.size} 条，摘要 ${summary?.length ?: 0} 字符，压缩前估算 ${payload.estimatedTokensBefore} tokens",
+                "保留 ${retained.size} 条，摘要 ${summary.length} 字符" +
+                "（${if (llmSummary != null) "LLM 结构化" else "机械回退"}），" +
+                "折叠分支摘要 ${context.branchSummaries.size} 份，" +
+                "压缩前估算 ${payload.estimatedTokensBefore} tokens",
         )
         return CompactedContext(summary, retained)
     }
@@ -107,6 +148,21 @@ class CompactionManager @Inject constructor(
         entry.takeIf { it.entryType == "message" }?.let {
             runCatching { json.decodeFromString(HarnessMessage.serializer(), it.payloadJson) }.getOrNull()
         }
+
+    /** 收集活跃分支上（指定 sequence 之后）的分支摘要文本，按树序排列。 */
+    private fun branchSummariesWithin(
+        entries: List<HarnessEntryEntity>,
+        afterSequence: Long?,
+    ): List<String> = entries.asSequence()
+        .filter { it.entryType == BRANCH_SUMMARY_ENTRY_TYPE }
+        .filter { afterSequence == null || it.sequence > afterSequence }
+        .mapNotNull { entry ->
+            runCatching {
+                json.decodeFromString(BranchSummaryPayload.serializer(), entry.payloadJson).summary
+            }.getOrNull()
+        }
+        .filter { it.isNotBlank() }
+        .toList()
 
     private fun messageTokens(message: HarnessMessage): Int = ContextWindowPolicy.estimateTokens(message.toString())
 
@@ -141,6 +197,7 @@ class CompactionManager @Inject constructor(
 
     companion object {
         const val ENTRY_TYPE = "compaction"
+        const val BRANCH_SUMMARY_ENTRY_TYPE = "branch_summary"
         private const val MAX_SUMMARY_CHARS = 16_000
     }
 }

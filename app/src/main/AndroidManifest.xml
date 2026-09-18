@@ -60,7 +60,7 @@
             android:launchMode="singleTask"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode|fontScale|density|keyboardHidden|navigation"
             android:theme="@style/taixu_theme"
-            android:windowSoftInputMode="adjustResize">
+            android:windowSoftInputMode="adjustResize|stateHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

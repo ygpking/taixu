@@ -52,6 +52,7 @@ import top.wkbin.taixu.harness.AssistantText
 import top.wkbin.taixu.harness.HarnessMessage
 import top.wkbin.taixu.harness.HarnessTool
 import top.wkbin.taixu.harness.CapabilityEvent
+import top.wkbin.taixu.harness.ModelSwitchEvent
 import top.wkbin.taixu.harness.ToolCall
 import top.wkbin.taixu.harness.checkpoint.RewindScope
 import top.wkbin.taixu.harness.ToolResult
@@ -212,6 +213,7 @@ internal fun ChatMessageList(
                     is ChatRenderItem.MessageItem -> {
                         when (val message = item.message) {
                             is CapabilityEvent -> CapabilityEventCard(message)
+                            is ModelSwitchEvent -> ModelSwitchCard(message)
                             is UserMessage -> UserBubble(
                                 message = message,
                                 knownMentionNames = knownMentionNames,

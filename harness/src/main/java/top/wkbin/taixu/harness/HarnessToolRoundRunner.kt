@@ -206,13 +206,14 @@ class HarnessToolRoundRunner @Inject constructor(
 
         // —— Phase B：受限并发执行。消息树落库（toolIntent / publishPersisted / toolSettled）
         // 依赖 lane.leafId 串链，必须串行，由 publicationMutex 保证；
-        // 只读工具在并发许可内同时执行，变更类工具全局互斥。
+        // 只读工具在并发许可内同时执行，变更类工具按工作区互斥（跨工作区不互相阻塞）。
         val publicationMutex = Mutex()
         val roundHadSuccess = AtomicBoolean(false)
         val approvalPauseRequested = AtomicBoolean(false)
         toolRoundDispatcher.dispatch(
             items = executable,
-            isParallelSafe = { it.tool in PARALLEL_SAFE_TOOLS },
+            mutationScope = sessionWorkspace,
+            isParallelSafe = { it.tool in PARALLEL_SAFE_TOOLS || it.tool in SELF_COORDINATED_TOOLS },
         ) { item, pause ->
             if (pause.isAborted()) return@dispatch
             val toolCall = ToolCall(
@@ -260,7 +261,7 @@ class HarnessToolRoundRunner @Inject constructor(
             val duration = now() - toolStart
             publicationMutex.withLock {
                 agentEventLogger.log(sessId, "ToolResult", "Tool=${item.tool.name}, CallId=${toolCall.id}, Success=${outcome.success}, Duration=${duration}ms, OutputChars=${outcome.output.length}, AwaitingApproval=${outcome.awaitingApproval}")
-                loopDetector.recordSettled(item.toolName, item.args, success = outcome.success)
+                loopDetector.recordSettled(item.toolName, item.args, success = outcome.success, output = outcome.output)
                 if (outcome.awaitingApproval) {
                     metrics.approvalRequested()
                     operationCoordinator.waitingApproval(operationId)
@@ -340,10 +341,12 @@ class HarnessToolRoundRunner @Inject constructor(
     companion object {
         // MCP 的 apiName "mcp" 只是历史回放别名，不是模型可直接调用的工具；
         // 剔除后模型误调 "mcp" 会落入 unknownToolGuidance，拿到真实 mcp__ 工具清单自我纠正。
+        // "subagent"/"invoke_dual_agent" 是 invoke_subagent 的历史别名与双智能体变体
+        // （ProviderClient 会向模型声明 invoke_dual_agent），必须一并放行，否则被自家拦截。
         val KNOWN_TOOL_NAMES: Set<String> = HarnessTool.entries
             .filter { it != HarnessTool.MCP }
             .map { HarnessApiMapper.apiName(it) }
-            .toSet() + "subagent"
+            .toSet() + "subagent" + "invoke_dual_agent"
 
         internal fun parseArguments(json: Json, raw: String): JsonObject =
             if (raw.isBlank()) buildJsonObject {} else {
@@ -353,7 +356,7 @@ class HarnessToolRoundRunner @Inject constructor(
 
         /**
          * 可并发执行的只读/低风险工具白名单：互不共享可变状态（Room 由 SQLite 串行化写入）。
-         * 其余工具（write/edit/base/process/host/download/build_script/subagent/mcp）具有
+         * 其余工具（write/edit/base/process/host/download/build_script/mcp）具有
          * 外部副作用，执行时全局互斥。
          */
         private val PARALLEL_SAFE_TOOLS: Set<HarnessTool> = setOf(
@@ -366,6 +369,15 @@ class HarnessToolRoundRunner @Inject constructor(
             HarnessTool.SCRATCHPAD,
         )
 
+        /**
+         * 自行协调写隔离、因此不参与变更互斥的编排型工具。
+         *
+         * invoke_subagent 是一次可达 15 分钟的整批编排：它内部按 write_paths 切波、
+         * 逐个子任务串行拿写租约，工作区级互斥对它没有额外保护作用。让它整批持锁会把
+         * 同工作区的其他 base/write/edit 一起挡住十几分钟（实测另一会话的 BASE 因此
+         * 等了约 70 秒）。
+         */
+        private val SELF_COORDINATED_TOOLS: Set<HarnessTool> = setOf(HarnessTool.SUBAGENT)
     }
 }
 

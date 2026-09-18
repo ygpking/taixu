@@ -69,6 +69,7 @@ import top.wkbin.taixu.feature.chat.R
 import top.wkbin.taixu.harness.QueuedPrompt
 import top.wkbin.taixu.harness.AssistantText
 import top.wkbin.taixu.harness.CapabilityEvent
+import top.wkbin.taixu.harness.ModelSwitchEvent
 import top.wkbin.taixu.harness.HarnessMessage
 import top.wkbin.taixu.harness.ToolCall
 import top.wkbin.taixu.harness.ToolResult
@@ -96,6 +97,8 @@ internal fun CollapsibleChatWorkbenchStrip(
     modifier: Modifier = Modifier,
     onOpenBrowser: (() -> Unit)? = null,
     browserHighlight: Boolean = false,
+    onOpenRepository: (() -> Unit)? = null,
+    repositoryHighlight: Boolean = false,
 ) {
     val roundCount = runtimeEvents.count { it is HarnessEvent.ProviderRoundStarted }
     val activeModelName = activeModel?.let { entity ->
@@ -164,7 +167,19 @@ internal fun CollapsibleChatWorkbenchStrip(
                 onClick = onOpenRuntime,
             )
 
-            // 5. 浏览器入口（轮次之后）：agent 在浏览器产生新动态时高亮提示
+            // 5. Git 仓库/分支管理入口（参考 MGit）：提交树/分支/推送拉取；agent 写文件后高亮
+            if (onOpenRepository != null) {
+                StatusDivider()
+                WorkbenchStatusItem(
+                    icon = RuntimeIconName.GitBranch,
+                    label = if (repositoryHighlight) "仓库 •" else stringResource(R.string.chat_repository),
+                    tint = if (repositoryHighlight) Color(0xFF2E9E5B) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    highlight = repositoryHighlight,
+                    onClick = onOpenRepository,
+                )
+            }
+
+            // 6. 浏览器入口（轮次之后）：agent 在浏览器产生新动态时高亮提示
             if (onOpenBrowser != null) {
                 StatusDivider()
                 WorkbenchStatusItem(
@@ -516,6 +531,7 @@ internal fun SubagentResultSheet(
                                 liveStatus = null,
                             )
                             is CapabilityEvent -> Unit
+                            is ModelSwitchEvent -> Unit
                             is ToolResult -> Unit
                         }
                     }

@@ -37,3 +37,11 @@
 # HostProcessRunner 由 ShizukuHostUserService 直接引用，R8 可达性分析应自动保留，
 # 但因其运行在 Shizuku 独立进程中，显式保活避免边缘裁剪。
 -keep class top.wkbin.taixu.runtime.privilege.HostProcessRunner { *; }
+
+# === JGit（feature:git 分支管理，release 必保） ===
+# JGit 内部按类名反射加载签名/传输实现，且引用了 Android 不存在的 OSGi/javax 可选类。
+-keep class org.eclipse.jgit.** { *; }
+-dontwarn org.eclipse.jgit.**
+-dontwarn org.osgi.framework.**
+-dontwarn org.slf4j.**
+-dontwarn javax.annotation.**

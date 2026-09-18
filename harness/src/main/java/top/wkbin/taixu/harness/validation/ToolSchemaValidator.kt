@@ -31,13 +31,20 @@ object ToolSchemaValidator {
      * 2. 自动把双下划线 `__` 或点号 `.` 分隔的扁平化键（例如 options__timeout 或 config.port）
      *    还原为标准嵌套 JsonObject，兼容小参数量或特定模型打平输出对象的习惯（DeepSeek-Reasonix 规范）；
      * 3. 映射常用字段别名（path/command/oldText/newText/timeout_seconds）。
+     *
+     * [isMcpTool] = true 时 1、2 全部跳过：MCP 工具的参数名由远端 schema 定义，
+     * 可能真有名为 params/arguments/input 的单参数、或含 `__`/`.` 的合法参数名，
+     * 解包与拆分都会把参数改写成远端不认识的结构。
      */
-    fun normalizeArgs(raw: JsonObject): JsonObject {
+    fun normalizeArgs(raw: JsonObject, applyAliases: Boolean = true, isMcpTool: Boolean = false): JsonObject {
+        if (isMcpTool) return raw
         val base = if (raw.size == 1 && (raw.containsKey("params") || raw.containsKey("arguments") || raw.containsKey("input"))) {
             (raw["params"] as? JsonObject) ?: (raw["arguments"] as? JsonObject) ?: (raw["input"] as? JsonObject) ?: raw
         } else raw
 
         val unflattened = unflattenObject(base)
+        // MCP 的 target/script/timeout 有自己的协议语义，不能套用内置文件/命令工具别名。
+        if (!applyAliases) return unflattened
 
         return kotlinx.serialization.json.buildJsonObject {
             unflattened.forEach { (k, v) -> put(k, v) }
@@ -77,6 +84,11 @@ object ToolSchemaValidator {
                 val part = path[i]
                 val existing = current[part]
                 val nextMap = when (existing) {
+                    null -> {
+                        val m = mutableMapOf<String, Any?>()
+                        current[part] = m
+                        m
+                    }
                     is MutableMap<*, *> -> @Suppress("UNCHECKED_CAST") (existing as MutableMap<String, Any?>)
                     is JsonObject -> {
                         val m = mutableMapOf<String, Any?>()
@@ -84,17 +96,19 @@ object ToolSchemaValidator {
                         current[part] = m
                         m
                     }
-                    else -> {
-                        val m = mutableMapOf<String, Any?>()
-                        current[part] = m
-                        m
-                    }
+                    // 冲突：扁平键的中间路径撞上既有标量/数组值。保留既有值、丢弃该扁平键，
+                    // 不再用空对象静默覆盖（否则 {"a":"x","a__b":1} 的 "a" 会被覆盖成 {"b":1}）。
+                    else -> return
                 }
                 current = nextMap
             }
             val leaf = path.last()
             val finalValue = if (value is JsonObject) unflattenObject(value) else value
             val existing = current[leaf]
+            if (existing != null && existing !is MutableMap<*, *> && existing !is JsonObject) {
+                // 叶层冲突：目标位置已有标量/数组值，保留既有值、丢弃冲突扁平键的值
+                return
+            }
             if (existing is MutableMap<*, *> && finalValue is JsonObject) {
                 @Suppress("UNCHECKED_CAST")
                 val m = existing as MutableMap<String, Any?>
@@ -155,14 +169,16 @@ object ToolSchemaValidator {
         args: JsonObject,
         mcpTools: List<McpToolInfo> = emptyList(),
     ): List<String> {
-        val normalized = normalizeArgs(args)
         val schema = resolveSchema(toolName, mcpTools) ?: return emptyList()
+        val isMcp = toolName.startsWith("mcp__")
+        // MCP 工具：既不套用内置别名，也不做单键解包/扁平键还原（见 normalizeArgs 注释）
+        val normalized = normalizeArgs(args, applyAliases = !isMcp, isMcpTool = isMcp)
         return validateObject(schema, normalized, prefix = "")
     }
 
     /** 直接对给定 schema 校验（供自定义 schema 场景与测试使用）。 */
     fun validate(schema: JsonObject, args: JsonObject): List<String> =
-        validateObject(schema, normalizeArgs(args), prefix = "")
+        validateObject(schema, normalizeArgs(args, applyAliases = false), prefix = "")
 
     private fun resolveSchema(toolName: String, mcpTools: List<McpToolInfo>): JsonObject? {
         if (toolName.startsWith("mcp__")) {

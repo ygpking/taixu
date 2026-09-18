@@ -104,6 +104,14 @@ private val AgentBottomBarHeight = 82.dp
 // 浏览器 URL 栏贴合版：与底栏总占位一致（8 + 64 + 8 = 80dp），零缝隙直接贴在底栏上方
 private val BrowserBottomBarHeight = 80.dp
 
+/** 会改动工作区文件的工具：这些工具执行后「仓库」入口按需高亮提示新改动 */
+private val REPOSITORY_HIGHLIGHT_TOOLS = setOf(
+    top.wkbin.taixu.harness.HarnessTool.WRITE,
+    top.wkbin.taixu.harness.HarnessTool.EDIT,
+    top.wkbin.taixu.harness.HarnessTool.BASE,
+    top.wkbin.taixu.harness.HarnessTool.PROCESS,
+)
+
 @Composable
 private fun chatBottomInsets(bottomBarHeight: Dp): WindowInsets {
     val bottomBarInsets = WindowInsets.navigationBars.add(WindowInsets(bottom = bottomBarHeight))
@@ -126,6 +134,7 @@ fun ChatScreen(
     browserPane: (@Composable (onExit: (() -> Unit)?) -> Unit)? = null,
     browserActivityTick: Long = 0L,
     browserBackPressed: (() -> Boolean)? = null,
+    onOpenRepository: ((projectName: String) -> Unit)? = null,
     viewModel: ChatViewModel = hiltViewModel(),
 ) {
     val messages by viewModel.messages.collectAsStateWithLifecycle()
@@ -260,6 +269,15 @@ fun ChatScreen(
     val liveThinkingMessageId = lastAssistantMessageId
     val currentBranch = remember(branches) { branches.firstOrNull { it.isCurrent } }
 
+    // Agent 联动：上次访问「仓库」页之后 agent 又写过文件（write/edit/base/process），
+    // 则工作条「仓库」入口高亮，提示有新改动可提交；进入仓库页即熄灭。
+    var lastRepositoryVisitAt by rememberSaveable { mutableStateOf(0L) }
+    val repositoryHighlight = remember(messages, lastRepositoryVisitAt) {
+        messages.filterIsInstance<ToolCall>().any { call ->
+            call.createdAt > lastRepositoryVisitAt && call.tool in REPOSITORY_HIGHLIGHT_TOOLS
+        }
+    }
+
     val isImeVisible = WindowInsets.isImeVisible
     val coroutineScope = rememberCoroutineScope()
 
@@ -318,13 +336,13 @@ fun ChatScreen(
         }
     }
 
-    // 🌟 2. 软键盘弹起时自动平滑滚动定位到最后一条消息
+    // 🌟 2. 软键盘弹起时自动平滑滚动定位到最后一条消息。
+    // delay 之后必须重新读 totalItemsCount：IME insets 会触发 relayout，
+    // 未测量完成时 count 为 0，animateScrollToItem(-1) 会直接崩。
     LaunchedEffect(isImeVisible) {
-        if (isImeVisible && listState.layoutInfo.totalItemsCount > 0) {
-            delay(80)
-            val totalCount = listState.layoutInfo.totalItemsCount
-            listState.animateScrollToItem(totalCount - 1)
-        }
+        if (!isImeVisible) return@LaunchedEffect
+        delay(80)
+        listState.safeScrollToLastItem(animated = true)
     }
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -434,6 +452,8 @@ fun ChatScreen(
     // 模型·权限·主线·轮次 工具条：单栏浏览器分页模式下随对话页一起滑走（浏览器页全屏），
     // 双栏/纯对话模式固定在顶部。提出为局部 lambda 避免三处重复传参。
     // onOpenBrowser 非空时工具条末尾追加"浏览器"入口（agent 有新动态时高亮）。
+    // onOpenRepository 非空即追加"仓库"入口（Git 分支管理）；未绑定项目时点击给提示而非隐藏。
+    val noProjectHint = stringResource(R.string.chat_repository_no_project)
     val chatTopBar: @Composable (onOpenBrowser: (() -> Unit)?, browserHighlight: Boolean) -> Unit =
         { onOpenBrowser, browserHighlight ->
             ChatTopBar(
@@ -454,6 +474,18 @@ fun ChatScreen(
                 browserHighlight = browserHighlight,
                 onOpenGit = { viewModel.git.refreshGitStatus(); showGitPanel = true },
                 gitUncommittedCount = gitUncommittedCount,
+                onOpenRepository = onOpenRepository?.let { open ->
+                    {
+                        val project = activeWorkspaceProject
+                        if (project != null) {
+                            lastRepositoryVisitAt = System.currentTimeMillis()
+                            open(project.name)
+                        } else {
+                            android.widget.Toast.makeText(appContext, noProjectHint, android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
+                repositoryHighlight = repositoryHighlight,
             )
             // Git 流式进度横幅（clone/pull/push 时可见）
             gitProgress?.let { p ->
@@ -820,18 +852,40 @@ fun ChatScreen(
         )
     }
 
-    if (showSessions) {
-        SessionsDialog(
-            sessions = sessions,
-            currentSessionId = currentSessionId,
-            sessionRunStates = sessionRunStates,
-            onDismiss = { showSessions = false },
-            onSwitch = { id -> viewModel.switchSession(id); showSessions = false },
-            onNew = { showSessions = false; showNewSession = true },
-            onDelete = viewModel::deleteSession,
-            onRename = viewModel::renameSession,
-        )
-    }
+    SessionsSideDrawer(
+        visible = showSessions,
+        sessions = sessions,
+        currentSessionId = currentSessionId,
+        workspaces = workspaces,
+        sessionRunStates = sessionRunStates,
+        onDismiss = { showSessions = false },
+        onSwitch = { id ->
+            viewModel.switchSession(id)
+            showSessions = false
+        },
+        onNew = {
+            showSessions = false
+            showNewSession = true
+        },
+        onCreateInWorkspace = { ws ->
+            showSessions = false
+            viewModel.createSession(
+                title = "",
+                workspace = ws.linuxPath,
+                projectType = ws.projectType.name,
+            )
+        },
+        onDelete = viewModel::deleteSession,
+        onRename = viewModel::renameSession,
+        onOpenSkills = {
+            showSessions = false
+            showSkillsMcpSheet = true
+        },
+        onOpenRuntime = {
+            showSessions = false
+            showRuntimeTimeline = true
+        },
+    )
 
     if (showNewSession) {
         NewSessionDialog(
@@ -932,22 +986,17 @@ fun ChatScreen(
                     // 可能传入越界索引，触发 LazyListState 的 IllegalArgumentException。
                     // 这里改用与 ChatMessageList 完全一致的 projectChatMessages 投影，
                     // 并 clamp 到合法区间。
-                    runCatching {
-                        val renderItems = projectChatMessages(messages, toolResults)
-                        val targetIndex = renderItems.indexOfFirst { item ->
-                            item is ChatRenderItem.MessageItem && item.message.id == messageId
-                        }
-                        if (targetIndex < 0) return@launch
-                        // LazyColumn 头部偏移：(init ? 1 : empty ? 1 : 0) + (compaction ? 1 : 0)。
-                        // activePlan 不是独立头部 —— 不要再加 1。
-                        val headerOffset = (if (initializing) 1 else 0) +
-                            (if (!initializing && messages.isEmpty()) 1 else 0) +
-                            (if (activeCompaction != null) 1 else 0)
-                        val totalCount = listState.layoutInfo.totalItemsCount
-                        if (totalCount <= 0) return@launch
-                        val safeIndex = (targetIndex + headerOffset).coerceIn(0, totalCount - 1)
-                        listState.animateScrollToItem(safeIndex)
+                    val renderItems = projectChatMessages(messages, toolResults)
+                    val targetIndex = renderItems.indexOfFirst { item ->
+                        item is ChatRenderItem.MessageItem && item.message.id == messageId
                     }
+                    if (targetIndex < 0) return@launch
+                    // LazyColumn 头部偏移：(init ? 1 : empty ? 1 : 0) + (compaction ? 1 : 0)。
+                    // activePlan 不是独立头部 —— 不要再加 1。
+                    val headerOffset = (if (initializing) 1 else 0) +
+                        (if (!initializing && messages.isEmpty()) 1 else 0) +
+                        (if (activeCompaction != null) 1 else 0)
+                    listState.safeScrollToItem(targetIndex + headerOffset, animated = true)
                 }
             },
             onDismiss = { showRuntimeTimeline = false },

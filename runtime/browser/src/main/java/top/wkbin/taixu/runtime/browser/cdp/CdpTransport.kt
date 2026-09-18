@@ -43,15 +43,21 @@ interface WsConnection {
 }
 
 /** abstract unix socket 版传输（主实现）。socketName 不带 `@` 前缀。 */
-class LocalSocketCdpTransport(private val socketName: String) : CdpTransport {
+class LocalSocketCdpTransport(
+    private val socketName: String,
+    private val socketFactory: () -> LocalSocket = { LocalSocket() },
+) : CdpTransport {
     override fun open(timeoutMs: Long): CdpConnection {
-        val socket = LocalSocket()
+        val socket = socketFactory()
+        var stage = "connect"
         runCatching {
-            socket.soTimeout = timeoutMs.toInt()
+            // LocalSocket 延迟创建 fd；connect 前 setSoTimeout 会在客户端抛 socket not created。
             socket.connect(LocalSocketAddress(socketName, LocalSocketAddress.Namespace.ABSTRACT))
+            stage = "setSoTimeout"
+            socket.soTimeout = timeoutMs.toInt()
         }.onFailure { e ->
             runCatching { socket.close() }
-            throw IOException("connect abstract socket '$socketName' failed: ${e.message}", e)
+            throw IOException("abstract socket '$socketName' $stage failed: ${e.javaClass.simpleName}: ${e.message}", e)
         }
         return object : CdpConnection {
             override val input get() = socket.inputStream
@@ -84,20 +90,24 @@ class TcpCdpTransport(private val host: String, private val port: Int) : CdpTran
 object DevToolsSocketResolver {
     private const val PREFIX = "webview_devtools_remote_"
 
+    data class Discovery(val candidates: List<String>, val scanError: String?)
+
     /** 候选列表（按优先级）；调用方逐个试连。 */
-    fun candidates(): List<String> {
+    fun discover(
+        pid: Int = android.os.Process.myPid(),
+        readUnixSockets: () -> List<String> = { java.io.File("/proc/net/unix").readLines() },
+    ): Discovery {
         val result = ArrayList<String>(2)
-        result += PREFIX + android.os.Process.myPid()
-        val proc = runCatching {
-            java.io.File("/proc/net/unix").readLines()
-        }.getOrDefault(emptyList())
+        result += PREFIX + pid
+        val scan = runCatching { readUnixSockets() }
+        val proc = scan.getOrDefault(emptyList())
         proc.mapNotNull { line ->
             // 列格式：Num RefCount Protocol Flags Type St Inode Path；abstract socket 路径以 @ 开头
             line.trim().split(Regex("\\s+")).lastOrNull()
         }.filter { it.startsWith("@$PREFIX") }
             .map { it.removePrefix("@") }
             .forEach { if (it !in result) result += it }
-        return result
+        return Discovery(result, scan.exceptionOrNull()?.let { "${it.javaClass.simpleName}: ${it.message}" })
     }
 }
 
@@ -143,6 +153,15 @@ object HttpOverSocket {
 
 /** 在 [CdpConnection] 上完成 WS 握手并返回可用连线。 */
 object WsHandshake {
+    /** 保留完整 /devtools/page/... 路径（含转义与查询参数），不能截掉 devtools 前缀。 */
+    fun targetPath(debuggerUrl: String): String {
+        val uri = java.net.URI(debuggerUrl)
+        require(uri.scheme in setOf("ws", "wss") && !uri.rawPath.isNullOrEmpty()) {
+            "invalid webSocketDebuggerUrl: $debuggerUrl"
+        }
+        return uri.rawPath + (uri.rawQuery?.let { "?$it" } ?: "")
+    }
+
     fun open(conn: CdpConnection, path: String, host: String = "127.0.0.1"): WsConnection =
         StreamWsConnection(conn, path, host)
 }

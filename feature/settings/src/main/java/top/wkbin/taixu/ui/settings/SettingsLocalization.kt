@@ -502,6 +502,9 @@ private fun legacyStringResource(source: String): Int? = when (source) {
         "📋 JSON 导入" -> R.string.settings_text_0334
         "📝 表单模式" -> R.string.settings_text_0335
         "🧠 AI 自愈" -> R.string.settings_text_0336
+        "防止复杂任务中模型陷入死循环；达到轮次后进入下方的自动续跑检查点" -> R.string.settings_text_0337
+        "轮次用尽后自动续跑" -> R.string.settings_text_0338
+        "轮次用尽即停下等待用户确认；适合希望逐段把关的场景" -> R.string.settings_text_0339
         ", target.sizeBytes.toDouble() / (1024 * 1024))} MB 空间）。/workspace 工作区中的代码文件不会受到任何影响。" -> R.string.settings_long_001
         "1. 分析上述 PRoot 沙箱内的失败报错（如 dpkg 依赖破损、锁残留、网络下载受阻、commandLinks 软链接缺失或环境缺失）；" -> R.string.settings_long_002
         "2. 直接调用 base 工具执行针对性的修复命令（如清理 /var/lib/dpkg 锁、dpkg --configure -a、apt-get --fix-broken install、手动从备用源拉取或补齐软链接）；" -> R.string.settings_long_003
@@ -563,6 +566,12 @@ private fun resolveLegacyString(source: String): String {
     }
     Regex("""成功探测到 (\d+) 个工具""").matchEntire(source)?.also {
         return stringResource(R.string.settings_dynamic_tool_count, it.groupValues[1])
+    }
+    Regex("""轮次用尽时先让模型收束并记录进度，再自动续跑，无需用户点击继续；总预算上限 (\d+) 轮""").matchEntire(source)?.also {
+        return stringResource(R.string.settings_text_0340, it.groupValues[1])
+    }
+    Regex("""(\d+) 次""").matchEntire(source)?.also {
+        return stringResource(R.string.settings_text_0341, it.groupValues[1])
     }
     return source
 }

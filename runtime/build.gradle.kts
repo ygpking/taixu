@@ -51,5 +51,7 @@ dependencies {
     implementation(libs.shizuku.provider)
     implementation(libs.hiddenapi.bypass)
     implementation(libs.kadb)
+    // Termux VT100 emulator + PTY JNI (GPL-3.0). Exported so feature/terminal can attach TerminalView.
+    api(libs.termux.terminal.emulator)
     testImplementation(libs.junit)
 }

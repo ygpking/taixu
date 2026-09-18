@@ -46,6 +46,9 @@ class SessionMessageProjector @Inject constructor(
     private val accessCounter = AtomicLong()
     private val streamingSessions = ConcurrentHashMap.newKeySet<String>()
 
+    /** 每个流式会话最近一次收到流式增量的时间；用于兜底清理异常终止的流式登记。 */
+    private val streamingLastActivity = ConcurrentHashMap<String, Long>()
+
     private val _foregroundMessages = MutableStateFlow<List<HarnessMessage>>(emptyList())
     /** 当前前台聚焦会话的消息列表（供聊天界面观察）。 */
     val foregroundMessages: StateFlow<List<HarnessMessage>> = _foregroundMessages.asStateFlow()
@@ -128,7 +131,7 @@ class SessionMessageProjector @Inject constructor(
     fun removeSession(sessionId: String) {
         liveFlows.remove(sessionId)
         lastAccess.remove(sessionId)
-        streamingSessions.remove(sessionId)
+        endStreamingInternal(sessionId)
     }
 
     override suspend fun append(sessionId: String, message: HarnessMessage) {
@@ -149,7 +152,7 @@ class SessionMessageProjector @Inject constructor(
             boundLiveWindow(updated)
         }
         mirrorIfForeground(sessionId, flow.value)
-        if (message is AssistantText) streamingSessions.remove(sessionId)
+        if (message is AssistantText) endStreamingInternal(sessionId)
     }
 
     override fun snapshot(sessionId: String): List<HarnessMessage> = messagesFlow(sessionId).value
@@ -159,17 +162,23 @@ class SessionMessageProjector @Inject constructor(
         val flow = messagesFlow(sessionId)
         flow.update { current -> current.filterNot { it.id == messageId } }
         mirrorIfForeground(sessionId, flow.value)
-        streamingSessions.remove(sessionId)
+        endStreamingInternal(sessionId)
     }
 
     /** Mark a provider stream complete even when it yielded only tool calls/reasoning. */
     fun endStreaming(sessionId: String) {
+        endStreamingInternal(sessionId)
+    }
+
+    private fun endStreamingInternal(sessionId: String) {
         streamingSessions.remove(sessionId)
+        streamingLastActivity.remove(sessionId)
     }
 
     /** 流式助手文本增量刷新：保留已有 reasoning。 */
     fun streamText(sessionId: String, id: String, createdAt: Long, text: String) {
         streamingSessions += sessionId
+        streamingLastActivity[sessionId] = System.currentTimeMillis()
         val flow = messagesFlow(sessionId)
         flow.update { current ->
             val idx = current.indexOfFirst { it.id == id }
@@ -193,6 +202,7 @@ class SessionMessageProjector @Inject constructor(
     /** 流式思考过程增量刷新：文本未就绪时先行生成占位气泡。 */
     fun streamReasoning(sessionId: String, id: String, createdAt: Long, reasoning: String) {
         streamingSessions += sessionId
+        streamingLastActivity[sessionId] = System.currentTimeMillis()
         val flow = messagesFlow(sessionId)
         flow.update { current ->
             val idx = current.indexOfFirst { it.id == id }
@@ -223,9 +233,14 @@ class SessionMessageProjector @Inject constructor(
     private fun evictLeastRecentlyUsed(protectedSessionId: String) {
         var excess = liveFlows.size - MAX_CACHED_SESSIONS
         if (excess <= 0) return
+        val now = System.currentTimeMillis()
         lastAccess.entries.asSequence()
             .filter { (id, _) ->
-                id != protectedSessionId && !tracker.isForeground(id) && id !in streamingSessions
+                // 流式会话不驱逐，但调用方异常终止（如重试耗尽后 rethrow）未清理登记时
+                // 会永久驻留；用“超过 STREAM_STALE_MS 无任何流式增量”兜底判定为死流，允许驱逐。
+                // 活跃流式发布间隔为数百毫秒级，10 分钟静默必然是异常终止的流。
+                id != protectedSessionId && !tracker.isForeground(id) &&
+                    (id !in streamingSessions || now - (streamingLastActivity[id] ?: 0L) > STREAM_STALE_MS)
             }
             .sortedBy { it.value }
             .map { it.key }
@@ -233,6 +248,7 @@ class SessionMessageProjector @Inject constructor(
                 if (excess <= 0) return@forEach
                 if (liveFlows.remove(id) != null) {
                     lastAccess.remove(id)
+                    endStreamingInternal(id)
                     excess--
                 }
             }
@@ -245,5 +261,8 @@ class SessionMessageProjector @Inject constructor(
          * 256MB 堆上 8 个并发会话容易触发 OOM；4 可覆盖常见多会话工作流且安全余量更充足。
          */
         const val MAX_CACHED_SESSIONS = 4
+
+        /** 流式登记的兜底过期阈值：超过该时长无任何流式增量视为异常终止的死流。 */
+        const val STREAM_STALE_MS = 10 * 60 * 1000L
     }
 }

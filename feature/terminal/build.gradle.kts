@@ -38,6 +38,8 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(project(":feature:components"))
     implementation(project(":runtime"))
+    // Termux TerminalView (pairs with runtime's terminal-emulator AAR).
+    implementation(libs.termux.terminal.view)
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.core)
     debugImplementation(libs.androidx.compose.ui.tooling)

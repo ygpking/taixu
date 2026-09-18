@@ -22001,12 +22001,6 @@ SPLtop/wkbin/taixu/runtime/tools/CodexToolInstaller;->getToolId()Ljava/lang/Stri
 Ltop/wkbin/taixu/runtime/tools/HelloToolInstaller;
 SPLtop/wkbin/taixu/runtime/tools/HelloToolInstaller;-><init>(Ltop/wkbin/taixu/runtime/LinuxRuntime;Ltop/wkbin/taixu/runtime/RuntimePathManager;)V
 SPLtop/wkbin/taixu/runtime/tools/HelloToolInstaller;->getToolId()Ljava/lang/String;
-Ltop/wkbin/taixu/runtime/tools/HermesToolInstaller;
-SPLtop/wkbin/taixu/runtime/tools/HermesToolInstaller;-><init>(Ltop/wkbin/taixu/runtime/LinuxRuntime;Ltop/wkbin/taixu/core/tools/DependencyManager;Ltop/wkbin/taixu/core/tools/ProviderManager;Ltop/wkbin/taixu/runtime/tools/RemoteScriptRunner;Ltop/wkbin/taixu/runtime/tools/ToolCommandLinker;Ltop/wkbin/taixu/core/datastore/ToolPreferences;)V
-SPLtop/wkbin/taixu/runtime/tools/HermesToolInstaller;->getToolId()Ljava/lang/String;
-Ltop/wkbin/taixu/runtime/tools/OpenClawToolInstaller;
-SPLtop/wkbin/taixu/runtime/tools/OpenClawToolInstaller;-><init>(Ltop/wkbin/taixu/runtime/LinuxRuntime;Ltop/wkbin/taixu/core/tools/DependencyManager;Ltop/wkbin/taixu/core/tools/ProviderManager;Ltop/wkbin/taixu/runtime/tools/RemoteScriptRunner;Ltop/wkbin/taixu/runtime/tools/ToolCommandLinker;Ltop/wkbin/taixu/core/datastore/ToolPreferences;)V
-SPLtop/wkbin/taixu/runtime/tools/OpenClawToolInstaller;->getToolId()Ljava/lang/String;
 Ltop/wkbin/taixu/runtime/tools/RemoteScriptRunner;
 SPLtop/wkbin/taixu/runtime/tools/RemoteScriptRunner;-><clinit>()V
 SPLtop/wkbin/taixu/runtime/tools/RemoteScriptRunner;-><init>(Ltop/wkbin/taixu/runtime/LinuxRuntime;)V

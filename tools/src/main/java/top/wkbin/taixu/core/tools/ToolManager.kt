@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -134,7 +135,11 @@ class ToolManager @Inject constructor(
     /** 插件状态按当前发行版隔离：切换系统后自动切换为该系统的安装状态。 */
     @OptIn(ExperimentalCoroutinesApi::class)
     fun observeTools(): Flow<List<ToolEntity>> =
-        linuxRuntime.activeDistroId.flatMapLatest { toolRepository.observeTools(it) }
+        linuxRuntime.activeDistroId.flatMapLatest { distroId ->
+            toolRepository.observeTools(distroId).map { list ->
+                list.filterNot { it.id in ToolRegistry.REMOVED_TOOL_IDS }
+            }
+        }
 
     /** Expose manifest metadata for detail screens. */
     fun manifest(toolId: String): ToolManifest? = toolRepository.manifest(toolId)
@@ -254,7 +259,8 @@ class ToolManager @Inject constructor(
 
     /** Stop a running gateway service for the given tool. */
     suspend fun stopGateway(toolId: String) {
-        serviceController.stop(toolId)
+        val spec = serviceSpec(toolId)
+        serviceController.stop(toolId, spec)
     }
 
     /**
@@ -402,6 +408,8 @@ class ToolManager @Inject constructor(
                 }
             }
         }
+        // 清理已废弃/移除的独立在线插件（如 claude-code、openclaw、hermes-agent）
+        toolRepository.deleteByIds(ToolRegistry.REMOVED_TOOL_IDS)
         installTransactionManager.cleanupOrphans(liveInstallTools)
     }
 

@@ -21,7 +21,7 @@ import org.robolectric.annotation.Config
 
 /**
  * 真实 Room（in-memory）上的持久化事务集成测试：
- * 覆盖 entry tree 事务原子性、并发 append 的 leaf 守卫、branch 投影与级联删除。
+ * 覆盖 entry tree 事务原子性、并发 append 的 leaf 重接、branch 投影与级联删除。
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -103,11 +103,11 @@ class HarnessRuntimeRepositoryIntegrationTest {
     }
 
     @Test
-    fun `appendToLane rejects concurrent stale leaf writes`() = runBlocking {
+    fun `appendToLane rebases concurrent stale leaf writes into a chain`() = runBlocking {
         val sessionId = "s2"
         repository.ensureLane(sessionId, "main")
 
-        // 两个协程同时基于同一 leaf 追加：只有一个成功，另一个被 leaf 一致性守卫拒绝
+        // Two coroutines append from the same stale parent; both should succeed as a linear chain.
         val results = (1..2).map { index ->
             async(Dispatchers.IO) {
                 runCatching {
@@ -116,8 +116,14 @@ class HarnessRuntimeRepositoryIntegrationTest {
             }
         }.awaitAll()
 
-        val successes = results.count { it.isSuccess }
-        assertEquals("并发 append 只允许一个成功", 1, successes)
+        assertEquals("并发 append 都应成功（落后的 parent 会接到当前 leaf）", 2, results.count { it.isSuccess })
+        results.forEachIndexed { index, result ->
+            assertTrue("append #$index failed: ${result.exceptionOrNull()?.message}", result.isSuccess)
+        }
+        val leaf = repository.findLane(sessionId, "main")!!.leafId
+        val branch = repository.branch(sessionId, leaf)
+        assertEquals(2, branch.size)
+        assertEquals(branch[0].id, branch[1].parentId)
     }
 
     @Test

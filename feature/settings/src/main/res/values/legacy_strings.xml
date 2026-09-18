@@ -482,6 +482,11 @@
     <string name="settings_text_0334" formatted="false">📋 JSON 导入</string>
     <string name="settings_text_0335" formatted="false">📝 表单模式</string>
     <string name="settings_text_0336" formatted="false">🧠 AI 自愈</string>
+    <string name="settings_text_0337" formatted="false">防止复杂任务中模型陷入死循环；达到轮次后进入下方的自动续跑检查点</string>
+    <string name="settings_text_0338" formatted="false">轮次用尽后自动续跑</string>
+    <string name="settings_text_0339" formatted="false">轮次用尽即停下等待用户确认；适合希望逐段把关的场景</string>
+    <string name="settings_text_0340" formatted="false">轮次用尽时先让模型收束并记录进度，再自动续跑，无需用户点击继续；总预算上限 %1$s 轮</string>
+    <string name="settings_text_0341" formatted="false">%1$s 次</string>
     <string name="settings_long_001" formatted="false">, target.sizeBytes.toDouble() / (1024 * 1024))} MB 空间）。/workspace 工作区中的代码文件不会受到任何影响。</string>
     <string name="settings_long_002" formatted="false">1. 分析上述 PRoot 沙箱内的失败报错（如 dpkg 依赖破损、锁残留、网络下载受阻、commandLinks 软链接缺失或环境缺失）；</string>
     <string name="settings_long_003" formatted="false">2. 直接调用 base 工具执行针对性的修复命令（如清理 /var/lib/dpkg 锁、dpkg --configure -a、apt-get --fix-broken install、手动从备用源拉取或补齐软链接）；</string>

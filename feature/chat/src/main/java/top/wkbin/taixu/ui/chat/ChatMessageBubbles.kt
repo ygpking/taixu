@@ -72,6 +72,7 @@ import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import top.wkbin.taixu.harness.AssistantText
 import top.wkbin.taixu.harness.CapabilityEvent
+import top.wkbin.taixu.harness.ModelSwitchEvent
 import top.wkbin.taixu.harness.UserMessage
 import top.wkbin.taixu.harness.checkpoint.RewindScope
 import top.wkbin.taixu.ui.components.RuntimeIcon
@@ -885,5 +886,76 @@ internal fun CapabilityEventCard(event: CapabilityEvent) {
                 modifier = Modifier.weight(1f),
             )
         }
+    }
+}
+
+@Composable
+internal fun ModelSwitchCard(event: ModelSwitchEvent) {
+    val toWindow = formatContextWindow(event.toContextTokens)
+    val title = if (event.fromLabel.isBlank()) {
+        stringResource(R.string.chat_model_switch_to_fmt, event.toLabel)
+    } else {
+        stringResource(R.string.chat_model_switch_from_to_fmt, event.fromLabel, event.toLabel)
+    }
+    val subtitle = when {
+        event.compacted && event.foldedMessageCount > 0 ->
+            stringResource(R.string.chat_model_switch_compacted_fmt, toWindow, event.foldedMessageCount)
+        event.compactionPending ->
+            stringResource(R.string.chat_model_switch_pending_fmt, toWindow)
+        else -> stringResource(R.string.chat_model_switch_window_fmt, toWindow)
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(1.dp)
+                    .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.widthIn(max = 260.dp),
+            ) {
+                RuntimeIcon(
+                    RuntimeIconName.Bot,
+                    Modifier.size(13.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    title,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Medium,
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(1.dp)
+                    .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+            )
+        }
+        Text(
+            subtitle,
+            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+            modifier = Modifier.fillMaxWidth(),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }

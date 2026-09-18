@@ -90,8 +90,16 @@ class McpHttpTransport @Inject constructor(
         .build()
 
     override suspend fun check(server: McpServerConfig) = withContext(Dispatchers.IO) {
-        // 设置页手动测试连接不受冷却限制
-        runCatching { ensureSession(server, bypassCooldown = true); true }.getOrDefault(false)
+        try {
+            // 设置页手动测试连接不受冷却限制
+            ensureSession(server, bypassCooldown = true)
+            true
+        } catch (c: CancellationException) {
+            // B4: 结构化取消必须透传，不能被吞成 false
+            throw c
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     override suspend fun discover(server: McpServerConfig): List<McpToolInfo> = withContext(Dispatchers.IO) {
@@ -195,8 +203,19 @@ class McpHttpTransport @Inject constructor(
                 logger.w("MCP[${server.name}] $label 握手失败: ${t.message}", t)
             }
         }
-        downUntil[server.id] = System.currentTimeMillis() + FAILURE_COOLDOWN_MS
+        // B7: bypassCooldown（设置页手动测试）失败不写冷却，避免一次手动测试失败后对话发现快速失败 5 分钟
+        if (!bypassCooldown) {
+            downUntil[server.id] = System.currentTimeMillis() + FAILURE_COOLDOWN_MS
+        }
         throw IllegalStateException("MCP HTTP 连接失败（${failures.joinToString("；")}）")
+    }
+
+    /** B10: 禁用/删除 server 时关闭其会话（含 legacy SSE 长连接）并清冷却记录 */
+    suspend fun closeSession(serverId: String) {
+        sessionMutexes.getOrPut(serverId) { Mutex() }.withLock {
+            downUntil.remove(serverId)
+            sessions.remove(serverId)?.legacy?.close()
+        }
     }
 
     private fun dropSession(serverId: String, session: HttpSession) {
@@ -382,7 +401,14 @@ class McpHttpTransport @Inject constructor(
         if (response.header("Content-Type").orEmpty().lowercase().startsWith("text/event-stream")) {
             readSse(response, requestId)
         } else {
-            json.decodeFromString(JsonRpcResponse.serializer(), readLimited(response))
+            val body = readLimited(response)
+            if (body.isBlank()) {
+                // B6: 202 Accepted 空体（服务器把结果放到 GET SSE 流上返回）时本客户端无法取回响应；
+                // 抛带 "MCP HTTP " 前缀的 IOException 使其归类为传输失败，tools/list 可重建会话重试。
+                // TODO: 按 Streamable HTTP 规范实现 GET SSE 流读取响应（成本可控时补齐）
+                throw IOException("MCP HTTP ${response.code} accepted without response body (GET SSE stream not implemented)")
+            }
+            json.decodeFromString(JsonRpcResponse.serializer(), body)
         }
 
     private fun readSse(response: Response, requestId: String): JsonRpcResponse {
@@ -548,8 +574,12 @@ class McpHttpTransport @Inject constructor(
 
         private fun fail(t: Throwable) {
             closed = true
-            endpointDeferred.completeExceptionally(t)
-            pending.values.forEach { it.completeExceptionally(t) }
+            // B3: close() 主动 cancel readLoop 产生的 CancellationException 若灌给 pending，
+            // 会让调用方协程被"伪取消"（上层对 CancellationException 直接 rethrow，agent 回合误判中止）；
+            // 统一改用 IOException 传达"传输已关闭"语义
+            val failure = if (t is CancellationException) IOException("MCP HTTP transport closed") else t
+            endpointDeferred.completeExceptionally(failure)
+            pending.values.forEach { it.completeExceptionally(failure) }
             pending.clear()
         }
     }
@@ -558,7 +588,9 @@ class McpHttpTransport @Inject constructor(
         private const val ACCEPT = "application/json, text/event-stream"
         private const val MAX_BYTES = 4 * 1024 * 1024
         private const val MAX_SSE_LINE_BYTES = 1 * 1024 * 1024
-        private const val FAST_TIMEOUT_MS = 5_000L
+
+        /** B6: 握手/列表超时从 5s 放宽到 20s：慢网络/冷启动下 5s 偏紧导致 tools/list 频繁失败 */
+        private const val FAST_TIMEOUT_MS = 20_000L
         private const val CALL_TIMEOUT_MS = 120_000L
         private const val HANDSHAKE_TIMEOUT_MS = 4_000L
 
