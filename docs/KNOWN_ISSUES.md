@@ -41,7 +41,7 @@ This file tracks known issues and environment notes for the TaiXu Android projec
 ## 5. Beta 前仍需补齐的能力
 
 - 交互终端当前使用 Debian `script` + `ProcessBuilder` 创建 PTY；通过记录 `/dev/pts/*` 从属设备并执行独立 `stty -F` 命令，UTF-8、Ctrl+C、动态 Resize、ANSI SGR/光标/清屏和滚动缓冲已接通，不会把 `stty` 注入 Codex/OpenClaw/Hermes 的 stdin。真正的 JNI `forkpty` backend 仍可作为后续替换实现，当前需要在 ARM64 设备上验证更多复杂 TUI。
-- 真 PTY（JNI forkpty）后端的全部代码已就绪（`app/src/main/cpp/pty_native.c` + `NativePty.kt`/`NativePtySession.kt`，Termux 同款 setsid/控制终端语义）；当前机器未装 NDK，`build.gradle.kts` 的 `externalNativeBuild` 配置已临时注释。装上 NDK 后恢复配置即可启用，未启用时自动回退到 `script` 后端，功能不受影响。
+- 真 PTY（JNI forkpty）后端已启用（`app/src/main/cpp/pty_native.c` + `NativePty.kt`/`NativePtySession.kt`，Termux 同款 setsid/控制终端语义）；构建**不走 `externalNativeBuild`**，而是把预编译的 `app/src/main/jniLibs/arm64-v8a/libpty_native.so` 提交进仓库（CI 未安装 NDK），并由 `app/build.gradle.kts` 的 `preBuild` 守卫校验其为 AArch64/Bionic 产物（不含 `libc.so.6`）。**修改 `pty_native.c` 后必须用 NDK 重新编译该 `.so` 并一并提交**，否则改动不会生效（源码与产物会脱节）。设备侧若 `dlopen` 失败会自动回退到 `script` 后端。
 - Codex、OpenClaw、Hermes 的 Adapter 已隔离安装、验证、更新和卸载路径；官方脚本会先通过 HTTPS 下载到 Linux `/tmp`、设置为仅所有者可执行，再执行并由 `trap` 清理。脚本内容仍属于易变化的上游代码，正式发布前仍需按各自官方文档固定版本、复核许可，并在 ARM64 设备上逐个执行兼容性验收。
 - 工具程序统一安装到 `/opt/taixu/tools/{toolId}`，稳定命令入口位于 `/opt/taixu/bin`；Codex、OpenClaw、Hermes 的配置数据分别通过 `CODEX_HOME`、`OPENCLAW_HOME` 或 Hermes `--hermes-home` 指向 `/opt/taixu/data/{toolId}`。卸载默认保留数据，用户明确勾选后才删除对应工具数据。
 - `RemoteScriptRunner` 禁止脚本下载跨主机重定向，并支持为官方脚本配置固定 SHA-256、在执行前通过 `sha256sum -c` 校验；当前三个上游安装地址仍没有项目可长期信任的固定脚本版本哈希，因此正式 Beta 发布前必须把 URL 改为版本化地址并填入哈希，或改用固定 release archive。
