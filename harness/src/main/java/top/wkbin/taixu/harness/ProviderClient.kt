@@ -1060,8 +1060,36 @@ class ProviderClient @Inject constructor(
             return prefix.startsWith("{") || prefix.startsWith("[")
         }
 
+        /**
+         * 判定响应是否为「上下文 / 请求体超限」类错误：HTTP 413，或响应体含服务端惯用的
+         * 上下文超限关键词（context_length_exceeded / maximum context length / too many tokens …）。
+         *
+         * 之所以要按关键词兜底：部分网关用 HTTP 400 而非 413 返回同类错误；而 Nginx / 网关的
+         * 413 正文是纯文本（"413 Request Entity Too Large"），无法走 JSON 解析分支。
+         */
+        internal fun isContextOverflowError(code: Int, body: String): Boolean {
+            if (code == 413) return true
+            val lower = body.lowercase()
+            return lower.contains("context_length_exceeded") ||
+                lower.contains("maximum context length") ||
+                lower.contains("context length") ||
+                lower.contains("reduce the length of the messages") ||
+                lower.contains("too many tokens") ||
+                lower.contains("request entity too large") ||
+                lower.contains("payload too large") ||
+                lower.contains("content too large")
+        }
+
         fun formatHttpErrorMessage(code: Int, rawBody: String): String {
             val trimmedBody = if (rawBody.isNotEmpty() && rawBody[0] == '\uFEFF') rawBody.substring(1) else rawBody
+            // HTTP 413 / 上下文超限：请求体（对话历史）超出服务端上限，与 Base URL、网络无关。
+            // 必须先于「非 JSON ⇒ 疑似反向代理」兜底判定：Nginx / 网关的 413 响应体恰是纯文本，
+            // 旧逻辑会把它误报成「Base URL 路由错误」，把用户引向完全错误的排查方向。
+            if (isContextOverflowError(code, trimmedBody)) {
+                return "请求内容超出该模型/服务的上下文上限 (HTTP $code)：当前对话历史过大，" +
+                    "请压缩历史、调小「上下文预算」，或改用上下文窗口更大的模型。" +
+                    "原始信息：${trimmedBody.take(200).trim()}"
+            }
             // 远端把错误页（HTML/纯文本）当成 body 返回时，给出可读的固定文案，
             // 避免直接把 <html>... 拼到错误提示里刷屏。
             if (!looksLikeJsonResponse(trimmedBody)) {

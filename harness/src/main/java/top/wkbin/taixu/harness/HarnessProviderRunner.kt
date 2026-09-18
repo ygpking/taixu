@@ -91,8 +91,12 @@ class HarnessProviderRunner @Inject constructor(
         // Context and prompt remain immutable during network retries. The configured model
         // window is authoritative: a transport heuristic must never persistently compact a
         // valid 128k/200k conversation down to 64k.
-        var requestMessages = assembleFor(model)
+        // 请求模型可被降级重试收紧（当前仅用于「上下文超限」时调小预算以强制历史折叠）。
+        var requestModel = model
+        var requestMessages = assembleFor(requestModel)
         var imageStripped = false
+        // 上下文超限降级只做一次，避免与预算收缩形成死循环。
+        var contextOverflowRetried = false
         val estimatedRequestTokens = estimateTokens(requestMessages)
         val maxNetworkRetries = maxNetworkRetriesFor(estimatedRequestTokens, retryPolicy.maxRetries)
         // 显示的「分母」：瞬态传输故障（Socket/EOF/TLS/5xx）会被 effectiveRetryBudget 放宽到
@@ -119,7 +123,7 @@ class HarnessProviderRunner @Inject constructor(
                     maxAttempts = attemptBudget + 1,
                 )
                 streamed = providerClient.chatStream(
-                    model,
+                    requestModel,
                     requestMessages,
                     onReasoning = { chunk ->
                         streamReasoning.append(chunk)
@@ -220,6 +224,34 @@ class HarnessProviderRunner @Inject constructor(
                 // 模型不支持图片输入（HTTP 400）时，剥离全部图片降级重试一次，避免整轮中断
                 val lowerMsg = throwable.message.orEmpty().lowercase()
                 val pendingImages = requestMessages.sumOf { it.imageUrls.size }
+                // 上下文 / 请求体超限（HTTP 413 或服务端 context_length_exceeded）：整轮失败前，
+                // 先按当前请求规模收紧预算、强制历史折叠，再原样重发一次。照 imageStripped 范式，
+                // 只降级一次，避免「收缩→重发→再超限」形成死循环。
+                // 只有当前请求确实偏大（估算超预算 8 成）才尝试折叠，否则说明是模型档案
+                // contextTokens 与服务端真实上限严重不一致，折叠也救不了，直接走失败分支给出提示。
+                if (!contextOverflowRetried &&
+                    ("http 413" in lowerMsg || "上下文上限" in lowerMsg ||
+                        ProviderClient.isContextOverflowError(0, lowerMsg))
+                ) {
+                    val budget = ContextWindowPolicy.resolveEffectiveBudget(requestModel.contextTokens)
+                    val currentTokens = estimateTokens(requestMessages)
+                    if (currentTokens >= (budget * 0.8).toInt()) {
+                        contextOverflowRetried = true
+                        val shrunken = (budget * 0.5).toInt()
+                            .coerceAtLeast(ContextWindowPolicy.MIN_CONTEXT_BUDGET)
+                        requestModel = requestModel.copy(contextTokens = shrunken)
+                        requestMessages = assembleFor(requestModel)
+                        agentEventLogger.log(
+                            sessId, "ContextOverflowFallback",
+                            "请求超出上下文上限，已把预算 $budget → $shrunken tokens 强制折叠后重试一次",
+                            throwable,
+                        )
+                        streamText.clear()
+                        streamReasoning.clear()
+                        messageProjector.remove(sessId, assistantId)
+                        continue
+                    }
+                }
                 if (!imageStripped && pendingImages > 0 &&
                     ("do not support image" in lowerMsg || "does not support image" in lowerMsg ||
                         "image input" in lowerMsg || "supports image" in lowerMsg ||

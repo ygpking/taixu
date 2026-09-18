@@ -323,4 +323,51 @@ class ChatApiTest {
         assertFalse(ProviderClient.looksLikeJsonResponse("plain text error page"))
         assertFalse(ProviderClient.looksLikeJsonResponse(""))
     }
+
+    // ---- HTTP 413 / 上下文超限 专用分类（回归：曾被误报为「Base URL 路由错误」）----
+
+    @Test
+    fun `plain-text 413 is classified as context overflow, not reverse proxy`() {
+        // Nginx / 网关的 413 正文是纯文本，旧逻辑因「非 JSON」把它误报成
+        // 「反向代理登录页 / CDN 拦截 / Base URL 路由错误」，把用户引向完全错误的方向。
+        val msg = ProviderClient.formatHttpErrorMessage(413, "413 Request Entity Too Large")
+        assertTrue("应指出上下文超限: $msg", msg.contains("上下文上限"))
+        assertTrue("应带 413: $msg", msg.contains("413"))
+        assertFalse("不得再误报 Base URL: $msg", msg.contains("Base URL"))
+        assertFalse("不得再误报反向代理: $msg", msg.contains("反向代理"))
+    }
+
+    @Test
+    fun `html 413 also prefers context overflow wording`() {
+        val msg = ProviderClient.formatHttpErrorMessage(413, "<html><body>413</body></html>")
+        assertTrue("应指出上下文超限: $msg", msg.contains("上下文上限"))
+        assertFalse("不得误报 Base URL: $msg", msg.contains("Base URL"))
+    }
+
+    @Test
+    fun `http 400 with context keyword is classified as overflow`() {
+        val msg = ProviderClient.formatHttpErrorMessage(
+            400,
+            """{"error":{"message":"This model's maximum context length is 128000 tokens"}}""",
+        )
+        assertTrue("应指出上下文超限: $msg", msg.contains("上下文上限"))
+    }
+
+    @Test
+    fun `isContextOverflowError matches 413 and server keywords only`() {
+        assertTrue(ProviderClient.isContextOverflowError(413, "anything"))
+        assertTrue(ProviderClient.isContextOverflowError(400, "context_length_exceeded"))
+        assertTrue(ProviderClient.isContextOverflowError(400, "maximum context length"))
+        assertTrue(ProviderClient.isContextOverflowError(400, "payload too large"))
+        assertFalse(ProviderClient.isContextOverflowError(400, "invalid api key"))
+        assertFalse(ProviderClient.isContextOverflowError(500, "internal server error"))
+    }
+
+    @Test
+    fun `non-413 html still falls back to reverse proxy wording`() {
+        // 反面回归：普通 500 的 HTML 错误页仍应走旧兜底，不能被 413 新分支吞掉。
+        val msg = ProviderClient.formatHttpErrorMessage(500, "<html><body>oops</body></html>")
+        assertTrue("非 413 的 HTML 仍应提示 Base URL: $msg", msg.contains("Base URL"))
+        assertFalse("不应被误判为上下文超限: $msg", msg.contains("上下文上限"))
+    }
 }
