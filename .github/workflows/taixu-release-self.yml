@@ -63,7 +63,13 @@ jobs:
           TAIXU_RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: |
           set -o pipefail
-          ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tee /tmp/assemble.log
+          # gradle.properties 默认只给 1GB 堆（-Xmx1024m）、Kotlin 512MB；
+          # 自 v0.15.0 合并上游后模块数/代码量大增，R8 压缩阶段在 CI（7GB runner）
+          # 下会因堆不足失败（本地需 4GB 才能编过）。此处显式提高，与本地验证一致。
+          ./gradlew assembleRelease --no-daemon --stacktrace \
+            -Dorg.gradle.jvmargs="-Xmx4096m -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8" \
+            -Pkotlin.daemon.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=768m" \
+            2>&1 | tee /tmp/assemble.log
 
       - name: Publish build failure summary
         if: failure()
@@ -74,6 +80,23 @@ jobs:
             grep -nE '^e: |error:|FAILED|What went wrong|> Task .* FAILED|Execution failed' /tmp/assemble.log | head -80 || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          # 同时把原始日志尾部贴进 summary：job summary 需登录才能看，
+          # 而本环境只有写权限的 deploy key。摘要足够定位即可。
+          {
+            echo "## 原始日志尾部（最后 120 行）"
+            echo '```'
+            tail -120 /tmp/assemble.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # 提交到独立分支：无 token 环境可直接 git 读取（与 unit-tests.yml 同款机制）
+          cp /tmp/assemble.log /tmp/ci-assemble-report.txt
+          git config user.name "taixu-ci-bot"
+          git config user.email "ci@taixu.local"
+          git checkout -B ci-release-self-report
+          cp /tmp/ci-assemble-report.txt ci-release-self-report.txt
+          git add -f ci-release-self-report.txt
+          git commit -m "ci: release-self 失败日志 ${GITHUB_SHA::8}" || true
+          git push -f origin ci-release-self-report || true
 
       - name: Identify and Rename Output APK
         run: |
