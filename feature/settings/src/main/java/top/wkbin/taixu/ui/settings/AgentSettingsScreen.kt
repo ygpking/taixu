@@ -99,6 +99,8 @@ fun AgentSettingsScreen(
     val maxToolsPerRound by viewModel.maxToolsPerRound.collectAsStateWithLifecycle()
     val maxConsecutiveFailures by viewModel.maxConsecutiveFailures.collectAsStateWithLifecycle()
     val contextBudgetTokens by viewModel.contextBudgetTokens.collectAsStateWithLifecycle()
+    val effectiveContextBudget by viewModel.effectiveContextBudget.collectAsStateWithLifecycle()
+    val activeModelDeclaredTokens by viewModel.activeModelDeclaredTokens.collectAsStateWithLifecycle()
     val contextFoldingRatioPercent by viewModel.contextFoldingRatioPercent.collectAsStateWithLifecycle()
     val contextMaxKeepTokens by viewModel.contextMaxKeepTokens.collectAsStateWithLifecycle()
     val skills by viewModel.allSkills.collectAsStateWithLifecycle()
@@ -286,12 +288,14 @@ fun AgentSettingsScreen(
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         ContextBudgetSliderRow(
                             currentValue = contextBudgetTokens,
+                            declaredTokens = activeModelDeclaredTokens,
                             onValueChange = viewModel::setContextBudgetTokens,
                         )
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         ContextFoldingRatioSliderRow(
                             currentValue = contextFoldingRatioPercent,
-                            budget = contextBudgetTokens,
+                            budget = effectiveContextBudget,
+                            declaredTokens = activeModelDeclaredTokens,
                             onValueChange = viewModel::setContextFoldingRatioPercent,
                         )
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -1094,10 +1098,13 @@ private fun ContextMaxKeepTokensSliderRow(
 private fun ContextFoldingRatioSliderRow(
     currentValue: Int,
     budget: Int,
+    declaredTokens: Int?,
     onValueChange: (Int) -> Unit,
 ) {
     var sliderVal by remember(currentValue) { mutableFloatStateOf(currentValue.toFloat()) }
     // 实时预览：按当前比例算出的折叠线，让用户直观看到"拖到多少就按多少折叠"。
+    // 关键：budget 必须是**实际生效预算**（模型档案 contextTokens 优先），否则会出现
+    // 「设置页显示 100K、实际按 400K 折叠」——本次修复的单一真相源缺失缺陷。
     val previewLimit = remember(sliderVal, budget) {
         ContextWindowPolicy.foldingLimitFor(budget, sliderVal.toInt())
     }
@@ -1131,6 +1138,16 @@ private fun ContextFoldingRatioSliderRow(
             style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
             color = MaterialTheme.colorScheme.primary,
         )
+        // 说明这个预览数按什么预算折算，避免用户误以为它基于「上下文预算上限」滑块。
+        Text(
+            if (declaredTokens != null) {
+                "以上按当前模型档案声明的上下文上限 ${declaredTokens / 1000}K 计算（模型已单独配置，优先于下方预算滑块）。"
+            } else {
+                "以上按下方「上下文预算上限」滑块的值计算（当前无激活模型声明 contextTokens）。"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Slider(
             value = sliderVal,
             onValueChange = { sliderVal = it },
@@ -1145,6 +1162,7 @@ private fun ContextFoldingRatioSliderRow(
 @Composable
 private fun ContextBudgetSliderRow(
     currentValue: Int,
+    declaredTokens: Int?,
     onValueChange: (Int) -> Unit,
 ) {
     var sliderVal by remember(currentValue) { mutableFloatStateOf(currentValue.toFloat()) }
@@ -1167,7 +1185,13 @@ private fun ContextBudgetSliderRow(
             )
         }
         Text(
-            "模型未单独配置 contextTokens 时生效；长会话历史超出预算将自动折叠早期内容",
+            if (declaredTokens != null) {
+                "当前激活模型档案已单独配置上下文上限 ${declaredTokens / 1000}K，此滑块暂不生效；" +
+                    "仅当模型未配置 contextTokens 时，本值才作为兜底预算。"
+            } else {
+                "当前无激活模型声明 contextTokens，本值即实际生效预算；" +
+                    "长会话历史超出预算将自动折叠早期内容。"
+            },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

@@ -640,8 +640,16 @@ class ChatViewModel @Inject constructor(
         // 与引擎同源：面板显示的预算 = resolveEffectiveBudget(用户设置)，杜绝「显示 500K、实际按 96K 折叠」两张皮。
         val budget = ContextWindowPolicy.resolveEffectiveBudget(activeModel?.contextTokens ?: inputs.defaultBudget)
 
-        val effectiveUsage = ContextWindowPolicy.estimateEffectiveUsage(
+        // 与引擎同源（ApiContextAssembler）：把全量 UI 消息投影成「实际会发送的那份」再估算。
+        // 引擎在压缩判定前会截断老轮次工具结果（浏览器快照、长 read 等大输出），面板此前漏了这一步，
+        // 导致已用量虚高（实测 457.8K vs 实际发送 ~141K，约 3 倍）。收敛到 ContextWindowPolicy.projectForUsage。
+        val projectedMessages = ContextWindowPolicy.projectForUsage(
             messages = inputs.currentMessages,
+            compactionEnabled = compactionEnabled,
+        )
+
+        val effectiveUsage = ContextWindowPolicy.estimateEffectiveUsage(
+            messages = projectedMessages,
             budget = budget,
             systemTokens = totalSystemTokens,
             compactionEnabled = compactionEnabled,
@@ -1495,13 +1503,13 @@ data class ContextUsage(
      * 折叠触发线（分母）：= 标称上限 - 输出预留 - 工具 schema 预留。
      * 面板的百分比与分子分母均以此为准，保证「已用 / 分母 = 显示百分比」自洽。
      */
-    val limitTokens: Int = 128_000,
+    val limitTokens: Int = ContextWindowPolicy.DEFAULT_CONTEXT_BUDGET,
     /**
      * 模型标称上下文上限（用户在该模型档案里填的 contextTokens）。
      * 仅用于在面板上标注「模型上限 X」，不参与比例计算——避免「填 100 万却按 98.8 万折叠」
      * 造成分母与百分比对不上（两张皮）。
      */
-    val declaredTokens: Int = 128_000,
+    val declaredTokens: Int = ContextWindowPolicy.DEFAULT_CONTEXT_BUDGET,
     /**
      * 折叠线比例（百分比）。面板据此标注「按 X% 折叠」，
      * 使「模型上限 / 比例 / 实际折叠线」三个数都透明可见，避免任何一方成为暗箱。

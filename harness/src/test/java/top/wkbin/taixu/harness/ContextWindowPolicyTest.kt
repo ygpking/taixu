@@ -553,4 +553,157 @@ class ContextWindowPolicyTest {
         assertEquals(messages, truncated)
         assertTrue(truncated === messages)
     }
+
+    // ------------------------------------------------------------------
+    // 单一真相源回归：设置页「折叠线预览」必须与实际生效折叠线同源
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `declared model tokens win over global budget fallback`() {
+        // 有模型声明 → 以声明值为准
+        assertEquals(1_000_000, ContextWindowPolicy.resolveEffectiveBudget(1_000_000))
+        assertEquals(250_938, ContextWindowPolicy.resolveEffectiveBudget(250_938))
+        // 无声明 → 回退默认预算
+        assertEquals(
+            ContextWindowPolicy.DEFAULT_CONTEXT_BUDGET,
+            ContextWindowPolicy.resolveEffectiveBudget(null),
+        )
+    }
+
+    @Test
+    fun `effective budget is clamped to sane bounds`() {
+        assertEquals(ContextWindowPolicy.MIN_CONTEXT_BUDGET, ContextWindowPolicy.resolveEffectiveBudget(1_000))
+        assertEquals(ContextWindowPolicy.MAX_CONTEXT_BUDGET, ContextWindowPolicy.resolveEffectiveBudget(3_000_000))
+    }
+
+    @Test
+    fun `settings preview folding line matches engine for declared-model scenario`() {
+        // 真实场景（一手设备取证）：模型档案 contextTokens=1,000,000、全局预算=250,938、比例=40%
+        val declared = 1_000_000
+        val globalBudget = 250_938
+        val ratio = 40
+
+        // 引擎侧：ChatViewModel 用 resolveEffectiveBudget(activeModel?.contextTokens ?: defaultBudget)
+        val engineBudget = ContextWindowPolicy.resolveEffectiveBudget(declared)
+        // 设置页侧：修复后 SettingsViewModel.effectiveContextBudget 用同一表达式
+        val previewBudget = ContextWindowPolicy.resolveEffectiveBudget(declared)
+        val engineLine = ContextWindowPolicy.foldingLimitFor(engineBudget, ratio)
+        val previewLine = ContextWindowPolicy.foldingLimitFor(previewBudget, ratio)
+
+        // 「填多少、显示多少、按多少折叠」三处一致
+        assertEquals(400_000, engineLine)
+        assertEquals(engineLine, previewLine)
+
+        // 反证锚点：修复前的错误算法（拿被模型声明覆盖掉的全局预算当分母）会算出 100,375 ≈ 100K，
+        // 与实际 400K 相差 3 倍 —— 这正是「设置页显示 100K、实际按 400K 折叠」的缺陷。
+        val buggyLine = ContextWindowPolicy.foldingLimitFor(globalBudget, ratio)
+        assertEquals(100_375, buggyLine)
+        assertTrue(
+            "修复前的算法必须与真实折叠线不符，否则本测试无判别力",
+            buggyLine != engineLine,
+        )
+    }
+
+    @Test
+    fun `preview and engine agree when no model declares context tokens`() {
+        val globalBudget = 250_938
+        val noDeclared: Int? = null
+        // 引擎：activeModel?.contextTokens ?: defaultBudget
+        val engineBudget = ContextWindowPolicy.resolveEffectiveBudget(noDeclared ?: globalBudget)
+        // 设置页：effectiveContextBudget 的 fallback 分支
+        val previewBudget = ContextWindowPolicy.resolveEffectiveBudget(globalBudget)
+
+        assertEquals(globalBudget, engineBudget)
+        assertEquals(engineBudget, previewBudget)
+        assertEquals(
+            ContextWindowPolicy.foldingLimitFor(engineBudget, 40),
+            ContextWindowPolicy.foldingLimitFor(previewBudget, 40),
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // 单一真相源回归：用量面板「已用量」必须基于引擎同口径投影（含老工具结果截断）
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `projectForUsage compacts stale tool results like the engine`() {
+        // 构造：1 条老用户轮 + 8 条超大工具结果（不受保护）+ 1 条最新用户轮 + 3 条当前轮结果
+        val big = "x".repeat(5_000)
+        val messages = buildList<HarnessMessage> {
+            add(UserMessage("old", 1, "old request"))
+            repeat(8) { index ->
+                val callId = "call-$index"
+                add(ToolCall(callId, 2L + index, HarnessTool.BASE, kotlinx.serialization.json.buildJsonObject {}))
+                add(ToolResult("result-$index", 3L + index, callId, true, big))
+            }
+            add(UserMessage("latest", 20, "now"))
+            repeat(3) { index ->
+                val callId = "current-$index"
+                add(ToolCall(callId, 21L + index, HarnessTool.BASE, kotlinx.serialization.json.buildJsonObject {}))
+                add(ToolResult("current-result-$index", 22L + index, callId, true, big))
+            }
+        }
+
+        val projected = ContextWindowPolicy.projectForUsage(messages, compactionEnabled = true)
+
+        // 条数与顺序必须不变（NATIVE 协议丢消息会产生非法 transcript）
+        assertEquals(messages.size, projected.size)
+        assertEquals(messages.map { it.id }, projected.map { it.id })
+        // 老轮次结果：最近 4 条 ToolResult 受保护（含 result-7），其余应被投影截断
+        val oldResults = projected.filterIsInstance<ToolResult>()
+            .filter { it.id.matches(Regex("result-\\d+")) }
+        val protectedOld = oldResults.last().id           // takeLast(4) 保护了它
+        val compactedOld = oldResults.filter { it.id != protectedOld }
+        assertTrue("应存在被压缩的老轮次结果", compactedOld.isNotEmpty())
+        compactedOld.forEach {
+            assertTrue("${it.id} 应被压缩", it.output.length < big.length)
+            assertTrue("${it.id} 应带 history_read 指针", it.output.contains("history_read(message_id="))
+        }
+        // 受保护的那条原样保留
+        assertEquals(big.length, oldResults.last().output.length)
+        // 当前轮结果原样保留
+        projected.filterIsInstance<ToolResult>()
+            .filter { it.id.startsWith("current-result-") }
+            .forEach { assertEquals(big.length, it.output.length) }
+
+        // 关闭压缩时完全不动（用户要原始历史）
+        val untouched = ContextWindowPolicy.projectForUsage(messages, compactionEnabled = false)
+        assertEquals(messages, untouched)
+    }
+
+    @Test
+    fun `usage after projection is far below unprojected usage`() {
+        // 反证锚点：不投影会显著虚高 —— 这正是「面板 457.8K vs 实际发送 141K」的缺陷。
+        val big = "y".repeat(6_000)
+        val messages = buildList<HarnessMessage> {
+            add(UserMessage("old", 1, "old"))
+            repeat(12) { index ->
+                val callId = "c-$index"
+                add(ToolCall(callId, 2L + index, HarnessTool.BASE, kotlinx.serialization.json.buildJsonObject {}))
+                add(ToolResult("r-$index", 3L + index, callId, true, big))
+            }
+            add(UserMessage("latest", 50, "now"))
+        }
+        val systemTokens = 5_000
+        // 大预算 → 不触发整段折叠（keepFrom == 0），差异只来自工具结果截断，便于单独观察。
+        val hugeBudget = 10_000_000
+
+        fun usageOf(msgs: List<HarnessMessage>) = ContextWindowPolicy.estimateEffectiveUsage(
+            messages = msgs,
+            budget = hugeBudget,
+            systemTokens = systemTokens,
+            compactionEnabled = true,
+            systemPromptTokens = systemTokens,
+        )
+
+        val unprojected = usageOf(messages).totalTokens
+        val projected = usageOf(ContextWindowPolicy.projectForUsage(messages, compactionEnabled = true)).totalTokens
+
+        assertTrue("投影后用量应明显低于未投影（$projected vs $unprojected）", projected < unprojected)
+        // 反证锚点：不投影时 old 结果全文计入，投影后应至少省下一半以上
+        assertTrue(
+            "两者差距必须显著，否则本测试无判别力（$projected vs $unprojected）",
+            unprojected - projected > unprojected / 2,
+        )
+    }
 }

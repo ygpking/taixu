@@ -251,6 +251,27 @@ object ContextWindowPolicy {
         return if (changed) transformed else messages
     }
 
+    /**
+     * 与引擎实际请求同口径的「投影」：把 UI 的全量消息投影成**真正会发送的那份**，
+     * 供用量面板估算使用。内部复用 [truncateStaleToolResults]，并把工具名映射
+     * （[HarnessApiMapper]）一并收敛，避免调用方各写一遍导致口径再次分化。
+     *
+     * 为何需要它：引擎在压缩判定前先截断老轮次工具结果（见 ApiContextAssembler），
+     * 面板若直接拿未截断的全量消息估算，会明显虚高（实测 457.8K vs 实际发送 ~141K，约 3 倍）。
+     *
+     * @param compactionEnabled 关闭压缩时不做任何截断（用户要原始历史）。
+     */
+    fun projectForUsage(
+        messages: List<HarnessMessage>,
+        compactionEnabled: Boolean,
+    ): List<HarnessMessage> {
+        if (!compactionEnabled) return messages
+        val toolCallDetails = messages.filterIsInstance<ToolCall>().associate {
+            it.id to ((it.rawToolName ?: HarnessApiMapper.apiName(it.tool)) to it.args)
+        }
+        return truncateStaleToolResults(messages, toolCallDetails)
+    }
+
     /** Conservative multilingual estimate used when a provider tokenizer is unavailable. */
     fun estimateTokens(text: String): Int {
         if (text.isBlank()) return 0
