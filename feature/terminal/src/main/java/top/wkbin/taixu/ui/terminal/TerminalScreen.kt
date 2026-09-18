@@ -110,6 +110,9 @@ fun TerminalScreen(
     val sysOutline = MaterialTheme.colorScheme.outlineVariant
     val (termBg, termHeaderBg, termTextDefault, termBorder) = remember(colorScheme, sysSurfaceLowest, sysSurfaceHigh, sysOnSurface, sysOutline) {
         when (colorScheme) {
+            // obsidian 是默认方案：终端恒为深底浅字（与设置页预览卡一致），
+            // 不能落入 else 跟随系统主题——浅色主题下会是浅底 + Termux 默认白字，不可读。
+            "obsidian" -> listOf(Color(0xFF0F1117), Color(0xFF171B26), Color(0xFFE2E2E9), Color(0xFF282A36))
             "matrix" -> listOf(Color(0xFF0A0F0D), Color(0xFF101B14), Color(0xFF10B981), Color(0xFF1A3324))
             "amber" -> listOf(Color(0xFF140F0A), Color(0xFF1F170F), Color(0xFFF59E0B), Color(0xFF3B2B1B))
             "aurora" -> listOf(Color(0xFF0D1424), Color(0xFF141F36), Color(0xFF38BDF8), Color(0xFF1E3A5F))

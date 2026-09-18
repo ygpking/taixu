@@ -594,6 +594,13 @@ internal fun ChatComposer(
                                 ComposerSendMode.STEER -> Color(0xFF7C4DFF)
                                 ComposerSendMode.NEXT_RUN -> MaterialTheme.colorScheme.secondary
                             }
+                            // STEER 是固定品牌紫（白字为其原生配对）；NEXT_RUN 跟随主题
+                            // secondary，必须用 onSecondary——玄同深色 secondary 是浅紫，
+                            // 写死白字几乎不可见。
+                            val sendIconTint = when (sendMode) {
+                                ComposerSendMode.STEER -> Color.White
+                                ComposerSendMode.NEXT_RUN -> MaterialTheme.colorScheme.onSecondary
+                            }
                             val sendDesc = stringResource(R.string.chat_send)
                             Surface(
                                 onClick = doSend,
@@ -608,7 +615,7 @@ internal fun ChatComposer(
                                     RuntimeIcon(
                                         name = RuntimeIconName.ArrowUp,
                                         modifier = Modifier.size(16.dp),
-                                        tint = Color.White,
+                                        tint = sendIconTint,
                                     )
                                 }
                             }
