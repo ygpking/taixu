@@ -51,6 +51,8 @@ sealed interface HarnessEvent {
         val entryId: String?,
         val inputTokens: Long,
         val outputTokens: Long,
+        val cacheReadTokens: Long = 0,
+        val cacheWriteTokens: Long = 0,
     ) : HarnessEvent
 
     data class ToolCallStarted(

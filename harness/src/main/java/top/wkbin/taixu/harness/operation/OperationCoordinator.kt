@@ -111,6 +111,8 @@ class OperationCoordinator @Inject constructor(
                 entryId = message?.id,
                 inputTokens = usage?.inputTokens ?: 0,
                 outputTokens = usage?.outputTokens ?: 0,
+                cacheReadTokens = usage?.cacheReadTokens ?: 0,
+                cacheWriteTokens = usage?.cacheWriteTokens ?: 0,
             )
         }
     }

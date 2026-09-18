@@ -688,6 +688,9 @@ class ChatViewModel @Inject constructor(
             cachedTokens = totalCachedTokens,
             cacheHitRatePercent = cacheHitPct,
             breakdown = effectiveUsage.breakdown,
+            uncachedInputTokens = totalPromptTokens - totalCachedTokens,
+            outputTokens = inputs.currentMessages.filterIsInstance<AssistantText>().mapNotNull { it.completionTokens?.toLong() }.sum(),
+            cacheWriteTokens = 0L,
         )
 
     }
@@ -1522,6 +1525,9 @@ data class ContextUsage(
     val cachedTokens: Long = 0L,
     val cacheHitRatePercent: Int? = null,
     val breakdown: ContextUsageBreakdown = ContextUsageBreakdown(),
+    val uncachedInputTokens: Long = 0L,
+    val outputTokens: Long = 0L,
+    val cacheWriteTokens: Long = 0L,
 )
 
 

@@ -203,34 +203,159 @@ fun ContextUsageDialog(
                         }
                     }
 
-                    // 5. Optional TaiXu Enhanced Footer (KV Cache & Compaction)
-                    if (usage.cachedTokens > 0L || usage.compacted) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            if (usage.cachedTokens > 0L) {
+                    // 5. Enhanced Cache Statistics Footer
+                    if (usage.cacheReadTokens > 0L || usage.outputTokens > 0L || usage.compacted) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
+                        // Section Title
+                        Text(
+                            text = stringResource(R.string.chat_context_cache_stats),
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 12.sp,
+                                color = if (isDark) Color(0xFFD1D5DB) else MaterialTheme.colorScheme.onSurface,
+                            ),
+                            modifier = Modifier.padding(bottom = 6.dp),
+                        )
+                        
+                        // Cache Read Row
+                        if (usage.cacheReadTokens > 0L) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    RuntimeIcon(
+                                        name = RuntimeIconName.Database,
+                                        modifier = Modifier.size(14.dp),
+                                        tint = MaterialTheme.colorScheme.primary,
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = stringResource(R.string.chat_context_cache_read),
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            fontSize = 12.sp,
+                                            color = if (isDark) Color(0xFF9CA3AF) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        ),
+                                    )
+                                }
                                 Text(
-                                    text = stringResource(
-                                        R.string.chat_context_kv_cache,
-                                        formatDialogTokenCount(usage.cachedTokens.toInt()),
-                                        usage.cacheHitRatePercent ?: 0,
-                                    ),
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        color = MaterialTheme.colorScheme.primary,
+                                    text = buildString {
+                                        append(formatDialogTokenCount(usage.cacheReadTokens.toInt()))
+                                        usage.cacheHitRatePercent?.let { pct ->
+                                            append(" (${pct}%)")
+                                        }
+                                    },
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        fontSize = 12.sp,
                                         fontWeight = FontWeight.Medium,
-                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.primary,
                                     ),
                                 )
                             }
-                            if (usage.compacted) {
-                                StatusBadge(
-                                    text = stringResource(R.string.chat_context_compacted_active),
-                                    color = MaterialTheme.colorScheme.secondary,
+                        }
+                        
+                        // Uncached Input Row
+                        if (usage.uncachedInputTokens > 0L) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    RuntimeIcon(
+                                        name = RuntimeIconName.FileText,
+                                        modifier = Modifier.size(14.dp),
+                                        tint = if (isDark) Color(0xFF6B7280) else MaterialTheme.colorScheme.outline,
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = stringResource(R.string.chat_context_uncached_input),
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            fontSize = 12.sp,
+                                            color = if (isDark) Color(0xFF9CA3AF) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        ),
+                                    )
+                                }
+                                Text(
+                                    text = formatDialogTokenCount(usage.uncachedInputTokens.toInt()),
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        fontSize = 12.sp,
+                                        color = if (isDark) Color(0xFF6B7280) else MaterialTheme.colorScheme.outline,
+                                    ),
                                 )
                             }
+                        }
+                        
+                        // Output Row
+                        if (usage.outputTokens > 0L) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    RuntimeIcon(
+                                        name = RuntimeIconName.Send,
+                                        modifier = Modifier.size(14.dp),
+                                        tint = MaterialTheme.colorScheme.secondary,
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = stringResource(R.string.chat_context_output),
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            fontSize = 12.sp,
+                                            color = if (isDark) Color(0xFF9CA3AF) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        ),
+                                    )
+                                }
+                                Text(
+                                    text = formatDialogTokenCount(usage.outputTokens.toInt()),
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.secondary,
+                                    ),
+                                )
+                            }
+                        }
+                        
+                        // Cache Write Row (仅在有新缓存写入时显示)
+                        if (usage.cacheWriteTokens > 0L) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    RuntimeIcon(
+                                        name = RuntimeIconName.Save,
+                                        modifier = Modifier.size(14.dp),
+                                        tint = if (isDark) Color(0xFF6B7280) else MaterialTheme.colorScheme.outline,
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = stringResource(R.string.chat_context_cache_write),
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            fontSize = 12.sp,
+                                            color = if (isDark) Color(0xFF9CA3AF) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        ),
+                                    )
+                                }
+                                Text(
+                                    text = formatDialogTokenCount(usage.cacheWriteTokens.toInt()),
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        fontSize = 12.sp,
+                                        color = if (isDark) Color(0xFF6B7280) else MaterialTheme.colorScheme.outline,
+                                    ),
+                                )
+                            }
+                        }
+                        
+                        // Compaction badge (if active)
+                        if (usage.compacted) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            StatusBadge(
+                                text = stringResource(R.string.chat_context_compacted_active),
+                                color = MaterialTheme.colorScheme.secondary,
+                            )
                         }
                     }
                 }

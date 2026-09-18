@@ -1,73 +1,63 @@
-# Gradle and Kotlin caches
+```
+# Compiled and build artifacts
+*.class
+*.o
+*.obj
+*.out
+build/
+target/
+
+# Dependencies
 .gradle/
-.kotlin/
-**/build/
-!runtime/src/main/java/top/wkbin/taixu/runtime/build/
-!runtime/src/main/java/top/wkbin/taixu/runtime/build/*.kt
+libs/
 
-# Android Studio / IntelliJ
-.idea/
-*.iml
-captures/
-
-# Android native build outputs
-.externalNativeBuild/
-.cxx/
-**/.externalNativeBuild/
-**/.cxx/
-
-# Machine-local Android configuration
-local.properties
-
-# Signing credentials and service configuration
-*.jks
-*.keystore
-keystore.properties
-google-services.json
-
-# Logs, diagnostics, and heap dumps
+# Logs and temp files
 *.log
-*.hprof
+*.tmp
+*.swp
 
-# Operating system metadata
+# Environment
+.env
+.env.local
+*.env.*
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# System files
 .DS_Store
 Thumbs.db
-Desktop.ini
 
-# Local environment files
-.env
-.env.*
-!.env.example
+# Coverage reports
+coverage/
+htmlcov/
+.coverage
 
-# Locally downloaded offline-plugin SDK archives (about 1.6 GiB).
-# Keep manifests, scripts, checksums and download instructions versioned.
-assets/plugins/android-suite-offline/payload/archives/
-
-# Locally downloaded QEMU x86_64 user-mode plugin archives (~47 MiB).
-# Keep manifests, scripts, checksums and download instructions versioned.
-assets/plugins/qemu-x86-64-compat/payload/archives/
-
-# Locally downloaded RTK offline plugin binary (~8.7 MiB) and dist artifacts.
-# Keep manifests, scripts, checksums, config and download instructions versioned.
-assets/plugins/rtk-suite-offline/payload/bin/
-assets/plugins/cc-switch/payload/lib/
-dist/
-.workbuddy/
-.trae/
-.codegraph/
-.tmp_unusedscan/
-webchat/node_modules/
+# Python specific (if applicable)
 __pycache__/
 *.pyc
-webchat/dist/
+*.pyo
+*.pyd
+.mypy_cache/
+.pytest_cache/
 
-# 运行时崩溃帧调试产物（不入库）
-.crash_frames/
+# Java/Kotlin specific
+*.jar
+*.war
+*.ear
+*.class
+!*.kt
+!*.java
 
-# 临时调试产物与脚本（不入库）
-*_tmp/
-_*.py
-build-output.txt
-scripts_patch/
-
-
+# Distribution artifacts
+dist/
+*.zip
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.deb
+*.rpm
+```
