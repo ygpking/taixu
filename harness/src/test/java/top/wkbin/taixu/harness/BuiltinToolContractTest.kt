@@ -112,4 +112,28 @@ class BuiltinToolContractTest {
             assertTrue("provider function name is too long: $name", name.length <= 64)
         }
     }
+
+    @Test
+    fun `mcp tools serialize in a discovery-order-independent array`() {
+        fun tool(server: String, name: String) = McpToolInfo(
+            serverId = server,
+            serverName = server,
+            name = name,
+            description = "test",
+        )
+
+        val discovered = listOf(
+            tool("srv-b", "zeta"),
+            tool("srv-a", "beta"),
+            tool("srv-a", "alpha"),
+            tool("srv-b", "omega"),
+        )
+
+        val forward = ProviderClient.buildDynamicTools(discovered).map { it.function.name }
+        val reversed = ProviderClient.buildDynamicTools(discovered.reversed()).map { it.function.name }
+
+        // 工具数组序列化在 messages 之前，顺序抖动会击穿 provider prefix cache 的整个前缀。
+        assertEquals("工具数组必须与 MCP 发现顺序无关", forward, reversed)
+        assertEquals(ProviderClient.TOOLS.size + discovered.size, forward.size)
+    }
 }

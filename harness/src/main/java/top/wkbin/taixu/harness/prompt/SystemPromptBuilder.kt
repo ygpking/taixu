@@ -103,7 +103,10 @@ class SystemPromptBuilder @Inject constructor(
             .getOrDefault(emptyList())
         // pinned 与 relevant 正交分层：
         // - pinned 常驻稳定前缀（最高权威，注入格式与官方长期指令记忆一致）
-        // - relevant 仅在用户轮发生过时按当前消息检索，注入为用户轮次低权威摘要，且排除 pinned 避免重复
+        // - relevant recall 由当轮用户消息驱动检索、内容逐轮可变，注入在 system prompt 末尾
+        //   （低权威摘要，且排除 pinned 避免重复）。放在尾部是刻意的：provider 的 prefix cache
+        //   按前缀块匹配，可变分节越靠后，击穿的缓存块越少；系统提示超预算时 fitSystemPrompt
+        //   也优先丢弃尾部，与其低权威定位一致。
         val now = System.currentTimeMillis()
         val projectOwner = workspacePath.trim().trimEnd('/')
         val pinnedMemories = runCatching { agentContextDao.getPinnedMemories(projectOwner, sessionId) }
@@ -235,13 +238,13 @@ class SystemPromptBuilder @Inject constructor(
             installedToolsSection,
             mcpCapabilitySection,
             pinnedSection,
-            recallSection,
             planSection,
             subagentSection,
             toolCallSection,
             workspaceGuidance,
             workspaceParts?.projectContext.orEmpty(),
             thinkingLanguageSection,
+            recallSection,
         ).filter { it.isNotBlank() }.joinToString("\n\n") { it.trim() }
     }
 

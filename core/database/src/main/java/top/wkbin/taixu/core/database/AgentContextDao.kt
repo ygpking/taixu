@@ -31,7 +31,7 @@ interface AgentContextDao {
           AND ((scope = 'global' AND ownerId = '')
             OR (:projectOwnerId != '' AND scope = 'project' AND ownerId = :projectOwnerId)
             OR (:sessionId != '' AND scope = 'session' AND ownerId = :sessionId))
-        ORDER BY updatedAt DESC
+        ORDER BY updatedAt DESC, id ASC
     """)
     suspend fun getPinnedMemories(projectOwnerId: String, sessionId: String): List<AgentMemoryEntity>
 
@@ -57,7 +57,7 @@ interface AgentContextDao {
         WHERE (scope = 'global' AND ownerId = '')
            OR (:projectOwnerId != '' AND scope = 'project' AND ownerId = :projectOwnerId)
            OR (:sessionId != '' AND scope = 'session' AND ownerId = :sessionId)
-        ORDER BY updatedAt DESC
+        ORDER BY updatedAt DESC, id ASC
         LIMIT :limit
     """)
     suspend fun getMemoriesForContext(projectOwnerId: String, sessionId: String, limit: Int): List<AgentMemoryEntity>
@@ -74,7 +74,7 @@ interface AgentContextDao {
             OR (:projectOwnerId != '' AND scope = 'project' AND ownerId = :projectOwnerId)
             OR (:sessionId != '' AND scope = 'session' AND ownerId = :sessionId))
           AND (`key` LIKE '%' || :query || '%' OR `value` LIKE '%' || :query || '%')
-        ORDER BY updatedAt DESC
+        ORDER BY updatedAt DESC, id ASC
         LIMIT :limit
     """)
     suspend fun searchMemories(query: String, projectOwnerId: String, sessionId: String, limit: Int): List<AgentMemoryEntity>
