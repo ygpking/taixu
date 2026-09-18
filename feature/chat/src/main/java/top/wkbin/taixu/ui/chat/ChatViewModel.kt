@@ -668,6 +668,7 @@ class ChatViewModel @Inject constructor(
         )
         val totalPromptTokens = inputs.currentMessages.filterIsInstance<AssistantText>().mapNotNull { it.promptTokens?.toLong() }.sum()
         val totalCachedTokens = inputs.currentMessages.filterIsInstance<AssistantText>().mapNotNull { it.cachedTokens?.toLong() }.sum()
+        val totalCompletionTokens = inputs.currentMessages.filterIsInstance<AssistantText>().mapNotNull { it.completionTokens?.toLong() }.sum()
         val cacheHitPct = if (totalPromptTokens > 0L && totalCachedTokens > 0L) {
             ((totalCachedTokens * 100L) / totalPromptTokens).toInt().coerceIn(1, 100)
         } else null
@@ -687,6 +688,8 @@ class ChatViewModel @Inject constructor(
             compacted = effectiveUsage.keepFromIndex > 0,
             cachedTokens = totalCachedTokens,
             cacheHitRatePercent = cacheHitPct,
+            uncachedInputTokens = (totalPromptTokens - totalCachedTokens).coerceAtLeast(0L),
+            outputTokens = totalCompletionTokens,
             breakdown = effectiveUsage.breakdown,
         )
 
@@ -1521,6 +1524,13 @@ data class ContextUsage(
     val compacted: Boolean = false,
     val cachedTokens: Long = 0L,
     val cacheHitRatePercent: Int? = null,
+    /**
+     * 未命中 KV 前缀缓存的输入 Token（= 本轮 prompt − 缓存命中部分）。
+     * 与 [cachedTokens] 相加即为本会话累计输入 Token。
+     */
+    val uncachedInputTokens: Long = 0L,
+    /** 本会话累计输出（completion）Token。 */
+    val outputTokens: Long = 0L,
     val breakdown: ContextUsageBreakdown = ContextUsageBreakdown(),
 )
 

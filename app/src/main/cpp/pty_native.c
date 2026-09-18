@@ -18,16 +18,40 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
+/* 前置声明：strings_array 的失败清理路径会用到这两个辅助函数，
+ * 它们定义在文件后半部分，需先声明以满足 C99 的“先声明后使用”。 */
+static void free_strings(char **array);
+static void throw_io(JNIEnv *env, const char *what);
+
 static char **strings_array(JNIEnv *env, jobjectArray array) {
     if (array == NULL) return NULL;
     int n = (*env)->GetArrayLength(env, array);
+    /* 防御异常输入：数组长度理论上非负，但这里做上界保护，
+     * 避免调用方传入超大数组导致 calloc 巨量分配。 */
+    if (n < 0 || n > 100000) {
+        throw_io(env, "Invalid array length");
+        return NULL;
+    }
     char **result = calloc((size_t)n + 1, sizeof(char *));
     if (result == NULL) return NULL;
     for (int i = 0; i < n; i++) {
         jstring s = (jstring)(*env)->GetObjectArrayElement(env, array, i);
         if (s == NULL) continue;
         const char *cs = (*env)->GetStringUTFChars(env, s, NULL);
+        if (cs == NULL) {
+            /* GetStringUTFChars 失败会挂起 OOM 异常；必须释放已分配部分再返回，
+             * 否则调用方拿到 NULL 后既泄漏内存又留下未处理的 pending exception。 */
+            free_strings(result);
+            (*env)->DeleteLocalRef(env, s);
+            return NULL;
+        }
         result[i] = strdup(cs);
+        if (result[i] == NULL) {
+            (*env)->ReleaseStringUTFChars(env, s, cs);
+            free_strings(result);
+            (*env)->DeleteLocalRef(env, s);
+            return NULL;
+        }
         (*env)->ReleaseStringUTFChars(env, s, cs);
         (*env)->DeleteLocalRef(env, s);
     }
@@ -68,6 +92,22 @@ Java_top_wkbin_taixu_runtime_pty_NativePty_openAndExec(
     char **cargv = strings_array(env, argv);
     char **cenvp = strings_array(env, envp);
     const char *ccwd = cwd != NULL ? (*env)->GetStringUTFChars(env, cwd, NULL) : NULL;
+
+    /* strings_array / GetStringUTFChars 失败时会挂起异常并返回 NULL。
+     * 必须在 fork 前处理：否则子进程会继承未定义状态，且本函数会在
+     * pending exception 下继续返回 jintArray，属未定义行为。 */
+    if (cargv == NULL || cenvp == NULL || (cwd != NULL && ccwd == NULL)) {
+        close(master);
+        close(slave);
+        free_strings(cargv);
+        free_strings(cenvp);
+        if (ccwd != NULL) (*env)->ReleaseStringUTFChars(env, cwd, ccwd);
+        /* 异常已由被调用方挂起时无需重复抛出 */
+        if (!(*env)->ExceptionCheck(env)) {
+            throw_io(env, "Failed to build exec arguments");
+        }
+        return NULL;
+    }
 
     pid_t pid = fork();
     if (pid < 0) {
@@ -110,6 +150,7 @@ Java_top_wkbin_taixu_runtime_pty_NativePty_openAndExec(
 JNIEXPORT jint JNICALL
 Java_top_wkbin_taixu_runtime_pty_NativePty_readFd(
     JNIEnv *env, jclass clazz, jint fd, jbyteArray buffer) {
+    if (buffer == NULL) return -1;
     jsize len = (*env)->GetArrayLength(env, buffer);
     if (len <= 0) return 0;
     jbyte *tmp = (jbyte *)malloc((size_t)len);
@@ -125,7 +166,17 @@ Java_top_wkbin_taixu_runtime_pty_NativePty_readFd(
 JNIEXPORT jint JNICALL
 Java_top_wkbin_taixu_runtime_pty_NativePty_writeFd(
     JNIEnv *env, jclass clazz, jint fd, jbyteArray buffer, jint offset, jint length) {
+    if (buffer == NULL) return -1;
     if (length <= 0) return 0;
+    /* 边界校验：offset/length 由 Java 侧传入，越界会让 GetByteArrayRegion
+     * 触发 ArrayIndexOutOfBoundsException；此处显式拒绝并返回 -1，
+     * 由调用方按「写入失败」处理，语义更清晰。
+     * 注意：刻意不设固定长度上限——调用方（NativePtySession.write）按
+     * data.size - offset 循环分片写入，若在此截断会丢失大段粘贴内容。 */
+    jsize bufLen = (*env)->GetArrayLength(env, buffer);
+    if (offset < 0 || offset > bufLen || length > bufLen - offset) {
+        return -1;
+    }
     jbyte *tmp = (jbyte *)malloc((size_t)length);
     if (tmp == NULL) return -1;
     (*env)->GetByteArrayRegion(env, buffer, offset, length, tmp);

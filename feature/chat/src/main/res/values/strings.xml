@@ -68,6 +68,8 @@
     <string name="chat_context_summarized_conversation">折叠历史摘要</string>
     <string name="chat_context_conversation">会话消息</string>
     <string name="chat_context_kv_cache">⚡ KV 前缀缓存命中：%1$s (%2$d%%)</string>
+    <string name="chat_context_uncached_input">未缓存输入</string>
+    <string name="chat_context_output">输出生成</string>
     <string name="chat_context_system_tokens">系统提示词 Token</string>
     <string name="chat_context_dialogue_tokens">对话上下文 Token</string>
     <string name="chat_context_tool_tokens">工具调用/输出 Token</string>

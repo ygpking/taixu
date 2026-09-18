@@ -203,13 +203,15 @@ fun ContextUsageDialog(
                         }
                     }
 
-                    // 5. Optional TaiXu Enhanced Footer (KV Cache & Compaction)
-                    if (usage.cachedTokens > 0L || usage.compacted) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(
+                    // 5. Optional TaiXu Enhanced Footer (KV Cache / Generation & Compaction)
+                    val hasTokenStats = usage.cachedTokens > 0L ||
+                        usage.uncachedInputTokens > 0L ||
+                        usage.outputTokens > 0L
+                    if (hasTokenStats || usage.compacted) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Column(
                             modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
                             if (usage.cachedTokens > 0L) {
                                 Text(
@@ -223,6 +225,23 @@ fun ContextUsageDialog(
                                         fontWeight = FontWeight.Medium,
                                         fontSize = 11.sp,
                                     ),
+                                )
+                            }
+                            // 命中只说明「输入省了多少」；未命中输入与输出才是真实成本构成，故并列展示。
+                            if (usage.uncachedInputTokens > 0L) {
+                                ContextUsageStatRow(
+                                    icon = RuntimeIconName.Document,
+                                    label = stringResource(R.string.chat_context_uncached_input),
+                                    value = formatDialogTokenCount(usage.uncachedInputTokens.toInt()),
+                                    isDark = isDark,
+                                )
+                            }
+                            if (usage.outputTokens > 0L) {
+                                ContextUsageStatRow(
+                                    icon = RuntimeIconName.ArrowUp,
+                                    label = stringResource(R.string.chat_context_output),
+                                    value = formatDialogTokenCount(usage.outputTokens.toInt()),
+                                    isDark = isDark,
                                 )
                             }
                             if (usage.compacted) {
@@ -272,6 +291,47 @@ private fun ContextUsageRow(
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Normal,
                 color = if (isDark) Color(0xFF9CA3AF) else MaterialTheme.colorScheme.onSurfaceVariant,
+            ),
+        )
+    }
+}
+
+/**
+ * 用量页脚中的「图标 + 标签 + 数值」行，用于缓存/生成统计（未缓存输入、输出生成等）。
+ * 与 [ContextUsageRow] 的区别：左侧是可复用图标而非颜色色块，且不参与分段进度条配色。
+ */
+@Composable
+private fun ContextUsageStatRow(
+    icon: RuntimeIconName,
+    label: String,
+    value: String,
+    isDark: Boolean,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RuntimeIcon(
+            name = icon,
+            modifier = Modifier.size(13.dp),
+            tint = if (isDark) Color(0xFF9CA3AF) else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(modifier = Modifier.width(10.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Normal,
+                color = if (isDark) Color(0xFF9CA3AF) else MaterialTheme.colorScheme.onSurfaceVariant,
+            ),
+        )
+        Spacer(modifier = Modifier.weight(1f))
+        Text(
+            text = value,
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                color = if (isDark) Color(0xFFD1D5DB) else MaterialTheme.colorScheme.onSurface,
             ),
         )
     }
