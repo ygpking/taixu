@@ -29,11 +29,12 @@ class AnsiTerminalBufferTest {
 
     @Test
     fun scrollbackIsBounded() {
-        val buffer = AnsiTerminalBuffer(columns = 20, rows = 3, maxRows = 3)
-        val screen = buffer.append("one\ntwo\nthree\nfour")
+        // rows 会被构造函数 coerceIn(MIN_ROWS=5, MAX_ROWS=200)，故此处取合法下限 5。
+        val buffer = AnsiTerminalBuffer(columns = 20, rows = 5, maxRows = 5)
+        val screen = buffer.append("one\ntwo\nthree\nfour\nfive\nsix")
 
-        assertTrue(screen.size <= 3)
-        assertEquals("four", screen.last().cells.joinToString("") { it.character })
+        assertTrue(screen.size <= 5)
+        assertEquals("six", screen.last().cells.joinToString("") { it.character })
     }
 
     @Test
@@ -46,7 +47,8 @@ class AnsiTerminalBufferTest {
         assertEquals("line1", screen[0].cells.joinToString("") { it.character })
         assertEquals("line2", screen[1].cells.joinToString("") { it.character })
         assertEquals("line3", screen[2].cells.joinToString("") { it.character })
-        assertEquals(3, buffer.cursor().row)
+        // 末尾无换行符，光标停在最后写入行 line3（0 基索引 2）。
+        assertEquals(2, buffer.cursor().row)
     }
 
     @Test
