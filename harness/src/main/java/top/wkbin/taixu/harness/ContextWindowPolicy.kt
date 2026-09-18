@@ -3,6 +3,7 @@ package top.wkbin.taixu.harness
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import top.wkbin.taixu.core.model.ContextBudgetDefaults
 
 /** Pure context-budget and historical-folding policy used by the provider mapper and UI. */
 object ContextWindowPolicy {
@@ -74,12 +75,12 @@ object ContextWindowPolicy {
     private const val RESERVED_OUTPUT_TOKENS = 8_192
     /** 预留：工具/MCP schema 空间（协议硬需求，与模型档位无关）。 */
     private const val TOOL_SCHEMA_RESERVE_TOKENS = 4_096
-    /** 兜底预算（模型未单独配置 contextTokens 且全局设置未生效时使用）。 */
-    const val DEFAULT_CONTEXT_BUDGET = 128_000
-    /** 预算下界：低于此值连系统提示词都放不下，属无效配置。 */
-    const val MIN_CONTEXT_BUDGET = 4_000
+    /** 兜底预算（模型未单独配置 contextTokens 且全局设置未生效时使用）。真相源见 [ContextBudgetDefaults]。 */
+    const val DEFAULT_CONTEXT_BUDGET = ContextBudgetDefaults.DEFAULT_TOKENS
+    /** 预算下界：低于此值连系统提示词都放不下，属无效配置。真相源见 [ContextBudgetDefaults]。 */
+    const val MIN_CONTEXT_BUDGET = ContextBudgetDefaults.MIN_TOKENS
     /** 预算上界：仅作为「明显异常输入」的护栏（如手误多打几个零），非模型能力限制。 */
-    const val MAX_CONTEXT_BUDGET = 2_000_000
+    const val MAX_CONTEXT_BUDGET = ContextBudgetDefaults.MAX_TOKENS
     /**
      * 折叠时强制保留的最近消息条数下限（默认值）。
      * 取 10 条：一轮完整交互（用户提问 / 工具调用 / 工具结果 / 助手回复）通常 2~4 条，

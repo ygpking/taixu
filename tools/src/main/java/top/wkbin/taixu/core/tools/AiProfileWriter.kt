@@ -3,6 +3,7 @@ package top.wkbin.taixu.core.tools
 import kotlinx.coroutines.flow.first
 import top.wkbin.taixu.core.database.AiModelEntity
 import top.wkbin.taixu.core.database.AiModelRepository
+import top.wkbin.taixu.core.model.ContextBudgetDefaults
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -21,17 +22,17 @@ class AiProfileWriter @Inject constructor(
         /**
          * 模型档案 contextTokens 的可接受区间。
          *
-         * 必须与 harness 模块 ContextWindowPolicy 的 MIN_CONTEXT_BUDGET / MAX_CONTEXT_BUDGET
-         * **保持同值**：tools 模块不依赖 harness，无法直接引用，故此处镜像定义。
-         * 引擎侧 resolveEffectiveBudget 用同区间钳制，两处一致才能保证
-         * 「填多少 / 存多少 / 显示多少 / 按多少折叠」四处闭环。
+         * 真相源为 [ContextBudgetDefaults]（core:model），与 harness 的
+         * ContextWindowPolicy.MIN/MAX_CONTEXT_BUDGET 同源同值：引擎侧 resolveEffectiveBudget
+         * 用同一区间钳制，保证「填多少 / 存多少 / 显示多少 / 按多少折叠」四处闭环。
+         * 历史上此处曾因 tools 不依赖 harness 而镜像定义，现已收敛到 core:model。
          */
-        const val MIN_CONTEXT_TOKENS = 4_000
-        const val MAX_CONTEXT_TOKENS = 2_000_000
+        const val MIN_CONTEXT_TOKENS = ContextBudgetDefaults.MIN_TOKENS
+        const val MAX_CONTEXT_TOKENS = ContextBudgetDefaults.MAX_TOKENS
 
         /** 与 ContextWindowPolicy.resolveEffectiveBudget 同语义的写入侧规范化。 */
         fun normalizeContextTokens(value: Int?): Int? =
-            value?.coerceIn(MIN_CONTEXT_TOKENS, MAX_CONTEXT_TOKENS)
+            value?.let(ContextBudgetDefaults::normalize)
     }
 
     /** 解析多行 Key 文本为去重的 Key 列表 */

@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
+import top.wkbin.taixu.core.model.ContextBudgetDefaults
 import top.wkbin.taixu.core.security.SecretManager
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -642,12 +643,18 @@ class SettingsDataStore @Inject constructor(
     }
 
     /**
-     * 上下文 Token 预算（默认 128000）。当模型未单独配置 contextTokens 时作为兜底，
-     * apiMessages 据此做滑动窗口裁剪，防止长会话撞上下文窗口上限。
+     * 上下文 Token 预算（默认 [ContextBudgetDefaults.DEFAULT_TOKENS]）。当模型未单独配置
+     * contextTokens 时作为兜底，apiMessages 据此做滑动窗口裁剪，防止长会话撞上下文窗口上限。
      */
     private val contextBudgetTokensKey = androidx.datastore.preferences.core.intPreferencesKey("agent_context_budget_tokens")
-    val contextBudgetTokens: Flow<Int> = context.settingsDataStore.data.map { it[contextBudgetTokensKey] ?: 128_000 }
-    suspend fun setContextBudgetTokens(value: Int) { context.settingsDataStore.edit { it[contextBudgetTokensKey] = value.coerceIn(4_000, 2_000_000) } }
+    val contextBudgetTokens: Flow<Int> = context.settingsDataStore.data.map {
+        it[contextBudgetTokensKey] ?: ContextBudgetDefaults.DEFAULT_TOKENS
+    }
+    suspend fun setContextBudgetTokens(value: Int) {
+        context.settingsDataStore.edit {
+            it[contextBudgetTokensKey] = ContextBudgetDefaults.normalize(value)
+        }
+    }
 
     /**
      * 折叠线比例（百分比，默认 100）。历史在「预算的百分之几」处开始折叠。

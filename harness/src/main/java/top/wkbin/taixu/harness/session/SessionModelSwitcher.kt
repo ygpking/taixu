@@ -8,6 +8,7 @@ import top.wkbin.taixu.core.database.AiModelEntity
 import top.wkbin.taixu.core.database.AiModelRepository
 import top.wkbin.taixu.core.database.HarnessSessionRepository
 import top.wkbin.taixu.core.datastore.AgentPreferences
+import top.wkbin.taixu.core.model.ContextBudgetDefaults
 import top.wkbin.taixu.harness.ContextWindowPolicy
 import top.wkbin.taixu.harness.ModelSwitchEvent
 import top.wkbin.taixu.harness.ProviderClient
@@ -136,7 +137,8 @@ class SessionModelSwitcher @Inject constructor(
     }
 
     private suspend fun defaultBudget(): Int =
-        runCatching { settingsDataStore.contextBudgetTokens.first() }.getOrDefault(128_000)
+        runCatching { settingsDataStore.contextBudgetTokens.first() }
+            .getOrDefault(ContextBudgetDefaults.DEFAULT_TOKENS)
 
     companion object {
         fun canonicalVariant(profile: AiModelEntity?, variant: String?): String? {

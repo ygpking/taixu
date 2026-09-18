@@ -31,6 +31,7 @@ import top.wkbin.taixu.harness.TextToolCallCodec
 import top.wkbin.taixu.harness.effects.ToolReplayPolicy
 import top.wkbin.taixu.harness.operation.OperationCoordinator
 import top.wkbin.taixu.harness.prompt.PromptAssetLoader
+import top.wkbin.taixu.core.model.ContextBudgetDefaults
 import top.wkbin.taixu.harness.session.SessionTreeStore
 import top.wkbin.taixu.harness.validation.ToolCallLoopDetector
 import top.wkbin.taixu.harness.validation.ToolSchemaValidator
@@ -316,7 +317,8 @@ class SubagentLaneRunner @Inject constructor(
     private suspend fun laneHistoryBudget(model: top.wkbin.taixu.harness.ModelConfig): Int {
         val budget = ContextWindowPolicy.clampedBudget(
             model.contextTokens,
-            runCatching { settingsDataStore.contextBudgetTokens.first() }.getOrDefault(DEFAULT_CONTEXT_BUDGET_TOKENS),
+            runCatching { settingsDataStore.contextBudgetTokens.first() }
+                .getOrDefault(ContextBudgetDefaults.DEFAULT_TOKENS),
         )
         return (budget * LANE_HISTORY_BUDGET_FRACTION).toInt().coerceAtLeast(MIN_LANE_HISTORY_TOKENS)
     }
@@ -386,7 +388,6 @@ class SubagentLaneRunner @Inject constructor(
         private const val MAX_MAX_ROUNDS = 60
         private const val NETWORK_ATTEMPTS = 2
         private const val NETWORK_RETRY_DELAY_MS = 1_000L
-        private const val DEFAULT_CONTEXT_BUDGET_TOKENS = 128_000
         private const val LANE_HISTORY_BUDGET_FRACTION = 0.55
         private const val MIN_LANE_HISTORY_TOKENS = 4_000
         private const val MAX_HANDOFF_ARGS_CHARS = 2_000
