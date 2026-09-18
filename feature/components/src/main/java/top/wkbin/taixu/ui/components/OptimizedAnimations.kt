@@ -1,6 +1,7 @@
 package top.wkbin.taixu.ui.components
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.Crossfade
@@ -76,7 +77,7 @@ fun OptimizedAnimatedVisibility(
             modifier = modifier,
             enter = enter,
             exit = exit,
-            content = content
+            content = { content() }
         )
     } else if (visible) {
         content()
@@ -98,7 +99,7 @@ fun <T : Any> OptimizedAnimatedContent(
     targetState: T,
     modifier: Modifier = Modifier,
     enableAnimation: Boolean = true,
-    transitionSpec: @Composable () -> ContentTransform = {
+    transitionSpec: AnimatedContentTransitionScope<T>.() -> ContentTransform = {
         slideInHorizontally { it } + fadeIn() togetherWith
             slideOutHorizontally { -it } + fadeOut()
     },
@@ -110,7 +111,7 @@ fun <T : Any> OptimizedAnimatedContent(
             modifier = modifier,
             transitionSpec = transitionSpec,
             label = "OptimizedAnimatedContent",
-            content = content
+            content = { content(it) }
         )
     } else {
         content(targetState)

@@ -45,9 +45,7 @@ fun <T : Any> LazyColumnWithPaging(
         contentPadding = contentPadding
     ) {
         items(
-            count = pagingItems.itemCount,
-            key = pagingItems::key,
-            contentType = pagingItems::contentType
+            count = pagingItems.itemCount
         ) { index ->
             val item = pagingItems[index]
             
@@ -67,7 +65,7 @@ fun <T : Any> LazyColumnWithPaging(
             pagingItems.loadState.append is androidx.paging.LoadState.Error -> {
                 item {
                     val error = pagingItems.loadState.append as androidx.paging.LoadState.Error
-                    ErrorRetryItem(error = error.exception.localizedMessage ?: "Unknown error") {
+                    ErrorRetryItem(error = error.error.localizedMessage ?: "Unknown error") {
                         pagingItems.retry()
                     }
                 }
@@ -92,9 +90,7 @@ fun <T : Any> LazyRowWithPaging(
         contentPadding = contentPadding
     ) {
         items(
-            count = pagingItems.itemCount,
-            key = pagingItems::key,
-            contentType = pagingItems::contentType
+            count = pagingItems.itemCount
         ) { index ->
             val item = pagingItems[index]
             
@@ -112,7 +108,7 @@ fun <T : Any> LazyRowWithPaging(
             pagingItems.loadState.append is androidx.paging.LoadState.Error -> {
                 item {
                     val error = pagingItems.loadState.append as androidx.paging.LoadState.Error
-                    ErrorRetryItem(error = error.exception.localizedMessage ?: "Unknown error") {
+                    ErrorRetryItem(error = error.error.localizedMessage ?: "Unknown error") {
                         pagingItems.retry()
                     }
                 }

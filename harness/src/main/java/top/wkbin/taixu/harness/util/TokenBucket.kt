@@ -5,6 +5,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.delay
 import kotlin.time.Duration
 import kotlin.time.DurationUnit
+import kotlin.time.toDuration
 
 /**
  * 🪣 Token Bucket 限流器
@@ -68,7 +69,7 @@ class TokenBucket(
             
             // 检查超时
             timeout?.let { t ->
-                val elapsed = Duration.nanoseconds(System.nanoTime() - startTime)
+                val elapsed = (System.nanoTime() - startTime).toDuration(DurationUnit.NANOSECONDS)
                 if (elapsed >= t) {
                     throw TimeoutException("Token bucket acquisition timed out after ${elapsed.toString()}")
                 }
@@ -123,7 +124,7 @@ class TokenBucket(
     private fun refill() {
         val now = System.nanoTime()
         val elapsedNanos = now - lastRefillTime
-        val elapsedSeconds = Duration.nanoseconds(elapsedNanos).toDouble(DurationUnit.SECONDS)
+        val elapsedSeconds = elapsedNanos.toDuration(DurationUnit.NANOSECONDS).toDouble(DurationUnit.SECONDS)
         
         val toAdd = elapsedSeconds * refillRate
         tokens = (tokens + toAdd).coerceAtMost(capacity.toDouble())

@@ -185,23 +185,17 @@ class PermissionManager @Inject constructor(
             ?: throw IllegalStateException("Permission launcher not registered for $firstDeniedPermission")
         
         pendingCallbacks[firstDeniedPermission] = { granted ->
-            val grantedPermissions = if (granted) {
-                // 如果第一个权限被授予，继续请求剩余的权限
-                val remainingPermissions = denied.drop(1)
-                if (remainingPermissions.isEmpty()) {
-                    listOf(firstDeniedPermission)
-                } else {
-                    // 递归请求剩余权限
-                    requestPermissions(activity, remainingPermissions) { remainingGranted ->
-                        onResult(listOf(firstDeniedPermission) + remainingGranted)
-                    }
-                    return@let
+            // 如果第一个权限被授予，继续请求剩余的权限
+            val remainingPermissions = if (granted) denied.drop(1) else emptyList()
+            if (remainingPermissions.isNotEmpty()) {
+                // 递归请求剩余权限
+                requestPermissions(activity, remainingPermissions) { remainingGranted ->
+                    onResult(listOf(firstDeniedPermission) + remainingGranted)
                 }
             } else {
-                emptyList()
+                onResult(if (granted) listOf(firstDeniedPermission) else emptyList())
+                pendingCallbacks.remove(firstDeniedPermission)
             }
-            onResult(grantedPermissions)
-            pendingCallbacks.remove(firstDeniedPermission)
         }
 
         launcher.launch(firstDeniedPermission)
@@ -338,6 +332,6 @@ object PermissionGroups {
             Manifest.permission.REQUEST_INSTALL_PACKAGES
         } else {
             ""
-        }.filter { it.isNotEmpty() }
-    )
+        }
+    ).filter { it.isNotEmpty() }
 }

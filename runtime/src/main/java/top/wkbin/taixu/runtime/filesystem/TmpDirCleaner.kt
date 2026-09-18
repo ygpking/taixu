@@ -77,7 +77,7 @@ class TmpDirCleaner @Inject constructor(
 
             try {
                 // 收集所有文件及其元数据
-                val files = collectFiles(targetDir, whitelist)
+                val files = collectFiles(actualTargetDir, whitelist)
                 
                 if (files.isEmpty()) {
                     Log.i(TAG, "No files to clean in $targetDir")
