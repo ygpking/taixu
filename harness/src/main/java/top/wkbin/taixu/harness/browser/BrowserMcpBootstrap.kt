@@ -82,7 +82,7 @@ class BrowserMcpBootstrap @Inject constructor(
         runBlocking {
             top.wkbin.taixu.core.browser.BrowserPreferences(
                 defaultFamily = browserPrefs.defaultFamily().first(),
-                homeUrl = browserPrefs.homeUrl().first(),
+                homeUrl = browserPrefs.homeUrl().first().ifBlank { top.wkbin.taixu.core.browser.TaiXuNewTab.URL },
                 coBrowsingEnabled = browserPrefs.coBrowsingEnabled().first(),
                 allowRemoteConnect = browserPrefs.allowRemoteConnect().first(),
                 allowEvalJs = browserPrefs.allowEvalJs().first(),
