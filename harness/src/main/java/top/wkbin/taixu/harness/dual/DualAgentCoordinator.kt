@@ -116,9 +116,13 @@ class DualAgentCoordinator @Inject constructor(
             onStatusUpdate("规划者 (Planner) 正在深度推演…（轮次 $roundCount/$maxSteps）")
 
             // 1. 调用 Planner 生成决策
-            val plannerResult = runCatching {
+            // 注意：不能吞 CancellationException——用户点"停止"时必须向上传播取消，
+            // 否则取消被降级成 Failed 结果，链路继续走状态机（对齐 executeSingleStep 的修复）。
+            val plannerResult = try {
                 providerClient.chat(effectivePlannerModel, plannerMessages)
-            }.getOrElse { throwable ->
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (throwable: Throwable) {
                 return@withContext DualAgentOutcome.Failed(
                     message = "Planner 模型调用失败：${throwable.message}",
                     plan = steps,

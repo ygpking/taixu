@@ -9,6 +9,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -59,7 +60,8 @@ class AppUpdateManager @Inject constructor(
                 val tagName = jsonElement["tag_name"]?.jsonPrimitive?.content.orEmpty()
                 val latestVersion = tagName.removePrefix("v").trim()
                 val title = jsonElement["name"]?.jsonPrimitive?.content ?: tagName
-                val bodyText = jsonElement["body"]?.jsonPrimitive?.content.orEmpty()
+                // body 为 JSON null 时 contentOrNull 返回 null，否则 UI 会显示字面量 "null"
+                val bodyText = jsonElement["body"]?.jsonPrimitive?.contentOrNull.orEmpty()
                 val htmlUrl = jsonElement["html_url"]?.jsonPrimitive?.content ?: GITHUB_REPO_URL
                 val publishedAt = jsonElement["published_at"]?.jsonPrimitive?.content.orEmpty()
 
@@ -109,33 +111,35 @@ class AppUpdateManager @Inject constructor(
                 .get()
                 .build()
 
-            val response = httpClient.newCall(request).execute()
-            if (!response.isSuccessful) {
-                throw IllegalStateException("下载失败 HTTP ${response.code}")
-            }
-
-            val body = response.body
-            val contentLength = body.contentLength().takeIf { it > 0 }
-            val downloadDir = File(context.cacheDir, "updates").apply { mkdirs() }
-            val apkFile = File(downloadDir, "taixu-latest.apk")
-            if (apkFile.exists()) apkFile.delete()
-
-            body.byteStream().use { input ->
-                FileOutputStream(apkFile).use { output ->
-                    val buffer = ByteArray(32 * 1024)
-                    var downloaded = 0L
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        output.write(buffer, 0, read)
-                        downloaded += read
-                        onProgress(downloaded, contentLength)
-                    }
-                    output.flush()
+            // 非 2xx 时也必须归还连接到连接池，否则每次失败的更新尝试都泄漏一个连接
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    throw IllegalStateException("下载失败 HTTP ${response.code}")
                 }
-            }
 
-            apkFile
+                val body = response.body
+                val contentLength = body.contentLength().takeIf { it > 0 }
+                val downloadDir = File(context.cacheDir, "updates").apply { mkdirs() }
+                val apkFile = File(downloadDir, "taixu-latest.apk")
+                if (apkFile.exists()) apkFile.delete()
+
+                body.byteStream().use { input ->
+                    FileOutputStream(apkFile).use { output ->
+                        val buffer = ByteArray(32 * 1024)
+                        var downloaded = 0L
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            output.write(buffer, 0, read)
+                            downloaded += read
+                            onProgress(downloaded, contentLength)
+                        }
+                        output.flush()
+                    }
+                }
+
+                apkFile
+            }
         }
     }
 

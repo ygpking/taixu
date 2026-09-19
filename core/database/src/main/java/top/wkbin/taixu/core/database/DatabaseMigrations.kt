@@ -33,6 +33,53 @@ val MIGRATION_28_29 = object : Migration(28, 29) {
 }
 
 /**
+ * harness 消息存储从单表 harness_messages 迁移到树形 lanes/entries 模型。
+ *
+ * 此前 29→30 的迁移从未注册：停留在 v29 schema 的存量设备升级时 Room 找不到
+ * 迁移路径，fallbackToDestructiveMigration 会删除整库。补上该迁移后，此类设备
+ * 可正常升级；唯一代价是旧 harness_messages 行无法机械映射为 lanes/entries，
+ * 不做搬运（升级前该数据在 v29 上早已无法被当前代码读取）。
+ *
+ * DDL 必须与 schemas/30.json 的 createSql 逐字一致（含索引），否则 Room 校验
+ * 失败仍会触发破坏性回退。
+ */
+val MIGRATION_29_30 = object : Migration(29, 30) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("DROP TABLE IF EXISTS harness_messages")
+        db.execSQL(
+            """CREATE TABLE IF NOT EXISTS `harness_entries` (`sequence` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `id` TEXT NOT NULL, `sessionId` TEXT NOT NULL, `parentId` TEXT, `createdAt` INTEGER NOT NULL, `entryType` TEXT NOT NULL, `customType` TEXT, `payloadJson` TEXT NOT NULL)""",
+        )
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_harness_entries_id` ON `harness_entries` (`id`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_harness_entries_sessionId_sequence` ON `harness_entries` (`sessionId`, `sequence`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_harness_entries_sessionId_parentId` ON `harness_entries` (`sessionId`, `parentId`)")
+        db.execSQL(
+            """CREATE TABLE IF NOT EXISTS `harness_lanes` (`sessionId` TEXT NOT NULL, `name` TEXT NOT NULL, `leafId` TEXT, `currentOperationId` TEXT, `modelId` TEXT, `thinkingLevel` TEXT NOT NULL, `faulted` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`sessionId`, `name`))""",
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_harness_lanes_sessionId_currentOperationId` ON `harness_lanes` (`sessionId`, `currentOperationId`)")
+        db.execSQL(
+            """CREATE TABLE IF NOT EXISTS `harness_operations` (`id` TEXT NOT NULL, `sessionId` TEXT NOT NULL, `laneName` TEXT NOT NULL, `kind` TEXT NOT NULL, `status` TEXT NOT NULL, `phase` TEXT NOT NULL, `startedAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `startLeafId` TEXT, `stateJson` TEXT NOT NULL, `pendingEffectKind` TEXT, `pendingEffectId` TEXT, `replayPolicy` TEXT, `attempt` INTEGER NOT NULL, PRIMARY KEY(`id`))""",
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_harness_operations_sessionId_laneName` ON `harness_operations` (`sessionId`, `laneName`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_harness_operations_status_updatedAt` ON `harness_operations` (`status`, `updatedAt`)")
+        db.execSQL(
+            """CREATE TABLE IF NOT EXISTS `harness_queue_items` (`id` TEXT NOT NULL, `sessionId` TEXT NOT NULL, `laneName` TEXT NOT NULL, `operationId` TEXT, `queueType` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `payloadJson` TEXT NOT NULL, PRIMARY KEY(`id`))""",
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_harness_queue_items_sessionId_laneName_queueType_createdAt` ON `harness_queue_items` (`sessionId`, `laneName`, `queueType`, `createdAt`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_harness_queue_items_operationId` ON `harness_queue_items` (`operationId`)")
+        db.execSQL(
+            """CREATE TABLE IF NOT EXISTS `harness_usage` (`sequence` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `id` TEXT NOT NULL, `sessionId` TEXT NOT NULL, `operationId` TEXT, `entryId` TEXT, `provider` TEXT, `modelId` TEXT, `inputTokens` INTEGER NOT NULL, `outputTokens` INTEGER NOT NULL, `reasoningTokens` INTEGER NOT NULL, `cacheReadTokens` INTEGER NOT NULL, `cacheWriteTokens` INTEGER NOT NULL, `estimatedCostUsd` REAL, `adjustment` INTEGER NOT NULL, `detailsJson` TEXT, `createdAt` INTEGER NOT NULL)""",
+        )
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_harness_usage_id` ON `harness_usage` (`id`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_harness_usage_sessionId_sequence` ON `harness_usage` (`sessionId`, `sequence`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_harness_usage_operationId` ON `harness_usage` (`operationId`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_harness_usage_entryId` ON `harness_usage` (`entryId`)")
+        db.execSQL(
+            """CREATE TABLE IF NOT EXISTS `harness_lane_results` (`sessionId` TEXT NOT NULL, `laneName` TEXT NOT NULL, `operationId` TEXT NOT NULL, `outcome` TEXT NOT NULL, `finalEntryId` TEXT, `detailsJson` TEXT, `completedAt` INTEGER NOT NULL, PRIMARY KEY(`sessionId`, `laneName`))""",
+        )
+    }
+}
+
+/**
  * 审批请求绑定 harness operation 与参数摘要，并引入过期时间：
  * - operationId：审批所属运行，恢复执行前校验归属，防跨运行重放；
  * - argsHash：argumentsJson 的 SHA-256，防"批准旧参数、执行新参数"；
@@ -50,6 +97,13 @@ val MIGRATION_30_31 = object : Migration(30, 31) {
 val MIGRATION_31_32 = object : Migration(31, 32) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.execSQL("ALTER TABLE harness_models ADD COLUMN responseApiEnabled INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
+/** v32→v33 仅有 agent_skills 新增 resourcePath 列（此前迁移缺失，v32 存量库升级会整库销毁）。 */
+val MIGRATION_32_33 = object : Migration(32, 33) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE agent_skills ADD COLUMN resourcePath TEXT")
     }
 }
 

@@ -256,6 +256,9 @@ class LinuxRuntimeImpl @Inject constructor(
                     }
                     AppResult.Failure(error ?: AppError(ErrorCode.INSTALLATION_FAILED, "重置 Linux 环境失败"))
                 }
+            } catch (cancellation: CancellationException) {
+                // 重置是长耗时任务，用户退出页面/取消时必须向上传播，不能降级成"正常失败"
+                throw cancellation
             } catch (throwable: Throwable) {
                 logger.e("Failed to reset sandbox distro $safeId", throwable)
                 AppResult.Failure(AppError(ErrorCode.IO, "重置 Linux 环境失败：${throwable.message}", throwable))

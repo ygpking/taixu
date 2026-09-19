@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -96,7 +97,10 @@ class ToolManager @Inject constructor(
 ) {
     private val managerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val installMutex = Mutex()
-    private val installJobs = mutableMapOf<String, Job>()
+    // startInstall/cancelInstall（主线程）与 syncRegistry（启动 IO 协程）无锁读写此表，
+    // 而写入发生在 installMutex 下的 IO 协程；mutableMapOf 并发下会抛
+    // ConcurrentModificationException，必须用并发容器。
+    private val installJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
     private val _installProgress = MutableStateFlow<Map<String, ToolInstallProgress>>(emptyMap())
     val installProgress: StateFlow<Map<String, ToolInstallProgress>> = _installProgress.asStateFlow()
     private val _verifications = MutableStateFlow<Map<String, ToolVerification>>(emptyMap())
@@ -904,7 +908,7 @@ class ToolManager @Inject constructor(
                 safeStderr.ifBlank { safeStdout }.trim().ifBlank { "命令退出码 ${result.exitCode}" }
             },
         )
-        _verifications.value = _verifications.value + (toolId to verification)
+        _verifications.update { it + (toolId to verification) }
         installLogRepository.insert(
             InstallLogEntity(
                 distroId = currentDistroId(),
@@ -998,7 +1002,7 @@ class ToolManager @Inject constructor(
     }
 
     private fun updateProgress(progress: ToolInstallProgress) {
-        _installProgress.value = _installProgress.value + (progress.toolId to progress)
+        _installProgress.update { it + (progress.toolId to progress) }
     }
 
     private fun failureState(

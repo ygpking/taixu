@@ -2,6 +2,7 @@ package top.wkbin.taixu.harness.compaction
 
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
@@ -252,7 +253,9 @@ class CompactionSummarizer @Inject constructor(
             maxTokens = minOf(model.maxTokens ?: DEFAULT_SUMMARY_MAX_TOKENS, DEFAULT_SUMMARY_MAX_TOKENS),
             pureChatMode = false,
         )
-        val result = runCatching {
+        // 不能吞 CancellationException：压缩发生在请求组装路径内，用户"停止"后若在此
+        // 被降级为 null→机械摘要，取消语义下仍会把压缩条目落库（对齐 CompactionManager 的处理）。
+        val result = try {
             providerClient.chat(
                 summaryModel,
                 listOf(
@@ -260,7 +263,11 @@ class CompactionSummarizer @Inject constructor(
                     ApiMessage(role = "user", content = prompt),
                 ),
             )
-        }.getOrNull() ?: return null
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (throwable: Throwable) {
+            null
+        } ?: return null
         val body = result.content?.trim().orEmpty()
         if (body.length < MIN_SUMMARY_CHARS) return null
         val files = FileOperations.parseFromSummary(previousSummaries.joinToString("\n\n"))

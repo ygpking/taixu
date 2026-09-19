@@ -124,6 +124,8 @@ internal class ResponsesApi(
                 // item_id -> 工具调用累积器（Responses 以 item_id 区分同一轮多个 function_call）
                 val toolCalls = mutableMapOf<String, ToolCallAccumulator>()
                 var usage = ChatUsage()
+                // 收尾标记：response.completed 见到才算完整流（干净 EOF 未见到=对端中途断流）
+                var sawCompleted = false
                 while (true) {
                     val line = source.readUtf8Line() ?: break
                     if (!line.startsWith("data:")) continue
@@ -194,6 +196,7 @@ internal class ResponsesApi(
                         "response.completed" -> {
                             ((event["response"] as? JsonObject)?.get("usage") as? JsonObject)
                                 ?.let { usage = parseUsage(it) }
+                            sawCompleted = true
                             break
                         }
                         "response.failed" -> {
@@ -223,8 +226,11 @@ internal class ResponsesApi(
                     reasoningContent = demuxer.fullReasoning.toString().ifEmpty { null },
                     usage = usage,
                 )
-                // 流式成功收尾才落缓存（失败不缓存）：相同请求下次重发可直接命中回放。
-                requestCache.put(cacheKey, streamResult)
+                // 完整收尾（response.completed）才落缓存：截断流不缓存，
+                // 避免把残缺回复回放给重试/下一轮（对齐 Anthropic/Chat 两条路径）。
+                if (sawCompleted) {
+                    requestCache.put(cacheKey, streamResult)
+                }
                 streamResult
             }
         } catch (io: IOException) {

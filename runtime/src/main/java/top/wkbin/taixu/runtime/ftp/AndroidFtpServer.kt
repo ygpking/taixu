@@ -286,8 +286,11 @@ internal class FtpSession(
         }
 
         val expectedUser = config.username.ifBlank { "root" }
-        val passwordMatches = config.password.isNullOrBlank() || pass == config.password
-        val userMatches = user.equals(expectedUser, ignoreCase = true) || user.equals("root", ignoreCase = true)
+        // 安全边界：密码未设置（null/blank）时必须拒绝一切密码登录。
+        // 此前 isNullOrBlank() 直接放行，等于向局域网开放无密码的 rootfs 读写；
+        // 想免密使用应显式开启 anonymousEnabled，而不是漏设密码。
+        val passwordMatches = !config.password.isNullOrBlank() && pass == config.password
+        val userMatches = user.equals(expectedUser, ignoreCase = true)
 
         if (userMatches && passwordMatches) {
             authenticated = true
