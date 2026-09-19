@@ -251,11 +251,10 @@ fun ChatScreen(
 
     // 性能：不再直接依赖 `messages` 整个 list 引用（流式输出时每个 token 块都会换新引用，
     // 导致这几处 O(n) 派生每帧重算）。改为依赖「由消息列表推导出的、真正影响结果的稳定键」。
-    val toolResults = remember(
-        // ToolResult 的数量 + 末条内容长度：只要没有新增/更新工具结果，就不需要重算映射。
-        messages.count { it is ToolResult },
-        messages.lastOrNull { it is ToolResult }?.let { (it as ToolResult).output.length },
-    ) {
+    // 直接依赖 messages：此前的「数量+末条长度」键假设只有末条 ToolResult 会原地
+    // 更新——并行工具调用时（A 先发、B 后发）A 的后续更新不会重建映射，工具卡
+    // 持续显示旧输出直到下一条消息。正确性优先于该键省下的 O(n)。
+    val toolResults = remember(messages) {
         messages.filterIsInstance<ToolResult>().associateBy { it.toolCallId }
     }
     val lastAssistantMessageId = remember(

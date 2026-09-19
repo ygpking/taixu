@@ -65,8 +65,18 @@ class RootfsInstaller @Inject constructor(
     ): AppResult<File> = withContext(Dispatchers.IO) {
         val distroId = distribution.id.lowercase()
         val distroTargetDir = pathManager.rootfsDir(distroId)
-        val staging = prepareStaging(distroId)
-        recoverInterruptedUpdate(distroId)
+        // prepareStaging/recoverInterruptedUpdate 会抛 IO/IllegalState，放进 try
+        // 才能被包装成 AppResult.Failure（调用方 installDistro 无兜底 catch）
+        val staging = try {
+            val s = prepareStaging(distroId)
+            recoverInterruptedUpdate(distroId)
+            s
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (throwable: Throwable) {
+            logger.e("Failed to prepare staging for $distroId", throwable)
+            return@withContext failure("OCI RootFS ($distroId) 安装失败", throwable)
+        }
         try {
             val image = pullInto(distribution, route, staging, onProgress)
             rootfsValidator.validate(staging)
@@ -292,7 +302,13 @@ class RootfsInstaller @Inject constructor(
                     val fileName = parts[1]
                     val mediaType = parts[2]
                     val folder = if (type == "lxc") File(pathManager.cacheDir, "lxc_images") else File(pathManager.cacheDir, "oci_layers")
-                    val file = File(folder, fileName)
+                    var file = File(folder, fileName)
+                    if (!file.isFile || file.length() == 0L) {
+                        // 兼容修复前写入的错误通道标记：到另一通道目录再找一次
+                        val other = if (type == "lxc") File(pathManager.cacheDir, "oci_layers") else File(pathManager.cacheDir, "lxc_images")
+                        val candidate = File(other, fileName)
+                        if (candidate.isFile && candidate.length() > 0) file = candidate
+                    }
                     if (file.isFile && file.length() > 0) Pair(file, mediaType) else null
                 } else null
             }
@@ -322,9 +338,12 @@ class RootfsInstaller @Inject constructor(
     ): OciRegistryClient.ImageInfo {
         val distroId = distribution.id.lowercase().trim()
         val recordedLayers = mutableListOf<String>()
+        // 当前下载通道标记：lxc 兜底下载的 mediaType 是 application/x-tar.xz（不含
+        // "lxc" 字样），此前全部被记成 "oci:"——离线恢复时去 oci_layers 目录找文件
+        // （实际在 lxc_images），0 流量恢复对 lxc 渠道安装的发行版永不命中。
+        var currentChannel = "oci"
         val applyLayer: suspend (File, String) -> Unit = { layer, mediaType ->
-            val type = if (mediaType.contains("lxc")) "lxc" else "oci"
-            recordedLayers.add("$type:${layer.name}:$mediaType")
+            recordedLayers.add("$currentChannel:${layer.name}:$mediaType")
             layer.inputStream().use { raw ->
                 val stream = when {
                     mediaType.contains("zstd") -> ZstdInputStream(raw)
@@ -336,6 +355,7 @@ class RootfsInstaller @Inject constructor(
             }
         }
         val info = try {
+            currentChannel = "oci"
             ociRegistryClient.pull(
                 distribution,
                 route,
@@ -362,6 +382,7 @@ class RootfsInstaller @Inject constructor(
             recordedLayers.clear()
             SafeFileTree.delete(staging)
             staging.mkdirs()
+            currentChannel = "lxc"
             val version = lxcImagesClient.pull(
                 distribution,
                 File(pathManager.cacheDir, "lxc_images"),

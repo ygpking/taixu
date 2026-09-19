@@ -958,6 +958,8 @@ class SettingsDataStore @Inject constructor(
     }
 
     suspend fun setToolAccessToken(distroId: String, toolId: String, token: String?) {
+        // 与 ssh* 函数口径一致：id 统一 trim+lowercase 后进 key，避免大小写变体产生孤儿键
+        val distroId = distroId.trim().lowercase()
         val key = stringPreferencesKey("tool_${distroId}_${toolId}_access_token")
         context.settingsDataStore.edit { prefs ->
             if (token == null) {

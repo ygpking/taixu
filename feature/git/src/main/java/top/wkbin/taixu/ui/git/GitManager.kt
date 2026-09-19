@@ -96,7 +96,10 @@ class GitManager @Inject constructor(
 
     private fun shellEscape(value: String): String {
         val trimmed = value.trim()
-        return if (trimmed.isEmpty() || trimmed.any { it.isWhitespace() }) "\"$trimmed\"" else trimmed
+        // POSIX sh：单引号包裹 + 内部单引号拆成 '\''，任意路径（含 $、`、"、空格）都安全。
+        // 此前双引号只处理空格，不转义 $/`/"——特殊项目名可向沙箱 shell 注入命令。
+        if (trimmed.isEmpty()) return "''"
+        return "'" + trimmed.replace("'", "'\\''") + "'"
     }
 
     // ------------------------------------------------------------------

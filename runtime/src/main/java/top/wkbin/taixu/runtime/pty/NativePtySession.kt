@@ -105,13 +105,25 @@ class NativePtySession(
 
     override suspend fun close() = withContext(Dispatchers.IO) {
         if (closed.compareAndSet(false, true)) {
-            readerJob.cancel()
-            sessionScope.cancel()
-            // SIGHUP 让 shell 优雅退出；proot --kill-on-exit 负责整棵进程树。
+            // SIGHUP 给 shell 300ms 优雅退出窗口（trap/子进程清理需要时间）；
+            // 此前 SIGHUP 与 SIGKILL 之间零间隔，优雅路径形同虚设。
             NativePty.killPid(childPid, 1)
+            var exited = false
+            repeat(6) {
+                if (!exited) {
+                    exited = NativePty.killPid(childPid, 0) != 0
+                    if (!exited) kotlinx.coroutines.delay(50)
+                }
+            }
+            if (!exited) NativePty.killPid(childPid, 9)
             // 硬停止兜底：setsid 后 -pid 覆盖整个会话进程组。
-            NativePty.killPid(childPid, 9)
             NativePty.waitPid(childPid)
+            // 子进程已死 → master 读端以 EOF/EIO 返回，reader 协程自然退出；
+            // 此前在 reader 仍可能阻塞在 readFd 时就 closeFd（关闭 fd 不会唤醒
+            // 进行中的 read，复用同号 fd 的残余读会读到无关数据）。
+            readerJob.cancel()
+            kotlinx.coroutines.withTimeoutOrNull(500) { readerJob.join() }
+            sessionScope.cancel()
             NativePty.closeFd(masterFd)
             outputChannel.close()
             runCatching { cleanupCallback() }
