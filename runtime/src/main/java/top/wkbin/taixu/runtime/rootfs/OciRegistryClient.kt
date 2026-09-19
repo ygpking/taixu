@@ -141,7 +141,8 @@ class OciRegistryClient @Inject constructor(
         //         已校验缓存的层直接命中；进度按各层已下载字节汇总）
         data class LayerDownload(val file: File, val mediaType: String)
         val semaphore = Semaphore(MAX_PARALLEL_LAYER_DOWNLOADS)
-        val downloaded = LongArray(layers.size)
+        // 多协程并发写各层进度，LongArray 的 sum() 读取无原子性（进度可能瞬时回退）
+        val downloaded = java.util.concurrent.atomic.AtomicLongArray(layers.size)
         val blobs = coroutineScope {
             layers.mapIndexed { index, element ->
                 async(Dispatchers.IO) {
@@ -150,8 +151,10 @@ class OciRegistryClient @Inject constructor(
                         val layerDigest = layer.getValue("digest").jsonPrimitive.content
                         val mediaType = layer["mediaType"]?.jsonPrimitive?.content.orEmpty()
                         val blob = downloadBlob(endpoint, repo, layerDigest, token, cacheDir) { current ->
-                            downloaded[index] = current
-                            onProgress(DownloadProgress(downloaded.sum(), total.takeIf { it > 0 }))
+                            downloaded.set(index, current)
+                            var sum = 0L
+                            for (i in 0 until layers.size) sum += downloaded.get(i)
+                            onProgress(DownloadProgress(sum, total.takeIf { it > 0 }))
                         }
                         LayerDownload(blob, mediaType)
                     }

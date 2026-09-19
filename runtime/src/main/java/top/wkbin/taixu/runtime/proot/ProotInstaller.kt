@@ -79,8 +79,15 @@ class ProotInstaller @Inject constructor(
                 throwable,
             )
         }
+        // --version 输出很小，先限时等退出再读输出（反序时 readText 可能在
+        // 进程挂死时永久阻塞，把 initialize 卡死）
+        val exited = process.waitFor(15, java.util.concurrent.TimeUnit.SECONDS)
+        if (!exited) {
+            process.destroyForcibly()
+            throw IllegalStateException("PRoot 主程序校验超时（15s）：${file.absolutePath}")
+        }
         val output = process.inputStream.bufferedReader().use { it.readText() }
-        val exitCode = process.waitFor()
+        val exitCode = process.exitValue()
         require(exitCode == 0) {
             "PRoot 主程序执行失败（exit=$exitCode）：${output.trim().ifBlank { "无输出" }}"
         }

@@ -77,11 +77,16 @@ class GitCredentialsStore @Inject constructor(
             val url = remoteUrl.trim()
             return when {
                 url.startsWith("http://", true) || url.startsWith("https://", true) ->
-                    url.substringAfter("//").substringBefore('/').substringBefore(':').substringBefore('@')
+                    // user:token@host 形式须先剥掉 userinfo 再取端口前缀，否则会把 user 当 host
+                    url.substringAfter("//").substringBefore('/')
+                        .let { it.substringAfterLast('@', it) }
+                        .substringBefore(':')
                 url.startsWith("git@") ->
                     url.substringAfter("git@").substringBefore(':').substringBefore('/')
                 url.startsWith("ssh://") ->
-                    url.substringAfter("//").substringBefore('/').substringBefore(':').substringBefore('@')
+                    url.substringAfter("//").substringBefore('/')
+                        .let { it.substringAfterLast('@', it) }
+                        .substringBefore(':')
                 else -> url.substringBefore('/').substringBefore(':')
             }.lowercase().ifBlank { url }
         }

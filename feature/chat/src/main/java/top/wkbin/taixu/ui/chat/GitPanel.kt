@@ -694,7 +694,7 @@ private fun GitDiffView(state: GitPanelState, onBack: () -> Unit) {
 
 @Composable
 private fun DiffText(text: String) {
-    val lines = text.lines()
+    val lines = remember(text) { text.lines() }
     LazyColumn(Modifier.fillMaxSize()) {
         items(lines.size) { i ->
             val line = lines[i]

@@ -492,19 +492,26 @@ class WorkspaceViewModel @Inject constructor(
         refreshDirectory()
     }
 
+    /** 目录导航自增序号：连续快速导航时，先发出的 listFiles 可能后返回，
+     *  不加守卫会把旧目录内容覆盖进新路径的列表（UI 路径与列表错位）。 */
+    private var directoryRefreshSeq = 0
+
     fun refreshDirectory() {
         val proj = _selectedProject.value ?: return
         val path = _currentPath.value
+        val seq = ++directoryRefreshSeq
         viewModelScope.launch {
             _loadingFiles.value = true
             refreshSharedStorageAccessLimited(proj)
             val result = workspaceManager.listFiles(proj, path)
-            if (result.isSuccess) {
-                _fileItems.value = result.getOrNull().orEmpty()
-            } else {
-                notify(result.errorOrNull()?.message ?: context.getString(R.string.workspace_read_directory_failed), isError = true)
+            if (seq == directoryRefreshSeq) {
+                if (result.isSuccess) {
+                    _fileItems.value = result.getOrNull().orEmpty()
+                } else {
+                    notify(result.errorOrNull()?.message ?: context.getString(R.string.workspace_read_directory_failed), isError = true)
+                }
+                _loadingFiles.value = false
             }
-            _loadingFiles.value = false
         }
     }
 
@@ -606,14 +613,18 @@ class WorkspaceViewModel @Inject constructor(
 
     // ==================== 编辑器操作 ====================
 
+    private var openedFileSeq = 0
+
     fun openFile(projectName: String, relativePath: String) {
         _selectedProject.value = projectName
         _openedFilePath.value = relativePath
         val ext = relativePath.substringAfterLast('.', "")
         _openedFileExtension.value = ext
+        val seq = ++openedFileSeq
         viewModelScope.launch {
             _loadingFiles.value = true
             val result = workspaceManager.readFile(projectName, relativePath)
+            if (seq != openedFileSeq) return@launch
             if (result.isSuccess) {
                 val content = result.getOrNull().orEmpty()
                 originalContent = content

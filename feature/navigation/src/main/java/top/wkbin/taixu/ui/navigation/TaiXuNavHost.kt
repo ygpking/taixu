@@ -135,12 +135,13 @@ fun TaiXuNavHost(
     var lastNavTime by remember { mutableLongStateOf(0L) }
     var navTransitionLockedUntil by remember { mutableLongStateOf(0L) }
 
+    // 墙钟可被用户回拨导致导航长时间锁死，改用单调时钟
     fun isNavTransitionLocked(): Boolean =
-        System.currentTimeMillis() < navTransitionLockedUntil
+        android.os.SystemClock.elapsedRealtime() < navTransitionLockedUntil
 
     fun lockNavTransition() {
         navTransitionLockedUntil =
-            System.currentTimeMillis() + NAV_TRANSITION_LOCK_MS
+            android.os.SystemClock.elapsedRealtime() + NAV_TRANSITION_LOCK_MS
     }
 
     /** Programmatic stack mutation (bus / workflow) — still transition-locks. */
@@ -626,7 +627,7 @@ fun TaiXuNavHost(
             }
             entry<TerminalDestination> { destination ->
                 GuardedEntry(destination) {
-                    TerminalScreen(onBack = ::popBack, project = destination.project)
+                    TerminalScreen(onBack = ::popBack, project = destination.project, toolId = destination.toolId)
                 }
             }
             entry<BrowserDestination> {

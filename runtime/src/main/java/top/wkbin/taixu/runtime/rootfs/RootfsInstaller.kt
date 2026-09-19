@@ -31,9 +31,16 @@ class RootfsInstaller @Inject constructor(
     private val ociRegistryClient: OciRegistryClient,
     private val lxcImagesClient: LxcImagesClient,
 ) {
-    private var pendingUpdateBackup: File? = null
-    private var pendingUpdateVersion: String? = null
-    private var pendingUpdateDigest: String? = null
+    /** 更新中间态，按 distroId 键控。此前是全局"最后一家"字段：A 发行版的更新在
+     *  replaceRootfs 之后、finalize 之前失败时，其 pendingUpdateBackup 会被随后
+     *  B 发行版的失败回滚误用（把 A 的备份目录 rename 成 B 的 rootfs）。 */
+    private data class PendingUpdate(
+        val backup: File? = null,
+        val version: String? = null,
+        val digest: String? = null,
+    )
+
+    private val pendingUpdates = java.util.concurrent.ConcurrentHashMap<String, PendingUpdate>()
 
     suspend fun checkForUpdate(
         distribution: DistributionSpec,
@@ -148,8 +155,8 @@ class RootfsInstaller @Inject constructor(
             rootfsValidator.validate(staging)
             preserveUserDirectories(distroTargetDir, staging)
             replaceRootfs(distroId, staging, retainBackup = true)
-            pendingUpdateVersion = image.version
-            pendingUpdateDigest = image.digest
+            val current = pendingUpdates[distroId] ?: PendingUpdate()
+            pendingUpdates[distroId] = current.copy(version = image.version, digest = image.digest)
             pathManager.rootfsUpdatePendingMarker(distroId).writeText(
                 "rootfs-version=${image.version}\nrootfs-digest=${image.digest}\n",
             )
@@ -159,7 +166,7 @@ class RootfsInstaller @Inject constructor(
             throw cancellation
         } catch (throwable: Throwable) {
             SafeFileTree.delete(pathManager.stagingRootfsDir(distroId))
-            if (pendingUpdateBackup != null || pathManager.rootfsPreviousDir(distroId).exists()) {
+            if (pendingUpdates[distroId]?.backup != null || pathManager.rootfsPreviousDir(distroId).exists()) {
                 rollbackPendingUpdate(distroId)
             }
             logger.e("Failed to update OCI rootfs for $distroId", throwable)
@@ -184,7 +191,7 @@ class RootfsInstaller @Inject constructor(
     }
 
     suspend fun rollbackPendingUpdate(distroId: String = "ubuntu"): Boolean = withContext(NonCancellable + Dispatchers.IO) {
-        val backup = pendingUpdateBackup ?: pathManager.rootfsPreviousDir(distroId).takeIf { it.exists() }
+        val backup = pendingUpdates[distroId]?.backup ?: pathManager.rootfsPreviousDir(distroId).takeIf { it.exists() }
             ?: return@withContext false
         val rootfs = pathManager.rootfsDir(distroId)
         if (rootfs.exists()) {
@@ -201,22 +208,19 @@ class RootfsInstaller @Inject constructor(
         } else {
             check(backup.renameTo(rootfs)) { "无法恢复旧 RootFS（旧版本仍保留在 ${backup.path}）" }
         }
-        pendingUpdateBackup = null
-        pendingUpdateVersion = null
-        pendingUpdateDigest = null
+        pendingUpdates.remove(distroId)
         pathManager.invalidateDistroSizeCache(distroId)
         pathManager.rootfsUpdatePendingMarker(distroId).delete()
         true
     }
 
     suspend fun finalizePendingUpdate(distroId: String = "ubuntu") = withContext(NonCancellable + Dispatchers.IO) {
-        pendingUpdateVersion?.let {
-            markInstalled(distroId, OciRegistryClient.ImageInfo(it, pendingUpdateDigest.orEmpty()))
+        val pending = pendingUpdates[distroId]
+        pending?.version?.let {
+            markInstalled(distroId, OciRegistryClient.ImageInfo(it, pending.digest.orEmpty()))
         }
-        pendingUpdateBackup?.takeIf { it.exists() }?.let(SafeFileTree::delete)
-        pendingUpdateBackup = null
-        pendingUpdateVersion = null
-        pendingUpdateDigest = null
+        pending?.backup?.takeIf { it.exists() }?.let(SafeFileTree::delete)
+        pendingUpdates.remove(distroId)
         // 更新完成后 distro 体积已变化，作废旧快照，下次展示时重建缓存
         pathManager.invalidateDistroSizeCache(distroId)
         pathManager.rootfsUpdatePendingMarker(distroId).delete()
@@ -387,7 +391,10 @@ class RootfsInstaller @Inject constructor(
             }
             error("无法启用新 RootFS")
         }
-        if (retainBackup) pendingUpdateBackup = backup else SafeFileTree.delete(backup)
+        if (retainBackup) {
+            val current = pendingUpdates[distroId] ?: PendingUpdate()
+            pendingUpdates[distroId] = current.copy(backup = backup)
+        } else SafeFileTree.delete(backup)
     }
 
     private fun preserveUserDirectories(oldRootfs: File, newRootfs: File) {
