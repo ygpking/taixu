@@ -364,6 +364,7 @@ class HarnessToolRoundRunner @Inject constructor(
             HarnessTool.HISTORY_SEARCH,
             HarnessTool.HISTORY_READ,
             HarnessTool.LOAD_RULE,
+            HarnessTool.LOAD_SKILL,
             HarnessTool.MEMORY,
             HarnessTool.PLAN,
             HarnessTool.SCRATCHPAD,

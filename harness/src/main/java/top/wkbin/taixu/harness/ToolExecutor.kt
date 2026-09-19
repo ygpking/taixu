@@ -68,6 +68,7 @@ class ToolExecutor @Inject constructor(
     private val dualAgentCoordinator: top.wkbin.taixu.harness.dual.DualAgentCoordinator? = null,
     private val embeddedAdbManager: EmbeddedAdbManager? = null,
     private val workflowSignals: top.wkbin.taixu.harness.workflow.WorkflowSignalBus? = null,
+    private val skillRepository: top.wkbin.taixu.core.database.AgentSkillRepository? = null,
 ) {
     @Inject
     lateinit var settingsDataStore: AgentPreferences
@@ -235,6 +236,34 @@ class ToolExecutor @Inject constructor(
                 subagentOrchestrator?.executeSubagents(args, sessionId) ?: (false to "未初始化子智能体编排器")
             }
             HarnessTool.MCP -> mcpManager?.executeTool(rawToolName ?: "mcp", args, workspace) ?: (false to "未初始化 MCP 管理器")
+            HarnessTool.LOAD_SKILL -> {
+                // 借鉴 OpenMinis 的按需技能加载：目录（元数据）常驻系统提示，
+                // 命中后由模型主动拉取完整指导规则，避免全部正文常驻撑爆上下文。
+                val query = requireString(args, "name").trim().trimStart('/')
+                val skills = skillRepository?.activeSkills?.first().orEmpty()
+                if (skills.isEmpty()) {
+                    false to "当前没有已启用的技能。请提示用户到「设置 → 智能体」启用技能后重试。"
+                } else {
+                    val queryLower = query.lowercase()
+                    val matched = skills.firstOrNull { skill ->
+                        val candidates = setOf(
+                            skill.name.lowercase(),
+                            skill.id.lowercase(),
+                            skill.triggerCommand?.removePrefix("/")?.lowercase().orEmpty(),
+                        )
+                        queryLower in candidates
+                    } ?: skills.firstOrNull { skill ->
+                        skill.name.lowercase().contains(queryLower) ||
+                            (skill.triggerCommand?.removePrefix("/")?.lowercase()?.contains(queryLower) == true)
+                    }
+                    if (matched == null) {
+                        false to "未找到匹配的技能：$query。可用技能：${skills.joinToString("、") { it.name }}"
+                    } else {
+                        true to "【技能已加载：${matched.name}】(category=${matched.category})\n" +
+                            matched.systemPrompt.trim()
+                    }
+                }
+            }
             HarnessTool.LOAD_RULE -> {
                 val rule = requireString(args, "rule")
                 val content = promptRouter?.loadRule(rule)

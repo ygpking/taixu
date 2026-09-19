@@ -1219,6 +1219,17 @@ class ProviderClient @Inject constructor(
         val TOOLS: List<ApiToolDefinition> = listOf(
             ApiToolDefinition(
                 function = ApiFunctionDefinition(
+                    name = "load_skill",
+                    description = "按需加载技能（Skill）的完整说明。系统提示末尾的「可用技能」目录只列出名称与适用场景；" +
+                        "当用户请求与某个技能的描述匹配时，先用本工具加载其完整指导规则与资源路径，再按说明执行。" +
+                        "用户已 @提及 的技能会自动生效，无需重复加载。只读。",
+                    parameters = Json.parseToJsonElement(
+                        """{"type":"object","properties":{"name":{"type":"string","description":"技能名称或触发命令（不含 / 前缀），须与目录中列出的一致"}},"required":["name"]}""",
+                    ).jsonObject,
+                ),
+            ),
+            ApiToolDefinition(
+                function = ApiFunctionDefinition(
                     name = "build_script",
                     description = "管理工坊构建脚本并挂载到项目。新旧依赖不兼容时，先检查项目 Gradle/Flutter 配置，再 create 脚本并 bind 当前项目。脚本接口：第 1 个参数是项目目录；Android 第 2 个参数是 Gradle task；Flutter 第 2 个参数是完整 build 参数。支持 list/get/create/update/delete/bind/unbind。",
                     parameters = Json.parseToJsonElement(

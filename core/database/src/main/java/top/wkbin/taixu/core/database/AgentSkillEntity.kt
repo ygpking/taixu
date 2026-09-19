@@ -122,12 +122,14 @@ class AgentSkillRepository @Inject constructor(
     private suspend fun registerDir(dir: File, promptFile: File, guestPath: String, knownPaths: MutableSet<String>, imported: MutableList<AgentSkill>) {
         val markdown = runCatching { promptFile.readText().trim() }.getOrNull()
         if (markdown.isNullOrBlank()) return
+        val metadata = parseFrontmatter(markdown)
         val skill = AgentSkill(
             id = "custom_" + UUID.randomUUID().toString().take(8),
-            name = extractSkillMetadata(markdown, "name")
+            name = metadata["name"]?.let(::normalizeSkillName)
                 ?: markdown.lineSequence().firstOrNull { it.startsWith("# ") }?.removePrefix("# ")?.trim()
                 ?: dir.name,
-            description = extractSkillMetadata(markdown, "description") ?: "从目录自动发现的 Skill",
+            description = metadata["description"]?.takeIf { it.isNotBlank() }
+                ?.take(MAX_DESCRIPTION_CHARS) ?: "从目录自动发现的 Skill",
             systemPrompt = markdown + "\n\n【Skill 资源目录】$guestPath\n如需执行该 Skill 附带的脚本，请先检查脚本内容与参数，再从此目录调用。",
             isBuiltin = false,
             category = "自定义",
@@ -148,14 +150,64 @@ class AgentSkillRepository @Inject constructor(
         /** Skill 目录的提示词文件名（小写），供导入与扫描逻辑统一判定。 */
         val SKILL_PROMPT_FILE_NAMES = setOf("skill.md", "prompt.md")
         private const val MAX_SCAN_DEPTH = 6
+        private const val MAX_DESCRIPTION_CHARS = 1024
 
         /** 从 SKILL.md 的 YAML frontmatter 中提取 name / description 等元数据。 */
-        fun extractSkillMetadata(markdown: String, key: String): String? {
-            if (!markdown.startsWith("---")) return null
-            return markdown.lineSequence().drop(1).takeWhile { it.trim() != "---" }
-                .firstOrNull { it.substringBefore(':').trim().equals(key, ignoreCase = true) }
-                ?.substringAfter(':')?.trim()?.trim('"', '\'')?.takeIf { it.isNotBlank() }
+        fun extractSkillMetadata(markdown: String, key: String): String? =
+            parseFrontmatter(markdown)[key.lowercase()]?.takeIf { it.isNotBlank() }
+
+        /**
+         * 解析 SKILL.md 的 YAML frontmatter 为扁平 key→value 映射。
+         *
+         * 对齐 Claude Code / OpenMinis 生态 SKILL.md 的常见形态：
+         * - UTF-8 BOM 与 CRLF 行尾容错（Windows 记事本保存的文件此前整体解析失败）；
+         * - key 大小写不敏感，值可带单/双引号；
+         * - `description: >` / `|-` 等多行折叠块（官方技能模板常见写法，此前解析为空）；
+         * - 未加引号值尾部的 `# 注释` 剥离；
+         * - 未知字段（allowed-tools / license / metadata 等）安全忽略。
+         */
+        fun parseFrontmatter(markdown: String): Map<String, String> {
+            var text = markdown
+            if (text.startsWith("\uFEFF")) text = text.substring(1)
+            if (!text.startsWith("---")) return emptyMap()
+            val lines = text.lineSequence().drop(1)
+                .takeWhile { it.trim() != "---" && it.trim() != "..." }
+                .toList()
+            val result = mutableMapOf<String, String>()
+            var index = 0
+            while (index < lines.size) {
+                val trimmed = lines[index].trim()
+                if (trimmed.isEmpty() || trimmed.startsWith("#") || !trimmed.contains(':')) {
+                    index++
+                    continue
+                }
+                val key = trimmed.substringBefore(':').trim().lowercase()
+                var value = trimmed.substringAfter(':').trim()
+                index++
+                // 折叠/字面块指示符（含 chomping 修饰：>-、|-、>+ 等）
+            if (value.startsWith(">") || value.startsWith("|")) {
+                    // 折叠/字面块标量：取后续缩进行并折叠为单行
+                    val block = StringBuilder()
+                    while (index < lines.size && (lines[index].startsWith(" ") || lines[index].startsWith("\t") || lines[index].isBlank())) {
+                        block.append(' ').append(lines[index].trim())
+                        index++
+                    }
+                    value = block.toString().trim()
+                } else {
+                    if (!value.startsWith("\"") && !value.startsWith("'")) {
+                        val comment = value.indexOf(" #")
+                        if (comment >= 0) value = value.substring(0, comment).trim()
+                    }
+                    value = value.trim('"', '\'')
+                }
+                if (key.isNotEmpty() && value.isNotEmpty()) result[key] = value
+            }
+            return result
         }
+
+        /** Claude/OpenMinis 技能名规范：小写、空白折叠为连字符、上限 64 字符。 */
+        private fun normalizeSkillName(raw: String): String =
+            raw.trim().lowercase().replace(Regex("\\s+"), "-").take(64)
     }
 }
 

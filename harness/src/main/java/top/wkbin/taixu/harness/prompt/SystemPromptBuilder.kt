@@ -71,11 +71,25 @@ class SystemPromptBuilder @Inject constructor(
         val allSkills = runCatching { skillRepository.allSkills.first() }.getOrDefault(emptyList())
         val selectedSkills = selectSkills(allSkills, mentionedNames)
 
-        val skillSection = if (selectedSkills.isNotEmpty()) {
-            "## 当前生效的专精技能指导规则 (Active Skills)\n\n" + selectedSkills.joinToString("\n\n") { skill ->
-                "### [专精技能] " + skill.name + " (" + skill.category + ")\n" + skill.systemPrompt.trim()
+        val skillSection = buildString {
+            if (selectedSkills.isNotEmpty()) {
+                append("## 当前生效的专精技能指导规则 (Active Skills)\n\n")
+                append(
+                    selectedSkills.joinToString("\n\n") { skill ->
+                        "### [专精技能] " + skill.name + " (" + skill.category + ")\n" + skill.systemPrompt.trim()
+                    },
+                )
             }
-        } else ""
+            // 借鉴 OpenMinis 的技能模型：元数据（名称+一句话描述）常驻上下文供模型
+            // 自主匹配，正文经 load_skill 工具按需加载——不再要求用户必须 @提及。
+            if (toolCallMode != ToolCallMode.DISABLED) {
+                val catalog = renderSkillCatalog(allSkills, excludeIds = selectedSkills.mapTo(mutableSetOf()) { it.id })
+                if (catalog.isNotEmpty()) {
+                    if (isNotEmpty()) append("\n\n")
+                    append(catalog)
+                }
+            }
+        }
 
         val installedTools =
             runCatching {
@@ -508,3 +522,35 @@ class SystemPromptBuilder @Inject constructor(
         }
     }
 }
+
+
+/**
+ * 可用技能目录（借鉴 OpenMinis 的技能模型）：
+ * 启用技能的「名称 + 一句话描述」以极低成本常驻系统提示，模型自主判断当前请求
+ * 是否命中某个技能，命中后调用 load_skill 拉取完整指导规则——正文不再要求
+ * 用户显式 @提及 才进入上下文。
+ *
+ * @param excludeIds 已通过 @提及/钉选注入正文的技能，不再进目录
+ */
+internal fun renderSkillCatalog(
+    allSkills: List<AgentSkill>,
+    excludeIds: Set<String>,
+): String {
+    val candidates = allSkills
+        .filter { it.isEnabled && it.id !in excludeIds && it.systemPrompt.isNotBlank() }
+        .take(MAX_CATALOG_ENTRIES)
+    if (candidates.isEmpty()) return ""
+    val lines = candidates.joinToString("\n") { skill ->
+        val desc = skill.description.replace(Regex("\\s+"), " ").trim()
+        val brief = if (desc.length > CATALOG_DESCRIPTION_CHARS) desc.take(CATALOG_DESCRIPTION_CHARS - 1) + "…" else desc
+        val trigger = skill.triggerCommand?.removePrefix("/")?.takeIf { it.isNotBlank() }?.let { "（/$it）" } ?: ""
+        "- ${skill.name}$trigger：$brief"
+    }
+    return "## 可用技能（按需加载）\n" +
+        "以下技能的完整说明未注入。当用户请求与某条描述匹配时，先调用 load_skill 工具（参数 name=技能名）" +
+        "获取完整指导规则与资源路径，再按说明执行；用户 @提及 的技能已自动生效，无需重复加载。\n" +
+        lines
+}
+
+private const val MAX_CATALOG_ENTRIES = 24
+private const val CATALOG_DESCRIPTION_CHARS = 100
