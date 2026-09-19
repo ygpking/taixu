@@ -102,8 +102,8 @@ extensions.configure<ApplicationExtension> {
         }
         release {
             manifestPlaceholders["appLabel"] = if (taiXuDevBuild) "TaiXuDev" else "太墟"
-            isMinifyEnabled = false
-            isShrinkResources = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
