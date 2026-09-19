@@ -50,6 +50,7 @@
         android:allowBackup="false"
         android:icon="@drawable/taixu_logo"
         android:label="${appLabel}"
+        android:largeHeap="true"
         android:localeConfig="@xml/taixu_locales_config"
         android:networkSecurityConfig="@xml/taixu_network_security_config"
         android:supportsRtl="true"

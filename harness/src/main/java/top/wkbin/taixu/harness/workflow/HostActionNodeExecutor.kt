@@ -20,6 +20,7 @@ import top.wkbin.taixu.core.model.workflow.WorkflowNode
 import top.wkbin.taixu.core.model.workflow.WorkflowNodeType
 import top.wkbin.taixu.core.model.workflow.WorkflowRuntimeContext
 import top.wkbin.taixu.core.model.workflow.previousOutput
+import top.wkbin.taixu.harness.capHostOutput
 import top.wkbin.taixu.runtime.LinuxRuntime
 import top.wkbin.taixu.runtime.gui.HostGuiController
 import top.wkbin.taixu.runtime.privilege.PrivilegeManager
@@ -436,7 +437,11 @@ class HostActionNodeExecutor @Inject constructor(
         return NodeExecutionOutput(
             status = if (result.success) NodeRunStatus.SUCCESS else NodeRunStatus.FAILED,
             exitCode = result.exitCode,
-            textOutput = listOf(result.stdout, result.stderr).filter { it.isNotBlank() }.joinToString("\n").trim(),
+            // dumpsys 等宿主命令输出可达数 MB：workflow 节点输出会常驻执行状态与变量表，
+            // 不截断会把 256MB 的 Java 堆直接拖爆（target footprint OOM）。
+            textOutput = capHostOutput(
+                listOf(result.stdout, result.stderr).filter { it.isNotBlank() }.joinToString("\n").trim(),
+            ),
             error = result.stderr.takeIf { !result.success }?.ifBlank { "宿主命令失败 exit=${result.exitCode}" },
         )
     }

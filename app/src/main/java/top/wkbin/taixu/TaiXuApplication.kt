@@ -3,7 +3,7 @@ package top.wkbin.taixu
 import android.app.Application
 import top.wkbin.taixu.core.common.logging.CrashReporter
 import top.wkbin.taixu.harness.HarnessLoop
-import top.wkbin.taixu.core.datastore.SettingsDataStore
+import top.wkbin.taixu.core.datastore.AppStatsPreferences
 import top.wkbin.taixu.core.database.AgentSkillRepository
 import top.wkbin.taixu.core.database.McpServerRepository
 import top.wkbin.taixu.core.database.SkillScanRoot
@@ -28,7 +28,7 @@ class TaiXuApplication : Application() {
     // 启动性能：HarnessLoop / Room 仓储的构造图很重（DAO、DataStore、Agent 引擎全家桶），
     // eager 注入会拖慢第一帧。改为 dagger.Lazy，把实际构建推迟到首个 IO 协程内。
     @Inject lateinit var harnessLoopLazy: Lazy<HarnessLoop>
-    @Inject lateinit var settingsDataStore: SettingsDataStore
+    @Inject lateinit var appStatsPreferences: AppStatsPreferences
     @Inject lateinit var agentSkillRepositoryLazy: Lazy<AgentSkillRepository>
     @Inject lateinit var mcpServerRepositoryLazy: Lazy<McpServerRepository>
     @Inject lateinit var pathManagerLazy: Lazy<top.wkbin.taixu.runtime.RuntimePathManager>
@@ -79,7 +79,7 @@ class TaiXuApplication : Application() {
                 }
                 launch { runCatching { mcpServerRepositoryLazy.get().ensureInitialized() } }
             }
-            settingsDataStore.incrementLaunchCount()
+            appStatsPreferences.incrementLaunchCount()
             // 时序门：上面的任务全部就绪后才构造 HarnessLoop——
             //  1) MCP 预设已入库：McpManager 预热（构造时触发）能读到完整 server 列表，
             //     否则首启预热读到空表，第一轮对话缺工具；

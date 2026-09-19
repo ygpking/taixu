@@ -18,6 +18,7 @@ import kotlinx.coroutines.launch
 import top.wkbin.taixu.core.browser.BrowserDescriptor
 import top.wkbin.taixu.core.browser.BrowserFamily
 import top.wkbin.taixu.core.browser.PageSnapshot
+import top.wkbin.taixu.core.browser.TaiXuNewTab
 import top.wkbin.taixu.core.datastore.BrowserPreferences
 import top.wkbin.taixu.runtime.browser.BrowserEventBus
 import top.wkbin.taixu.runtime.browser.BrowserRegistry
@@ -153,7 +154,11 @@ class BrowserViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             eventBus.url.collect { loadedUrl ->
-                if (loadedUrl.isNotBlank()) _urlInput.value = loadedUrl
+                when {
+                    // 品牌起始页：URL 栏清空显示占位符（虚拟地址对用户无导航意义）
+                    loadedUrl == TaiXuNewTab.URL -> _urlInput.value = ""
+                    loadedUrl.isNotBlank() -> _urlInput.value = loadedUrl
+                }
             }
         }
         // 共浏览开关：从 DataStore 读取并保持同步（设置页等其他入口的修改也会生效）
@@ -281,9 +286,9 @@ class BrowserViewModel @Inject constructor(
         val tab = runCatching { engine.listTabs() }.getOrDefault(emptyList())
             .firstOrNull { it.tabId == tabId } ?: return@launch
         runCatching { engine.closeTab(tab) }
-        // 关掉唯一 tab 后保留一个空白页，避免视图永久空白
+        // 关掉唯一 tab 后保留品牌起始页，避免视图永久空白
         if (engine.activeTab() == null) {
-            runCatching { engine.openTab("about:blank", activate = true) }
+            runCatching { engine.openTab(TaiXuNewTab.URL, activate = true) }
         }
         refreshNavState()
         syncTabs()
@@ -302,16 +307,16 @@ class BrowserViewModel @Inject constructor(
     private fun ensureActiveTab() = viewModelScope.launch {
         runCatching {
             val engine = registry.getDefault()
-            if (engine.activeTab() == null) engine.openTab("about:blank", activate = true)
+            if (engine.activeTab() == null) engine.openTab(TaiXuNewTab.URL, activate = true)
         }.onFailure { _toolMessage.value = it.message ?: "浏览器引擎尚未就绪" }
         syncTabs()
     }
 
-    /** 轮询同步 tab 列表；引擎已注册但无 tab 时静默补一个空白 tab（兜底竞态/全部关闭）。 */
+    /** 轮询同步 tab 列表；引擎已注册但无 tab 时静默补一个品牌起始页 tab（兜底竞态/全部关闭）。 */
     private suspend fun syncTabs() {
         val engine = runCatching { registry.getDefault() }.getOrNull() ?: return
         if (engine.activeTab() == null) {
-            runCatching { engine.openTab("about:blank", activate = true) }
+            runCatching { engine.openTab(TaiXuNewTab.URL, activate = true) }
         }
         val tokens = runCatching { engine.listTabs() }.getOrDefault(emptyList())
         _tabs.value = tokens.toTabUi(engine.activeTab()?.tabId)

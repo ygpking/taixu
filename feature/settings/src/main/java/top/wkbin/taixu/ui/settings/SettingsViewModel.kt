@@ -5,7 +5,11 @@ import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import top.wkbin.taixu.core.datastore.SettingsDataStore
+import top.wkbin.taixu.core.datastore.AgentPreferences
+import top.wkbin.taixu.core.datastore.AppearancePreferences
+import top.wkbin.taixu.core.datastore.FirstUseGuidePreferences
+import top.wkbin.taixu.core.datastore.RuntimePreferences
+import top.wkbin.taixu.core.datastore.TerminalPreferences
 import top.wkbin.taixu.core.datastore.BrowserPreferences
 import top.wkbin.taixu.core.database.AiModelRepository
 import top.wkbin.taixu.core.database.AiModelEntity
@@ -60,7 +64,11 @@ import top.wkbin.taixu.core.model.AiModelProfileExport
 class SettingsViewModel @Inject constructor(
     private val application: Application,
     private val logger: top.wkbin.taixu.core.common.logging.AppLogger,
-    private val settingsDataStore: SettingsDataStore,
+    private val appearancePreferences: AppearancePreferences,
+    private val terminalPreferences: TerminalPreferences,
+    private val runtimePreferences: RuntimePreferences,
+    private val agentPreferences: AgentPreferences,
+    private val firstUseGuidePreferences: FirstUseGuidePreferences,
     private val providerRepository: ProviderRepository,
     private val aiModelDao: AiModelRepository,
     private val modelDiscovery: AgentModelDiscovery,
@@ -132,11 +140,11 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    val environmentPrivacyMode: StateFlow<Boolean> = settingsDataStore.environmentPrivacyMode
+    val environmentPrivacyMode: StateFlow<Boolean> = agentPreferences.environmentPrivacyMode
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
     fun setEnvironmentPrivacyMode(enabled: Boolean) {
-        viewModelScope.launch { settingsDataStore.setEnvironmentPrivacyMode(enabled) }
+        viewModelScope.launch { agentPreferences.setEnvironmentPrivacyMode(enabled) }
     }
 
     fun addEnvironmentVariable(key: String, value: String, note: String, onResult: (Boolean) -> Unit = {}) {
@@ -180,43 +188,43 @@ class SettingsViewModel @Inject constructor(
     }
 
     // ---- 终端外观与显示定制 ----
-    val terminalFontSize: StateFlow<Int> = settingsDataStore.terminalFontSize
+    val terminalFontSize: StateFlow<Int> = terminalPreferences.terminalFontSize
         .stateIn(viewModelScope, SharingStarted.Eagerly, 13)
 
-    val terminalColorScheme: StateFlow<String> = settingsDataStore.terminalColorScheme
+    val terminalColorScheme: StateFlow<String> = terminalPreferences.terminalColorScheme
         .stateIn(viewModelScope, SharingStarted.Eagerly, "obsidian")
 
-    val terminalHapticsEnabled: StateFlow<Boolean> = settingsDataStore.terminalHapticsEnabled
+    val terminalHapticsEnabled: StateFlow<Boolean> = terminalPreferences.terminalHapticsEnabled
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
-    val appFontScale: StateFlow<Float> = settingsDataStore.appFontScale
+    val appFontScale: StateFlow<Float> = appearancePreferences.appFontScale
         .stateIn(viewModelScope, SharingStarted.Eagerly, 1.0f)
 
-    val chengmingBackgroundUri: StateFlow<String?> = settingsDataStore.chengmingBackgroundUri
+    val chengmingBackgroundUri: StateFlow<String?> = appearancePreferences.chengmingBackgroundUri
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     fun setTerminalFontSize(sizeSp: Int) {
-        viewModelScope.launch { settingsDataStore.setTerminalFontSize(sizeSp) }
+        viewModelScope.launch { terminalPreferences.setTerminalFontSize(sizeSp) }
     }
 
     fun setTerminalColorScheme(scheme: String) {
-        viewModelScope.launch { settingsDataStore.setTerminalColorScheme(scheme) }
+        viewModelScope.launch { terminalPreferences.setTerminalColorScheme(scheme) }
     }
 
     fun setTerminalHapticsEnabled(enabled: Boolean) {
-        viewModelScope.launch { settingsDataStore.setTerminalHapticsEnabled(enabled) }
+        viewModelScope.launch { terminalPreferences.setTerminalHapticsEnabled(enabled) }
     }
 
     fun setAppFontScale(scale: Float) {
-        viewModelScope.launch { settingsDataStore.setAppFontScale(scale) }
+        viewModelScope.launch { appearancePreferences.setAppFontScale(scale) }
     }
 
     fun setChengmingBackgroundUri(uri: String?) {
-        viewModelScope.launch { settingsDataStore.setChengmingBackgroundUri(uri) }
+        viewModelScope.launch { appearancePreferences.setChengmingBackgroundUri(uri) }
     }
 
     // ---- 应用版本更新机制 ----
-    val autoCheckUpdates: StateFlow<Boolean> = settingsDataStore.autoCheckUpdates
+    val autoCheckUpdates: StateFlow<Boolean> = appearancePreferences.autoCheckUpdates
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
     val webChatStatus: StateFlow<top.wkbin.taixu.runtime.webchat.WebChatServerStatus> =
@@ -240,12 +248,12 @@ class SettingsViewModel @Inject constructor(
     val isDownloading: StateFlow<Boolean> = _isDownloading.asStateFlow()
 
     fun setAutoCheckUpdates(enabled: Boolean) {
-        viewModelScope.launch { settingsDataStore.setAutoCheckUpdates(enabled) }
+        viewModelScope.launch { appearancePreferences.setAutoCheckUpdates(enabled) }
     }
 
     /** 清空全部首次使用引导标记，下次进入相应页面会重新展示引导遮罩。 */
     fun replayFirstUseGuides() {
-        viewModelScope.launch { settingsDataStore.clearFirstUseGuides() }
+        viewModelScope.launch { firstUseGuidePreferences.clearFirstUseGuides() }
     }
 
     fun checkForUpdates(currentVersion: String) {
@@ -477,9 +485,9 @@ class SettingsViewModel @Inject constructor(
     }
 
     /** 用户首选模式；即使本次启动降级也保留，用于下次自动恢复。 */
-    val executionMode: StateFlow<ExecutionMode> = settingsDataStore.preferredExecutionMode
+    val executionMode: StateFlow<ExecutionMode> = runtimePreferences.preferredExecutionMode
         .stateIn(viewModelScope, SharingStarted.Eagerly, ExecutionMode.PROOT)
-    val effectiveExecutionMode: StateFlow<ExecutionMode> = settingsDataStore.effectiveExecutionMode
+    val effectiveExecutionMode: StateFlow<ExecutionMode> = runtimePreferences.effectiveExecutionMode
         .stateIn(viewModelScope, SharingStarted.Eagerly, ExecutionMode.PROOT)
     val privilegeState = privilegeManager.state
 
@@ -551,10 +559,10 @@ class SettingsViewModel @Inject constructor(
     val models: StateFlow<List<AiModelEntity>> = aiModelDao.observeAll()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    val developerMode: StateFlow<Boolean> = settingsDataStore.developerMode
+    val developerMode: StateFlow<Boolean> = appearancePreferences.developerMode
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
-    val qemuCompatibilityEnabled: StateFlow<Boolean> = settingsDataStore.qemuCompatibilityEnabled
+    val qemuCompatibilityEnabled: StateFlow<Boolean> = runtimePreferences.qemuCompatibilityEnabled
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     private val _qemuCompatibilityMessage = MutableStateFlow<String?>(null)
@@ -563,15 +571,15 @@ class SettingsViewModel @Inject constructor(
     private val _qemuCompatibilityReady = MutableStateFlow(false)
     val qemuCompatibilityReady: StateFlow<Boolean> = _qemuCompatibilityReady.asStateFlow()
 
-    val themeMode: StateFlow<String> = settingsDataStore.themeMode
+    val themeMode: StateFlow<String> = appearancePreferences.themeMode
         .stateIn(viewModelScope, SharingStarted.Eagerly, "system")
 
-    val themeStyle: StateFlow<String> = settingsDataStore.themeStyle
+    val themeStyle: StateFlow<String> = appearancePreferences.themeStyle
         .stateIn(viewModelScope, SharingStarted.Eagerly, "xuantong")
 
     fun setThemeStyle(style: String) {
         viewModelScope.launch {
-            settingsDataStore.setThemeStyle(style)
+            appearancePreferences.setThemeStyle(style)
         }
     }
 
@@ -585,58 +593,58 @@ class SettingsViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
 
     // ---- Agent 配置与管理 ----
-    val thinkingExpanded: StateFlow<Boolean> = settingsDataStore.thinkingExpanded
+    val thinkingExpanded: StateFlow<Boolean> = agentPreferences.thinkingExpanded
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
-    val thinkingLanguage: StateFlow<String> = settingsDataStore.thinkingLanguage
+    val thinkingLanguage: StateFlow<String> = agentPreferences.thinkingLanguage
         .stateIn(viewModelScope, SharingStarted.Eagerly, "zh")
 
     fun setThinkingLanguage(lang: String) {
-        viewModelScope.launch { settingsDataStore.setThinkingLanguage(lang) }
+        viewModelScope.launch { agentPreferences.setThinkingLanguage(lang) }
     }
 
-    val customSystemPromptEnabled: StateFlow<Boolean> = settingsDataStore.customSystemPromptEnabled
+    val customSystemPromptEnabled: StateFlow<Boolean> = agentPreferences.customSystemPromptEnabled
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     fun setCustomSystemPromptEnabled(enabled: Boolean) {
-        viewModelScope.launch { settingsDataStore.setCustomSystemPromptEnabled(enabled) }
+        viewModelScope.launch { agentPreferences.setCustomSystemPromptEnabled(enabled) }
     }
 
-    val customSystemPrompt: StateFlow<String> = settingsDataStore.customSystemPrompt
+    val customSystemPrompt: StateFlow<String> = agentPreferences.customSystemPrompt
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
 
     fun setCustomSystemPrompt(prompt: String) {
-        viewModelScope.launch { settingsDataStore.setCustomSystemPrompt(prompt) }
+        viewModelScope.launch { agentPreferences.setCustomSystemPrompt(prompt) }
     }
 
-    val defaultReasoningDepth: StateFlow<String> = settingsDataStore.defaultReasoningDepth
+    val defaultReasoningDepth: StateFlow<String> = agentPreferences.defaultReasoningDepth
         .stateIn(viewModelScope, SharingStarted.Eagerly, "auto")
 
-    val contextCompactionEnabled: StateFlow<Boolean> = settingsDataStore.contextCompactionEnabled
+    val contextCompactionEnabled: StateFlow<Boolean> = agentPreferences.contextCompactionEnabled
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
-    val contextCompactionThreshold: StateFlow<Int> = settingsDataStore.contextCompactionThreshold
+    val contextCompactionThreshold: StateFlow<Int> = agentPreferences.contextCompactionThreshold
         .stateIn(viewModelScope, SharingStarted.Eagerly, 15)
 
-    val maxToolRounds: StateFlow<Int> = settingsDataStore.maxToolRounds
+    val maxToolRounds: StateFlow<Int> = agentPreferences.maxToolRounds
         .stateIn(viewModelScope, SharingStarted.Eagerly, 100)
 
-    val roundLimitAutoContinuations: StateFlow<Int> = settingsDataStore.roundLimitAutoContinuations
-        .stateIn(viewModelScope, SharingStarted.Eagerly, SettingsDataStore.DEFAULT_ROUND_LIMIT_AUTO_CONTINUATIONS)
+    val roundLimitAutoContinuations: StateFlow<Int> = agentPreferences.roundLimitAutoContinuations
+        .stateIn(viewModelScope, SharingStarted.Eagerly, agentPreferences.defaultRoundLimitAutoContinuations)
 
-    val autoWorkspaceCwd: StateFlow<Boolean> = settingsDataStore.autoWorkspaceCwd
+    val autoWorkspaceCwd: StateFlow<Boolean> = agentPreferences.autoWorkspaceCwd
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
-    val commandOutputCompressionEnabled: StateFlow<Boolean> = settingsDataStore.commandOutputCompressionEnabled
+    val commandOutputCompressionEnabled: StateFlow<Boolean> = agentPreferences.commandOutputCompressionEnabled
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
-    val baseCommandTimeoutSeconds: StateFlow<Int> = settingsDataStore.baseCommandTimeoutSeconds
-        .stateIn(viewModelScope, SharingStarted.Eagerly, SettingsDataStore.DEFAULT_BASE_COMMAND_TIMEOUT_SECONDS)
+    val baseCommandTimeoutSeconds: StateFlow<Int> = agentPreferences.baseCommandTimeoutSeconds
+        .stateIn(viewModelScope, SharingStarted.Eagerly, agentPreferences.defaultBaseCommandTimeoutSeconds)
 
     val approvalMode: StateFlow<top.wkbin.taixu.core.model.ApprovalMode> = approvalRepository.mode
         .stateIn(viewModelScope, SharingStarted.Eagerly, top.wkbin.taixu.core.model.ApprovalMode.ASSISTED)
 
-    val contextBudgetTokens: StateFlow<Int> = settingsDataStore.contextBudgetTokens
+    val contextBudgetTokens: StateFlow<Int> = agentPreferences.contextBudgetTokens
         .stateIn(viewModelScope, SharingStarted.Eagerly, ContextWindowPolicy.DEFAULT_CONTEXT_BUDGET)
 
     /**
@@ -649,7 +657,7 @@ class SettingsViewModel @Inject constructor(
     val effectiveInputLimit: StateFlow<Int> = combine(
         models,
         contextBudgetTokens,
-        settingsDataStore.inputTokenLimit,
+        agentPreferences.inputTokenLimit,
     ) { list, fallback, globalInputLimit ->
         val active = list.firstOrNull { it.isActive }
         val windowBudget = ContextWindowPolicy.resolveEffectiveBudget(active?.contextTokens ?: fallback)
@@ -685,21 +693,21 @@ class SettingsViewModel @Inject constructor(
     }.stateIn(viewModelScope, SharingStarted.Eagerly, ContextWindowPolicy.DEFAULT_CONTEXT_BUDGET)
 
     /** 触发水位（百分比，默认 85）：历史在「裁切基准 × 本比例」处开始折叠。已收敛进「高级」区。 */
-    val contextFoldingRatioPercent: StateFlow<Int> = settingsDataStore.contextFoldingRatioPercent
+    val contextFoldingRatioPercent: StateFlow<Int> = agentPreferences.contextFoldingRatioPercent
         .stateIn(viewModelScope, SharingStarted.Eagerly, ContextBudgetDefaults.DEFAULT_FOLDING_RATIO_PERCENT)
 
     /** 压缩后保留窗口的 token 上限（默认 20000，参考 OMP keepRecentTokens）。 */
-    val contextMaxKeepTokens: StateFlow<Int> = settingsDataStore.contextMaxKeepTokens
+    val contextMaxKeepTokens: StateFlow<Int> = agentPreferences.contextMaxKeepTokens
         .stateIn(viewModelScope, SharingStarted.Eagerly, ContextBudgetDefaults.DEFAULT_MAX_KEEP_TOKENS)
 
     /** 压缩/截断前把原文落盘到 `.taixu-context/`（默认开，OMP 范式），供 agent 事后检索回捞。 */
-    val contextArchiveEnabled: StateFlow<Boolean> = settingsDataStore.contextArchiveEnabled
+    val contextArchiveEnabled: StateFlow<Boolean> = agentPreferences.contextArchiveEnabled
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
-    val maxToolsPerRound: StateFlow<Int> = settingsDataStore.maxToolsPerRound
+    val maxToolsPerRound: StateFlow<Int> = agentPreferences.maxToolsPerRound
         .stateIn(viewModelScope, SharingStarted.Eagerly, 12)
 
-    val maxConsecutiveFailures: StateFlow<Int> = settingsDataStore.maxConsecutiveFailures
+    val maxConsecutiveFailures: StateFlow<Int> = agentPreferences.maxConsecutiveFailures
         .stateIn(viewModelScope, SharingStarted.Eagerly, 8)
 
     val allSkills: StateFlow<List<top.wkbin.taixu.core.model.AgentSkill>> = agentSkillRepository.allSkills
@@ -718,57 +726,57 @@ class SettingsViewModel @Inject constructor(
     val allSubagents: StateFlow<List<top.wkbin.taixu.core.model.AgentSubagent>> = subagentRepository.profiles
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    val allPlugins: StateFlow<List<top.wkbin.taixu.core.model.AgentPlugin>> = settingsDataStore.allPlugins
+    val allPlugins: StateFlow<List<top.wkbin.taixu.core.model.AgentPlugin>> = agentPreferences.allPlugins
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     fun setThinkingExpanded(value: Boolean) {
-        viewModelScope.launch { settingsDataStore.setThinkingExpanded(value) }
+        viewModelScope.launch { agentPreferences.setThinkingExpanded(value) }
     }
 
     fun setDefaultReasoningDepth(value: String) {
-        viewModelScope.launch { settingsDataStore.setDefaultReasoningDepth(value) }
+        viewModelScope.launch { agentPreferences.setDefaultReasoningDepth(value) }
     }
 
     fun setContextCompactionEnabled(value: Boolean) {
-        viewModelScope.launch { settingsDataStore.setContextCompactionEnabled(value) }
+        viewModelScope.launch { agentPreferences.setContextCompactionEnabled(value) }
     }
 
     fun setContextCompactionThreshold(value: Int) {
-        viewModelScope.launch { settingsDataStore.setContextCompactionThreshold(value) }
+        viewModelScope.launch { agentPreferences.setContextCompactionThreshold(value) }
     }
 
     /** 折叠线比例：10~100（%）。调小则更早折叠历史，降低单次请求 token 量。 */
     fun setContextFoldingRatioPercent(value: Int) {
-        viewModelScope.launch { settingsDataStore.setContextFoldingRatioPercent(value) }
+        viewModelScope.launch { agentPreferences.setContextFoldingRatioPercent(value) }
     }
 
     /** 保留窗口 token 上限：2000~200000。约束折叠后剩余历史的 token 总量。 */
     fun setContextMaxKeepTokens(value: Int) {
-        viewModelScope.launch { settingsDataStore.setContextMaxKeepTokens(value) }
+        viewModelScope.launch { agentPreferences.setContextMaxKeepTokens(value) }
     }
 
     fun setContextArchiveEnabled(value: Boolean) {
-        viewModelScope.launch { settingsDataStore.setContextArchiveEnabled(value) }
+        viewModelScope.launch { agentPreferences.setContextArchiveEnabled(value) }
     }
 
     fun setMaxToolRounds(value: Int) {
-        viewModelScope.launch { settingsDataStore.setMaxToolRounds(value) }
+        viewModelScope.launch { agentPreferences.setMaxToolRounds(value) }
     }
 
     fun setRoundLimitAutoContinuations(value: Int) {
-        viewModelScope.launch { settingsDataStore.setRoundLimitAutoContinuations(value) }
+        viewModelScope.launch { agentPreferences.setRoundLimitAutoContinuations(value) }
     }
 
     fun setAutoWorkspaceCwd(value: Boolean) {
-        viewModelScope.launch { settingsDataStore.setAutoWorkspaceCwd(value) }
+        viewModelScope.launch { agentPreferences.setAutoWorkspaceCwd(value) }
     }
 
     fun setCommandOutputCompressionEnabled(value: Boolean) {
-        viewModelScope.launch { settingsDataStore.setCommandOutputCompressionEnabled(value) }
+        viewModelScope.launch { agentPreferences.setCommandOutputCompressionEnabled(value) }
     }
 
     fun setBaseCommandTimeoutSeconds(value: Int) {
-        viewModelScope.launch { settingsDataStore.setBaseCommandTimeoutSeconds(value) }
+        viewModelScope.launch { agentPreferences.setBaseCommandTimeoutSeconds(value) }
     }
 
     fun setApprovalMode(mode: top.wkbin.taixu.core.model.ApprovalMode) {
@@ -781,15 +789,15 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun setContextBudgetTokens(value: Int) {
-        viewModelScope.launch { settingsDataStore.setContextBudgetTokens(value) }
+        viewModelScope.launch { agentPreferences.setContextBudgetTokens(value) }
     }
 
     fun setMaxToolsPerRound(value: Int) {
-        viewModelScope.launch { settingsDataStore.setMaxToolsPerRound(value) }
+        viewModelScope.launch { agentPreferences.setMaxToolsPerRound(value) }
     }
 
     fun setMaxConsecutiveFailures(value: Int) {
-        viewModelScope.launch { settingsDataStore.setMaxConsecutiveFailures(value) }
+        viewModelScope.launch { agentPreferences.setMaxConsecutiveFailures(value) }
     }
 
     fun toggleSkill(skillId: String, enabled: Boolean) {
@@ -1083,7 +1091,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun togglePlugin(pluginId: String, enabled: Boolean) {
-        viewModelScope.launch { settingsDataStore.setPluginEnabled(pluginId, enabled) }
+        viewModelScope.launch { agentPreferences.setPluginEnabled(pluginId, enabled) }
     }
 
     private val _apiKeyDraft = MutableStateFlow("")
@@ -1101,7 +1109,7 @@ class SettingsViewModel @Inject constructor(
 
     fun setDeveloperMode(enabled: Boolean) {
         viewModelScope.launch {
-            settingsDataStore.setDeveloperMode(enabled)
+            appearancePreferences.setDeveloperMode(enabled)
         }
     }
 
@@ -1115,13 +1123,13 @@ class SettingsViewModel @Inject constructor(
                 }
             }
             _qemuCompatibilityMessage.value = null
-            settingsDataStore.setQemuCompatibilityEnabled(enabled)
+            runtimePreferences.setQemuCompatibilityEnabled(enabled)
         }
     }
 
     fun setThemeMode(mode: String) {
         viewModelScope.launch {
-            settingsDataStore.setThemeMode(mode)
+            appearancePreferences.setThemeMode(mode)
         }
     }
 
@@ -1361,28 +1369,28 @@ class SettingsViewModel @Inject constructor(
 
 
     // ---- 宿主与沙箱存储挂载配置 (PRoot -b) ----
-    val mountDownloadEnabled: StateFlow<Boolean> = settingsDataStore.mountDownloadEnabled
+    val mountDownloadEnabled: StateFlow<Boolean> = runtimePreferences.mountDownloadEnabled
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
-    val mountDocumentsEnabled: StateFlow<Boolean> = settingsDataStore.mountDocumentsEnabled
+    val mountDocumentsEnabled: StateFlow<Boolean> = runtimePreferences.mountDocumentsEnabled
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
-    val mountSharedStorageEnabled: StateFlow<Boolean> = settingsDataStore.mountSharedStorageEnabled
+    val mountSharedStorageEnabled: StateFlow<Boolean> = runtimePreferences.mountSharedStorageEnabled
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     val customMountBindings: StateFlow<List<top.wkbin.taixu.core.model.StorageMountBinding>> = storageMountBindingRepository.bindings
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     fun setMountDownloadEnabled(enabled: Boolean) {
-        viewModelScope.launch { settingsDataStore.setMountDownloadEnabled(enabled) }
+        viewModelScope.launch { runtimePreferences.setMountDownloadEnabled(enabled) }
     }
 
     fun setMountDocumentsEnabled(enabled: Boolean) {
-        viewModelScope.launch { settingsDataStore.setMountDocumentsEnabled(enabled) }
+        viewModelScope.launch { runtimePreferences.setMountDocumentsEnabled(enabled) }
     }
 
     fun setMountSharedStorageEnabled(enabled: Boolean) {
-        viewModelScope.launch { settingsDataStore.setMountSharedStorageEnabled(enabled) }
+        viewModelScope.launch { runtimePreferences.setMountSharedStorageEnabled(enabled) }
     }
 
     fun addCustomMountBinding(name: String, hostPath: String, guestPath: String) {

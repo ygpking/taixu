@@ -33,7 +33,6 @@ import top.wkbin.taixu.harness.metrics.RunMetrics
 import top.wkbin.taixu.harness.task.AgentStateMachine
 
 import top.wkbin.taixu.core.datastore.AgentPreferences
-import top.wkbin.taixu.core.datastore.SettingsDataStore
 import top.wkbin.taixu.harness.session.SessionTreeStore
 import top.wkbin.taixu.harness.effects.RetryPolicy
 import top.wkbin.taixu.harness.operation.OperationCoordinator
@@ -1041,7 +1040,7 @@ class HarnessLoop @Inject constructor(
         val activeOperationId = operationId ?: operationCoordinator.beginRun(sessId)
         val maxRounds = runCatching { settingsDataStore.maxToolRounds.first() }.getOrDefault(MAX_ROUNDS)
         val autoContinuations = runCatching { settingsDataStore.roundLimitAutoContinuations.first() }
-            .getOrDefault(SettingsDataStore.DEFAULT_ROUND_LIMIT_AUTO_CONTINUATIONS)
+            .getOrDefault(settingsDataStore.defaultRoundLimitAutoContinuations)
         val budget = RoundBudget(maxRounds, autoContinuations)
         val autoCwd = runCatching { settingsDataStore.autoWorkspaceCwd.first() }.getOrDefault(true)
         val sessionEntity = sessionDao.findById(sessId)

@@ -251,8 +251,18 @@ class ToolExecutor @Inject constructor(
     }
 
     /** 宿主 Android 特权通道；权限在每次执行前实时复核，不能仅依赖启动时快照。 */
-    @OptIn(InternalCoroutinesApi::class)
     private suspend fun executeHost(args: JsonObject, operationId: String?, sessionId: String): Pair<Boolean, String> {
+        val raw = executeHostUncapped(args, operationId, sessionId)
+        return raw.first to capHostOutput(raw.second)
+    }
+
+    /**
+     * host 侧输出的统一硬上限：dumpsys / uiautomator XML / logcat 等宿主命令动辄数 MB，
+     * 无上限时单条结果会以 ToolResult 字符串 + Room 实体 + UI 投影多份拷贝驻留 256MB 的
+     * Java 堆，直接触发 target footprint OOM。截断标记引导模型缩小范围重取。
+     */
+    @OptIn(InternalCoroutinesApi::class)
+    private suspend fun executeHostUncapped(args: JsonObject, operationId: String?, sessionId: String): Pair<Boolean, String> {
         val action = requireString(args, "action").trim().lowercase()
 
         // Logcat 优先走内置无线 ADB，不依赖 Shizuku/Root；不可用时再回退原特权通道。
@@ -641,7 +651,7 @@ class ToolExecutor @Inject constructor(
         val preparedCommand = RtkCommandOptimizer.prepare(command, commandOutputCompressionEnabled)
         val configuredTimeoutSeconds = if (::settingsDataStore.isInitialized) {
             runCatching { settingsDataStore.baseCommandTimeoutSeconds.first() }
-                .getOrDefault(SettingsDataStore.DEFAULT_BASE_COMMAND_TIMEOUT_SECONDS)
+                .getOrDefault(settingsDataStore.defaultBaseCommandTimeoutSeconds)
         } else {
             SettingsDataStore.DEFAULT_BASE_COMMAND_TIMEOUT_SECONDS
         }
@@ -974,6 +984,13 @@ class ToolExecutor @Inject constructor(
         const val MAX_COMMAND_LENGTH = 32 * 1024
         const val MAX_ARG_LENGTH = 1024 * 1024
         const val MAX_HISTORY_READ_OUTPUT = 48 * 1024
+
+        /**
+         * host 侧工具输出的字符硬上限（与 runtime EmbeddedAdbManager 的 ADB 路径保持同值）。
+         * 200K 字符 ≈ 0.4-0.8MB 堆：足够容纳正常 logcat/dumpsys 片段，又能挡住数 MB 的
+         * 节点树/全量 dump 把 Java 堆（256MB，未开 largeHeap 前）拖爆。
+         */
+        const val MAX_HOST_OUTPUT_CHARS = 200_000
         const val DEFAULT_CWD = "/root"
         const val DEFAULT_DOWNLOAD_ATTEMPTS = 3L
         const val MAX_DOWNLOAD_ATTEMPTS = 10L
@@ -1004,3 +1021,17 @@ class ToolExecutor @Inject constructor(
         }
     }
 }
+
+/**
+ * host 侧输出截断（[ToolExecutor.MAX_HOST_OUTPUT_CHARS]）：超限时保留前缀并附重取指引。
+ * [HostActionNodeExecutor] 等其他宿主输出出口共用，保证口径一致。
+ */
+internal fun capHostOutput(output: String): String =
+    if (output.length <= ToolExecutor.MAX_HOST_OUTPUT_CHARS) {
+        output
+    } else {
+        output.take(ToolExecutor.MAX_HOST_OUTPUT_CHARS) +
+            "\n[host 输出超限已截断：原文 ${output.length} 字符，仅保留前 ${ToolExecutor.MAX_HOST_OUTPUT_CHARS}。" +
+            "需要完整内容请缩小范围重取：logcat 用更精确的 tag/keyword 与更少 tail_lines，" +
+            "dumpsys 指定子服务（如 dumpsys activity），避免全量输出]"
+    }
