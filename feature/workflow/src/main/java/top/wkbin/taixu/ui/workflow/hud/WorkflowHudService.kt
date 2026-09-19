@@ -1,6 +1,10 @@
 package top.wkbin.taixu.ui.workflow.hud
 
 import android.app.Application
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -25,6 +29,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import top.wkbin.taixu.feature.workflow.R
 import top.wkbin.taixu.runtime.gui.WorkflowGuiHudBridge
 import top.wkbin.taixu.ui.theme.TaiXuTheme
 
@@ -81,6 +86,9 @@ class WorkflowHudService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        // 必须先进入前台态再做任何 stopSelf 提前退出，否则 startForegroundService
+        // 路径上会抛 "did not call startForeground" 崩溃。
+        startForeground(NOTIFICATION_ID, buildNotification())
         if (!Settings.canDrawOverlays(this)) {
             stopSelf()
             return
@@ -198,6 +206,7 @@ class WorkflowHudService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        stopForeground(STOP_FOREGROUND_REMOVE)
         (applicationContext as? Application)?.unregisterActivityLifecycleCallbacks(activityCallbacks)
         detachOverlay()
         lifecycleOwner?.onDestroy()
@@ -207,9 +216,42 @@ class WorkflowHudService : Service() {
         serviceScope.cancel()
     }
 
+    private fun buildNotification(): Notification {
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_ID,
+                "工作流运行",
+                NotificationManager.IMPORTANCE_MIN,
+            ).apply {
+                description = "工作流在后台运行时的常驻状态通知"
+                setSound(null, null)
+                enableVibration(false)
+                setShowBadge(false)
+            },
+        )
+        val contentIntent = packageManager.getLaunchIntentForPackage(packageName)?.let {
+            PendingIntent.getActivity(this, 0, it, PendingIntent.FLAG_IMMUTABLE)
+        }
+        return Notification.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_workflow_hud_notification)
+            .setContentTitle("工作流运行中")
+            .setContentText("点击返回太墟查看进度或停止")
+            .setContentIntent(contentIntent)
+            .setOngoing(true)
+            .setCategory(Notification.CATEGORY_PROGRESS)
+            .build()
+    }
+
     companion object {
+        private const val CHANNEL_ID = "taixu_workflow_hud"
+        private const val NOTIFICATION_ID = 20091
+
         fun start(context: Context) {
-            context.startService(Intent(context, WorkflowHudService::class.java))
+            // O+ 后台启动限制：从后台路径触发时会抛 ISE，吞掉避免崩溃（HUD 只是可选增强）
+            runCatching {
+                context.startForegroundService(Intent(context, WorkflowHudService::class.java))
+            }
         }
 
         fun stop(context: Context) {

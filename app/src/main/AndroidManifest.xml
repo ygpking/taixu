@@ -50,6 +50,7 @@
         android:allowBackup="false"
         android:icon="@drawable/taixu_logo"
         android:label="${appLabel}"
+        android:largeHeap="true"
         android:localeConfig="@xml/taixu_locales_config"
         android:networkSecurityConfig="@xml/taixu_network_security_config"
         android:supportsRtl="true"
@@ -114,7 +115,8 @@
             android:exported="false" />
         <service
             android:name="top.wkbin.taixu.ui.workflow.hud.WorkflowHudService"
-            android:exported="false" />
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
         <!-- GUI 手势通路：必须 exported=true，否则 Android 12+ system_server 无法绑定无障碍服务 -->
         <service
             android:name="top.wkbin.taixu.runtime.gui.TaiXuGuiAccessibilityService"

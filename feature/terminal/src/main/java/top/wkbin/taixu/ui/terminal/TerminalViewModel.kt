@@ -39,16 +39,17 @@ class TerminalViewModel @Inject constructor(
     val sessionClientRouter: TerminalSessionClientRouter,
     private val workspaceManager: WorkspaceManager,
     private val settingsDataStore: TerminalPreferences,
-    private val appSettingsDataStore: top.wkbin.taixu.core.datastore.SettingsDataStore,
+    private val firstUseGuidePreferences: top.wkbin.taixu.core.datastore.FirstUseGuidePreferences,
     private val linuxRuntime: top.wkbin.taixu.runtime.LinuxRuntime,
+    private val toolManager: top.wkbin.taixu.core.tools.ToolManager,
 ) : ViewModel() {
     private var initialized = false
 
-    val firstUseGuidesShown: StateFlow<Set<String>> = appSettingsDataStore.firstUseGuidesShown
+    val firstUseGuidesShown: StateFlow<Set<String>> = firstUseGuidePreferences.firstUseGuidesShown
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
 
     fun markFirstUseGuideShown(id: String) {
-        viewModelScope.launch { appSettingsDataStore.markFirstUseGuideShown(id) }
+        viewModelScope.launch { firstUseGuidePreferences.markFirstUseGuideShown(id) }
     }
 
     val installedDistros = linuxRuntime.installedDistros
@@ -78,19 +79,35 @@ class TerminalViewModel @Inject constructor(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
-    fun initialize(project: String) {
-        initializeInternal(project, force = false)
+    fun initialize(project: String, toolId: String = "") {
+        initializeInternal(project, toolId, force = false)
     }
 
     fun retryInitialize(project: String) {
-        initializeInternal(project, force = true)
+        initializeInternal(project, toolId = "", force = true)
     }
 
-    private fun initializeInternal(project: String, force: Boolean) {
+    private fun initializeInternal(project: String, toolId: String, force: Boolean) {
         if (initialized && !force) return
         initialized = true
         _error.value = null
         viewModelScope.launch {
+            // 工具中心/工具详情的「启动终端」入口：按工具的交互配置拉起会话。
+            // 此前 TerminalDestination.toolId 在导航层被丢弃，按钮实际只开了普通终端。
+            if (toolId.isNotBlank() && project.isBlank()) {
+                val toolConfig = runCatching { toolManager.interactiveSessionConfig(toolId) }.getOrNull()
+                if (toolConfig != null) {
+                    runCatching {
+                        terminalManager.createSession(
+                            label = toolId,
+                            sessionConfig = toolConfig,
+                        )
+                    }.onFailure { _error.value = it.message ?: context.getString(R.string.terminal_error_start) }
+                    return@launch
+                }
+                // 工具未安装/无交互配置：回退普通终端，不静默丢请求也不误报为系统故障
+                _error.value = null
+            }
             if (project.isNotBlank()) {
                 val workingDirectory = runCatching { workspaceManager.linuxWorkingDirectory(project) }.getOrNull() ?: "/root"
                 runCatching {

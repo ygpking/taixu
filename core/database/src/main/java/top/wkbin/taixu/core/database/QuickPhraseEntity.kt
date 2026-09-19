@@ -6,6 +6,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
+import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
 import top.wkbin.taixu.core.model.QuickPhrase
 
@@ -70,6 +71,13 @@ interface QuickPhraseDao {
 
     @Query("DELETE FROM quick_phrases WHERE id = :id")
     suspend fun delete(id: String)
+
+    /** 原子重置：此前 clearAll 与 upsertAll 两步间崩溃会得到空表。 */
+    @Transaction
+    suspend fun clearAllAndInsertDefaults(phrases: List<QuickPhraseEntity>) {
+        clearAll()
+        upsertAll(phrases)
+    }
 
     @Query("DELETE FROM quick_phrases")
     suspend fun clearAll()

@@ -1,5 +1,6 @@
 package top.wkbin.taixu.runtime.browser.engine
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
 import android.webkit.ConsoleMessage
@@ -34,6 +35,7 @@ object WebViewClients {
     private val WEB_SCHEMES = setOf("http", "https", "about", "data", "blob", "javascript")
 
     fun attach(
+        context: Context,
         view: WebView,
         eventBus: BrowserEventBus,
         token: BrowserSessionToken,
@@ -99,6 +101,8 @@ object WebViewClients {
                 view: WebView,
                 request: android.webkit.WebResourceRequest,
             ): android.webkit.WebResourceResponse? {
+                // 品牌起始页：本地 assets 拦截（不出网），也不计入网络时间线
+                NewTabPage.intercept(context, request.url)?.let { return it }
                 networkInterceptor.onRequestStart(request)
                 return null
             }

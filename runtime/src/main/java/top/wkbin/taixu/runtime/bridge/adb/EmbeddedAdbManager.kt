@@ -423,7 +423,17 @@ class EmbeddedAdbManager @Inject constructor(
                 val current = client
                 try {
                     val response = requireNotNull(current).shell(command)
-                    ShellOutcome(response.exitCode, response.allOutput, response.exitCode == 0)
+                    // Kadb 会把 shell 输出整段缓冲进内存：logcat -t 2000 / 全量 dumpsys
+                    // 可达数 MB，无上限时以多份字符串拷贝驻留 256MB Java 堆，触发
+                    // target footprint OOM。与 harness 侧 ToolExecutor.MAX_HOST_OUTPUT_CHARS 同值。
+                    val output = if (response.allOutput.length > MAX_SHELL_OUTPUT_CHARS) {
+                        response.allOutput.take(MAX_SHELL_OUTPUT_CHARS) +
+                            "\n[ADB shell 输出超限已截断：原文 ${response.allOutput.length} 字符，" +
+                            "仅保留前 $MAX_SHELL_OUTPUT_CHARS；请缩小输出范围后重试]"
+                    } else {
+                        response.allOutput
+                    }
+                    ShellOutcome(response.exitCode, output, response.exitCode == 0)
                 } catch (error: Throwable) {
                     closeClient()
                     _state.value = ConnectionState.Failed(error.userMessage("ADB 执行失败"))
@@ -523,6 +533,9 @@ class EmbeddedAdbManager @Inject constructor(
         const val CONNECT_DISCOVERY_TIMEOUT_MS = 10_000L
         const val RESOLVE_TIMEOUT_MS = 8_000L
         const val MAX_LOG_LINES = 5_000
+
+        /** shell 输出字符硬上限（与 harness ToolExecutor.MAX_HOST_OUTPUT_CHARS 同值，防 Java 堆 OOM）。 */
+        const val MAX_SHELL_OUTPUT_CHARS = 200_000
 
         // Android 无线调试 mDNS 服务类型
         const val SERVICE_PAIRING = "_adb-tls-pairing._tcp."

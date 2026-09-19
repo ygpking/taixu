@@ -24,6 +24,8 @@ jobs:
     name: Build & Publish Release APK
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    # v*.*.* 的 glob 会匹配 v0.11.0-self 这类 tag，与 taixu-release-self 双触发
+    if: ${{ !endsWith(github.ref_name, '-self') }}
 
     permissions:
       contents: write
@@ -125,8 +127,9 @@ jobs:
         id: changelog
         run: |
           CURRENT_TAG="${{ env.TARGET_TAG }}"
-          # 找到上一个版本标签
-          PREV_TAG=$(git tag --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed -n '2p')
+          # 找到上一个版本标签。workflow_dispatch 用尚不存在的 tag 触发时，
+          # 列表第 1 个就是最新正式版——须排除当前 tag 自身再取第 1 个。
+          PREV_TAG=$(git tag --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -v -F "$CURRENT_TAG" | sed -n '1p')
           echo "当前版本：$CURRENT_TAG，上一版本：$PREV_TAG"
 
           if git rev-parse "$CURRENT_TAG" >/dev/null 2>&1; then
