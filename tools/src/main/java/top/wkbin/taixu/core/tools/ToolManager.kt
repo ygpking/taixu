@@ -805,13 +805,15 @@ class ToolManager @Inject constructor(
 
     suspend fun uninstall(toolId: String, deleteData: Boolean = false) {
         require(isToolSupported(toolId)) { "暂不支持卸载工具：$toolId" }
+        // 全程持锁：此前锁内只做 check 就释放，随后停进程+卸载期间与并发 install
+        // 构成 check-then-act 竞态（同一工具可同时被安装和卸载）。
         installMutex.withLock {
             check(!installJobs.containsKey(toolId)) { "工具正在安装：$toolId" }
+            linuxRuntime.listBackground()
+                .filter { it.toolId == toolId }
+                .forEach { linuxRuntime.stopBackground(it.id) }
+            uninstallLocked(toolId, deleteData)
         }
-        linuxRuntime.listBackground()
-            .filter { it.toolId == toolId }
-            .forEach { linuxRuntime.stopBackground(it.id) }
-        uninstallLocked(toolId, deleteData)
     }
 
     private suspend fun uninstallLocked(toolId: String, deleteData: Boolean) {

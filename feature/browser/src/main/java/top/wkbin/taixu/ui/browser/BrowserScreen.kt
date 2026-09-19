@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -426,7 +427,12 @@ private fun BrowserUrlBar(
     canGoBack: Boolean,
     canGoForward: Boolean,
 ) {
-    var input by remember(urlInput) { mutableStateOf(urlInput) }
+    // 用户输入期间不回写外部 url（重定向/子 frame 导航此前会清掉正在输入的半截 URL）
+    var input by remember { mutableStateOf(urlInput) }
+    var editingUrl by remember { mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(urlInput) {
+        if (!editingUrl) input = urlInput
+    }
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.9f),
         modifier = Modifier.fillMaxWidth(),
@@ -472,7 +478,9 @@ private fun BrowserUrlBar(
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                         keyboardActions = KeyboardActions(onGo = { onNavigate() }),
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier
+                            .onFocusChanged { editingUrl = it.isFocused }
+                            .weight(1f),
                         decorationBox = { inner ->
                             Box(
                                 modifier = Modifier.fillMaxWidth(),

@@ -151,10 +151,11 @@ class TerminalViewModel @Inject constructor(
         val bytes: ByteArray? = when {
             ctrl && codePoint in 'a'.code..'z'.code -> byteArrayOf((codePoint - 96).toByte())
             ctrl && event.key == Key.Spacebar -> byteArrayOf(0)
-            event.key == Key.DirectionUp -> seq(if (alt) "\u001B\u001B[A" else "\u001B[A]")
-            event.key == Key.DirectionDown -> seq(if (alt) "\u001B\u001B[B" else "\u001B[B]")
-            event.key == Key.DirectionLeft -> seq(if (alt) "\u001B\u001B[D" else "\u001B[D]")
-            event.key == Key.DirectionRight -> seq(if (alt) "\u001B\u001B[C" else "\u001B[C]")
+            // CSI 序列以字母结尾：此前 "[A]" 多了一个 ']'，方向键每次会多送一个 ']' 字符
+            event.key == Key.DirectionUp -> seq(if (alt) "\u001B\u001B[A" else "\u001B[A")
+            event.key == Key.DirectionDown -> seq(if (alt) "\u001B\u001B[B" else "\u001B[B")
+            event.key == Key.DirectionLeft -> seq(if (alt) "\u001B\u001B[D" else "\u001B[D")
+            event.key == Key.DirectionRight -> seq(if (alt) "\u001B\u001B[C" else "\u001B[C")
             event.key == Key.MoveHome -> seq("\u001B[1~")
             event.key == Key.MoveEnd -> seq("\u001B[4~")
             event.key == Key.PageUp -> seq("\u001B[5~")

@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -97,6 +98,7 @@ class BrowserViewModel @Inject constructor(
     /** 网络时间线：native 捕获与 js hook 捕获去重合并（js 条目带状态码与 body，优先保留）。 */
     val network: StateFlow<List<CapturedRequest>> = eventBus.network
         .map(::dedupeNetwork)
+        .flowOn(kotlinx.coroutines.Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /** hook 命中记录（函数/属性/WebSocket/网络规则），直接透出 EventBus 环形缓冲。 */
