@@ -5,6 +5,7 @@ import top.wkbin.taixu.core.database.HarnessSessionRepository
 import top.wkbin.taixu.harness.session.SessionTreeStore
 import top.wkbin.taixu.core.security.SecretRedactor
 import top.wkbin.taixu.core.datastore.AgentPreferences
+import top.wkbin.taixu.core.datastore.SettingsDataStore
 import top.wkbin.taixu.core.model.ApprovalMode
 import top.wkbin.taixu.core.network.DownloadEvent
 import top.wkbin.taixu.core.network.DownloadRequest
@@ -652,7 +653,7 @@ class ToolExecutor @Inject constructor(
             runCatching { settingsDataStore.baseCommandTimeoutSeconds.first() }
                 .getOrDefault(settingsDataStore.defaultBaseCommandTimeoutSeconds)
         } else {
-            settingsDataStore.defaultBaseCommandTimeoutSeconds
+            SettingsDataStore.DEFAULT_BASE_COMMAND_TIMEOUT_SECONDS
         }
         val timeoutSeconds = optionalLong(
             args = args,
