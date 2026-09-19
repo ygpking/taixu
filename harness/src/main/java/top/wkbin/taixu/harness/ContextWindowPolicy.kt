@@ -398,7 +398,7 @@ object ContextWindowPolicy {
         var toolTokens = 0
         messages.drop(keepFrom).forEach { message ->
             when (message) {
-                is CapabilityEvent, is ModelSwitchEvent -> Unit
+                is CapabilityEvent, is ModelSwitchEvent, is SkillSuggestion -> Unit
                 is UserMessage -> {
                     conversationTokens += estimateTokens(message.text) + message.imageUrls.size * 1_000
                 }
@@ -554,7 +554,7 @@ object ContextWindowPolicy {
 
     /** 单条消息的 token 估算（与 computeKeepFromIndex 内的口径保持一致）。 */
     private fun messageTokens(message: HarnessMessage): Int = when (message) {
-        is CapabilityEvent, is ModelSwitchEvent -> 0
+        is CapabilityEvent, is ModelSwitchEvent, is SkillSuggestion -> 0
         is UserMessage -> estimateTokens(message.text) + message.imageUrls.size * 1_000
         is AssistantText -> estimateTokens(assistantTextForContext(message.text)) +
             estimateTokens(message.reasoning.orEmpty())
@@ -586,7 +586,7 @@ object ContextWindowPolicy {
     }
 
     private fun tokensOf(message: HarnessMessage): Int = when (message) {
-        is CapabilityEvent, is ModelSwitchEvent -> 0
+        is CapabilityEvent, is ModelSwitchEvent, is SkillSuggestion -> 0
         is UserMessage -> estimateTokens(message.text) + message.imageUrls.size * 1_000
         is AssistantText -> estimateTokens(assistantTextForContext(message.text)) +
             estimateTokens(message.reasoning.orEmpty())

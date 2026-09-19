@@ -36,6 +36,29 @@ sealed interface HarnessMessage {
     val createdAt: Long
 }
 
+/**
+ * UI-only skill evolution suggestion（借鉴千问的「对话后技能沉淀/进化」）：
+ * 一轮有效工作结束后由 SkillEvolutionAdvisor 分析产出，展示为可操作卡片
+ * （创建新技能 / 更新既有技能 / 忽略）。持久化用于转写回放，绝不发给模型。
+ */
+@Serializable
+@SerialName("skill_suggestion")
+data class SkillSuggestion(
+    override val id: String,
+    override val createdAt: Long,
+    /** create = 沉淀为新技能；update = 修复既有技能的指导规则 */
+    val action: String,
+    val skillName: String,
+    val description: String,
+    val systemPrompt: String,
+    val triggerCommand: String? = null,
+    /** action=update 时的目标技能 id */
+    val targetSkillId: String? = null,
+    val reason: String = "",
+    /** pending = 待处理；applied / dismissed 由 UI 内存态过滤（转写里保留原样） */
+    val status: String = "pending",
+) : HarnessMessage
+
 /** UI-only capability activation event. It is persisted for the transcript but never sent to the model. */
 @Serializable
 @SerialName("capability_event")

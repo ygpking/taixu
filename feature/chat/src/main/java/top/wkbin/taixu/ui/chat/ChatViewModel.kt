@@ -21,6 +21,7 @@ import top.wkbin.taixu.runtime.debug.DebugActionBus
 import top.wkbin.taixu.runtime.sandbox.SandboxTextExtractor
 import top.wkbin.taixu.ui.chat.git.GitPanelController
 import top.wkbin.taixu.harness.HarnessLoop
+import top.wkbin.taixu.harness.SkillSuggestion
 import top.wkbin.taixu.harness.HarnessMessage
 import top.wkbin.taixu.harness.UserMessage
 import top.wkbin.taixu.harness.AssistantText
@@ -561,6 +562,10 @@ class ChatViewModel @Inject constructor(
         savedStateHandle[KEY_INPUT_DRAFT] = value
     }
 
+    /** 已处理（创建/更新/忽略）的技能进化建议卡片：会话生命周期内隐藏 */
+    private val _hiddenSkillSuggestions = MutableStateFlow<Set<String>>(emptySet())
+    val hiddenSkillSuggestions: StateFlow<Set<String>> = _hiddenSkillSuggestions.asStateFlow()
+
     val activeSkills: StateFlow<List<top.wkbin.taixu.core.model.AgentSkill>> = agentSkillRepository.activeSkills
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -1056,6 +1061,44 @@ class ChatViewModel @Inject constructor(
     }
 
     /** 创建针对工具安装或沙箱异常的专属自愈会话并立即启动诊断 */
+    /** 应用技能进化建议：asNew=true 沉淀为新技能；false 按目标 id 更新既有技能（内置技能自动转另存） */
+    fun applySkillSuggestion(suggestion: SkillSuggestion, asNew: Boolean) {
+        viewModelScope.launch {
+            runCatching {
+                val target = allSkills.value.firstOrNull { it.id == suggestion.targetSkillId }
+                if (suggestion.action == "update" && target != null && !target.isBuiltin && !asNew) {
+                    agentSkillRepository.addCustom(
+                        target.copy(
+                            systemPrompt = suggestion.systemPrompt,
+                            name = suggestion.skillName,
+                            description = suggestion.description,
+                            triggerCommand = suggestion.triggerCommand ?: target.triggerCommand,
+                        ),
+                    )
+                } else {
+                    agentSkillRepository.addCustom(suggestion.toAgentSkill())
+                }
+            }
+            _hiddenSkillSuggestions.update { it + suggestion.id }
+        }
+    }
+
+    fun dismissSkillSuggestion(id: String) {
+        _hiddenSkillSuggestions.update { it + id }
+    }
+
+    private fun SkillSuggestion.toAgentSkill(): top.wkbin.taixu.core.model.AgentSkill = top.wkbin.taixu.core.model.AgentSkill(
+        id = "custom_" + java.util.UUID.randomUUID().toString().take(8),
+        name = skillName,
+        description = description.ifBlank { "由对话进化建议创建" },
+        systemPrompt = systemPrompt,
+        triggerCommand = triggerCommand,
+        iconName = "Sparkles",
+        isEnabled = true,
+        isBuiltin = false,
+        category = "进化",
+    )
+
     fun startHealingTask(title: String, prompt: String) {
         viewModelScope.launch {
             harnessLoop.newSession(title = title)

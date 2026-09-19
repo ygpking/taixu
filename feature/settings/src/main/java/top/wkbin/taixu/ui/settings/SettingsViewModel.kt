@@ -804,6 +804,14 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { agentSkillRepository.setEnabled(skillId, enabled) }
     }
 
+    /** 对话后技能进化建议开关（默认开） */
+    val skillEvolutionSuggestions: StateFlow<Boolean> = agentPreferences.skillEvolutionSuggestions
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+
+    fun setSkillEvolutionSuggestions(enabled: Boolean) {
+        viewModelScope.launch { agentPreferences.setSkillEvolutionSuggestions(enabled) }
+    }
+
     fun addCustomSkill(name: String, description: String, systemPrompt: String, command: String?) {
         val trimmedName = name.trim()
         val trimmedPrompt = systemPrompt.trim()

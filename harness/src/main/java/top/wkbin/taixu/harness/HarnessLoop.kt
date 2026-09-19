@@ -87,6 +87,7 @@ class HarnessLoop @Inject constructor(
     private val turnRunner: TurnRunner,
     private val rewindController: top.wkbin.taixu.harness.checkpoint.RewindController,
     private val branchSummarizer: top.wkbin.taixu.harness.compaction.BranchSummarizer,
+    private val skillEvolutionAdvisor: top.wkbin.taixu.harness.skill.SkillEvolutionAdvisor? = null,
 ) {
     private val loopScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -919,6 +920,9 @@ class HarnessLoop @Inject constructor(
                     taskId?.let { agentTaskStateMachine.markCompleted(it) }
                     operationCoordinator.finish(sessId, "completed", messageProjector.messagesFlow(sessId).value.lastOrNull()?.id)
                     stateMirrors.setRunState(sessId, SessionRunState.COMPLETED)
+                    // 千问式「对话后技能进化」：一轮有效工作结束后异步分析是否值得
+                    // 沉淀新技能/修复既有技能；失败与取消路径不触发，且完全不影响主对话
+                    skillEvolutionAdvisor?.maybeSuggest(sessId)
                 }
                 RunResult.WaitingApproval -> {
                     taskId?.let { agentTaskStateMachine.markWaitingApproval(it) }
