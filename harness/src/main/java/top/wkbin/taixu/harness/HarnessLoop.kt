@@ -802,7 +802,6 @@ class HarnessLoop @Inject constructor(
     ) {
         if (tombstonedSessions.contains(sessId)) return
         loopScope.launch {
-            enqueueOnBusy?.taskId?.let { createDurableTask(sessId, enqueueOnBusy) }
             val mutex = sessionMutexes.getOrPut(sessId) { Mutex() }
             var refreshQueue = false
             mutex.withLock {
@@ -819,6 +818,9 @@ class HarnessLoop @Inject constructor(
                     }
                     return@withLock
                 }
+                // durable task 延迟到 tombstone/DB 检查之后创建：会话删除窗口内
+                // 此前会为已删除会话留下永久 QUEUED 的任务行
+                enqueueOnBusy?.taskId?.let { createDurableTask(sessId, enqueueOnBusy) }
                 launchSessionJobLocked(sessId, enqueueOnBusy?.taskId, block = block)
             }
             if (refreshQueue) refreshPendingProjection(sessId)

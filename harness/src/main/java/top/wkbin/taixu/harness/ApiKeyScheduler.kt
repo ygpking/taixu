@@ -31,6 +31,8 @@ internal class ApiKeyScheduler(
 
         val now = nowMillis()
         val poolId = normalized.joinToString(separator = "|") { fingerprint(it) }
+        // cursors 按池指纹累积且永不清理：顺手做个上限，损失仅是短暂的轮询公平性
+        if (cursors.size > 64) cursors.clear()
         val start = (cursors[poolId] ?: 0).mod(normalized.size)
         var shortestWait = Long.MAX_VALUE
 

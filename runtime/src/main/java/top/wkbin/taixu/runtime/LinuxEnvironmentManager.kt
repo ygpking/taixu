@@ -115,6 +115,11 @@ class LinuxEnvironmentManager @Inject constructor(
             publish(distroId, updated)
             _effectiveEnvironment.value = runCatching { readEffectiveEnvironment(distroId) }
                 .getOrDefault(_effectiveEnvironment.value)
+        }.also { result ->
+            // 取消必须向上传播，不能被降级成 failure 结果
+            if (result.isFailure && result.exceptionOrNull() is kotlinx.coroutines.CancellationException) {
+                throw result.exceptionOrNull() as kotlinx.coroutines.CancellationException
+            }
         }
     }
 

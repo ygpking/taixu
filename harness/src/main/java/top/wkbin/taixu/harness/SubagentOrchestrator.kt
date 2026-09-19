@@ -547,11 +547,13 @@ internal suspend fun paginateSubagentSummary(
     val overflowTasks = outcomes.filter { it.summary.length > PER_TASK_INLINE_BUDGET }
     val spillDir = ".taixu-subagent"
     val spilled = mutableMapOf<String, String>() // laneName -> 相对路径
-    overflowTasks.forEach { outcome ->
+    overflowTasks.forEachIndexed { taskIndex, outcome ->
+        // 路由失败的 outcome subSessionId 为空串：此前全部落同名 .md 互相覆盖
         val fileName = outcome.subSessionId
             .filter { it.isLetterOrDigit() || it == '-' || it == ':' }
             .replace(':', '-')
-            .takeLast(80) + ".md"
+            .takeLast(80)
+            .ifBlank { "task-$taskIndex" } + ".md"
         val relativePath = "$spillDir/$fileName"
         // 落盘失败不阻塞：该任务按普通截断处理
         if (fileAccess.write(relativePath, outcome.summary) is top.wkbin.taixu.core.common.result.AppResult.Success) {

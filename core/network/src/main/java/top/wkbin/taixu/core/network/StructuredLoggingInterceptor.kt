@@ -44,11 +44,11 @@ class StructuredLoggingInterceptor @Inject constructor() : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
         val startTime = System.currentTimeMillis()
-        
+
         // 构建请求日志
         val requestLog = buildRequestLog(request)
         logJson(requestLog)
-        
+
         // 执行请求
         val response = try {
             chain.proceed(request)
@@ -58,12 +58,15 @@ class StructuredLoggingInterceptor @Inject constructor() : Interceptor {
             logJson(errorLog)
             throw e
         }
-        
+
         // 构建响应日志
         val durationMs = System.currentTimeMillis() - startTime
+        // 关键：响应体只能读一次。peekBody 在缓冲内复制而不消费响应体——
+        // 此前 body.string() 读尽并关闭 body 后直接 return，调用方拿到必然
+        // "closed" 的 response，一旦把本拦截器接入任何 client 全局网络即损坏。
         val responseLog = buildResponseLog(request, response, durationMs)
         logJson(responseLog)
-        
+
         return response
     }
 
@@ -108,16 +111,12 @@ class StructuredLoggingInterceptor @Inject constructor() : Interceptor {
             put("headers", buildHeadersJson(response.headers))
             put("duration_ms", durationMs)
             
-            // 响应体（如果有且可读）
-            response.body?.let { body ->
-                val bodyStr = body.string()
-                
-                // 脱敏处理
+            // 响应体（如果有且可读）：peekBody 快照可安全读取，不消费真实响应体
+            runCatching { response.peekBody(MAX_PEEK_BYTES) }.getOrNull()?.let { peeked ->
+                val bodyStr = peeked.string()
+
                 put("body", redactSensitiveData(bodyStr))
-                put("content_length", body.contentLength())
-                
-                // 注意：body.string() 只能调用一次，需要重新构造 response
-                // 实际使用中需要在返回前重建 response
+                put("content_length", response.body?.contentLength())
             } ?: put("body", JSONObject.NULL)
         }
     }
@@ -220,5 +219,7 @@ class StructuredLoggingInterceptor @Inject constructor() : Interceptor {
 
     companion object {
         private const val TAG = "HttpStructuredLog"
+        /** peek 上限：日志只需截断样本，避免大响应整体缓冲 */
+        private const val MAX_PEEK_BYTES = 1L * 1024L * 1024L
     }
 }

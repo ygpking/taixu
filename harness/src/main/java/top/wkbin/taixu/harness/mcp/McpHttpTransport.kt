@@ -150,7 +150,12 @@ class McpHttpTransport @Inject constructor(
     }
 
     private fun isTransportFailure(t: Throwable): Boolean =
-        t is IOException || (t is IllegalStateException && t.message?.startsWith("MCP HTTP ") == true)
+        // SSE 流中途断开（ISE "MCP SSE..."）、响应体超限（require 抛 IAE）等
+        // 本类自抛的异常本质上都是传输故障，须触发会话重建重试，
+        // 否则一个已死的 legacy SSE 会话会留在连接池里持续失败。
+        t is IOException ||
+            t is IllegalArgumentException ||
+            (t is IllegalStateException && t.message?.startsWith("MCP ") == true)
 
     private suspend fun ensureSession(server: McpServerConfig, bypassCooldown: Boolean = false): HttpSession =
         sessionMutexes.getOrPut(server.id) { Mutex() }.withLock {

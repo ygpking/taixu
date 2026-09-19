@@ -58,19 +58,37 @@ internal fun AppPickerDialog(
     onSelect: (ApplicationInfo) -> Unit,
 ) {
     val context = LocalContext.current
-    val apps = remember {
-        runCatching {
-            context.packageManager.getInstalledApplications(0)
-                .filter { it.sourceDir != null && java.io.File(it.sourceDir).isFile }
-                .sortedBy { it.appLabel(context).lowercase() }
-        }.getOrDefault(emptyList())
+    // 枚举 + loadLabel（IPC）在 200+ 应用设备上耗时数百毫秒，不能放组合期主线程；
+    // label 预解析进列表，避免每个 item 组合时重复 loadLabel。
+    // null = 仍在加载。
+    val appState by androidx.compose.runtime.produceState<List<Pair<ApplicationInfo, String>>?>(
+        initialValue = null,
+        key1 = context,
+    ) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                context.packageManager.getInstalledApplications(0)
+                    .filter { it.sourceDir != null && java.io.File(it.sourceDir).isFile }
+                    .map { it to it.appLabel(context).lowercase() }
+                    .sortedBy { it.second }
+            }.getOrDefault(emptyList())
+        }
     }
+    val appsLoading = appState == null
+    val apps = appState.orEmpty()
     RuntimeAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.workspace_choose_installed_app), fontWeight = FontWeight.Bold) },
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
-                if (apps.isEmpty()) {
+                if (appsLoading) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                        horizontalArrangement = Arrangement.Center,
+                    ) {
+                        RuntimeCircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    }
+                } else if (apps.isEmpty()) {
                     Text(
                         stringResource(R.string.workspace_apps_unavailable),
                         style = MaterialTheme.typography.bodyMedium,
@@ -84,8 +102,7 @@ internal fun AppPickerDialog(
                     )
                     Spacer(Modifier.height(6.dp))
                     LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
-                        items(apps, key = { it.packageName }) { app ->
-                            val label = app.appLabel(context)
+                        items(apps, key = { it.first.packageName }) { (app, label) ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()

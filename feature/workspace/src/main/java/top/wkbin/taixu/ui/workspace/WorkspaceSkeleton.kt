@@ -37,12 +37,20 @@ import top.wkbin.taixu.ui.components.RuntimeCard
 /** 模板预览图：按最长边 512px 采样解码，避免大图一次全量载入内存。 */
 @Composable
 internal fun TemplatePreviewImage(file: java.io.File, modifier: Modifier = Modifier) {
-    val bitmap = remember(file.absolutePath, file.lastModified()) {
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(file.absolutePath, bounds)
-        var sample = 1
-        while (bounds.outWidth / sample > 512 || bounds.outHeight / sample > 512) sample *= 2
-        BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample })
+    // 解码放 IO 线程：此前 remember 计算块在组合期做两次磁盘读 + Bitmap 解码，
+    // 模板网格滚动/重进组合时逐张卡顿
+    val bitmap by androidx.compose.runtime.produceState<android.graphics.Bitmap?>(
+        initialValue = null,
+        key1 = file.absolutePath,
+        key2 = file.lastModified(),
+    ) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.absolutePath, bounds)
+            var sample = 1
+            while (bounds.outWidth / sample > 512 || bounds.outHeight / sample > 512) sample *= 2
+            BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample })
+        }
     }
     bitmap?.let {
         Image(

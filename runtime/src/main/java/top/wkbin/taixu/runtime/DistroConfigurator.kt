@@ -44,6 +44,9 @@ class DistroConfigurator @Inject constructor(
         installPerlFixScript(distroId)
         runCatching {
             assetSynchronizer.syncAssetsToDistro(distroId)
+        }.onFailure {
+            // 静默吞错曾导致脚本不同步只能靠用户报"命令找不到"
+            logger.e("syncAssetsToDistro failed for $distroId", it)
         }
     }
 

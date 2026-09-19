@@ -453,7 +453,18 @@ internal class FtpSession(
         val pasv = passiveServer
         if (pasv != null) {
             return try {
-                pasv.accept().also { closePassiveServer() }
+                val accepted = pasv.accept()
+                // FTP bounce 防护：30s 窗口内任何主机都能抢连 PASV 端口；
+                // 数据连接必须来自控制连接的同一来源 IP
+                val peer = accepted.inetAddress?.hostAddress
+                if (peer == null || !peer.equals(clientIp, ignoreCase = true)) {
+                    onLog("[${clientIp}] 数据连接来源异常（$peer），已拒绝")
+                    runCatching { accepted.close() }
+                    closePassiveServer()
+                    null
+                } else {
+                    accepted.also { closePassiveServer() }
+                }
             } catch (e: Throwable) {
                 closePassiveServer()
                 null
@@ -863,7 +874,10 @@ internal class FtpSession(
                 config.sdcardDirectory?.canonicalFile,
             )
             val isContained = allowedRoots.any { root ->
-                canonicalTarget.absolutePath.startsWith(root.absolutePath)
+                // 必须带分隔符边界："/data/rootfs" 的纯前缀匹配会把同级目录
+                // rootfs.staging / rootfs.previous 也放进可访问范围
+                canonicalTarget.absolutePath == root.absolutePath ||
+                    canonicalTarget.absolutePath.startsWith(root.absolutePath + java.io.File.separator)
             }
             if (isContained) targetFile else null
         } catch (_: Throwable) {
