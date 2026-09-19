@@ -71,3 +71,7 @@ build-output.txt
 scripts_patch/
 
 
+
+# Agent/子智能体临时产物（不入库）
+.taixu-subagent/
+.tmp-probe/

@@ -108,7 +108,27 @@
 - 涉及文件：`ProviderClient.kt`、`LlmRequestCache.kt`、`SystemPromptBuilder.kt`、`AnthropicApi.kt`、`ResponsesApi.kt`、`ContextArchive.kt`、`CompactionManager.kt`、`core/model/ContextBudgetDefaults.kt`，以及配套测试 `AnthropicApiTest.kt`、`ResponsesApiTest.kt`、`ContextWatermarkRefactorTest.kt`；集中在 `harness` + `core/model`，无跨模块结构改动、无数据迁移。
 - ①③ 两常量回滚：把 `DEFAULT_MAX_KEEP_TOKENS` 改回 `20_000`、`DEFAULT_FOLDING_RATIO_PERCENT` 改回 `85` 即恢复原行为。
 
-## 8. 遗留项（未做，待决策）
+## 9. 正式版出包（云端 CI）
+
+线下 `assembleRelease` 在移动设备上**不可行**（内存受限：15G 总内存常被占用、可用 <4G，R8 混淆阶段会被 OOM 杀掉，多次尝试均中途终止）。**改用云端 CI**：
+
+- **触发**：`git push` 一个 tag（形如 `v0.15.16-self`）→ 自动触发 `.github/workflows/taixu-release-self.yml`；
+- **产物**：artifact `taixu-release-self`（约 10~11 MB），**不创建 GitHub Release**；
+- **同 tag 也会触发 `release.yml`**（需正式 keystore secret，仓库未配，故**必然 failure，属预期**，与代码无关）；
+- **查看状态**（浏览器访问 GitHub 在此网络常超时，用 API 更稳）：
+  ```bash
+  curl -s -H "User-Agent: taixu-agent" \
+    "https://api.github.com/repos/ygpking/taixu/actions/runs?per_page=6"
+  ```
+- 本次结果：**Build TaiXu Release (Self-Signed) #31 = success**，Unit Tests #77 = success（commit `6ea5dda`）。
+
+### 相关构建配置改动
+- `app/build.gradle.kts`：release **未配置正式签名时回退 debug 签名**（`signingConfig = signingConfigs.getByName("debug")`），使产物可直接安装验证；
+- R8 混淆与资源压缩**保持开启**（云端 CI 已为 R8 预留 4GB 堆，具备混淆条件）。
+
+---
+
+## 10. 遗留项（未做，待决策）
 
 - ~~**G2**：600 窗口与更早归档之间缺「自动桥」~~ → **已修**（见 §4 G2）。
 - **冗余包装**：`ChatApi.requestCacheKey` 现仅为转发到 `ProviderClient.requestCacheKey`，属冗余包装（非缺陷），可择机清理。
