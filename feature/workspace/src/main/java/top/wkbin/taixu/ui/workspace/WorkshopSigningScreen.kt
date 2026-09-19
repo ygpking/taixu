@@ -478,10 +478,4 @@ private val importDraftSaver = androidx.compose.runtime.saveable.listSaver<Works
         )
     },
 )
-
-private fun queryDisplayName(context: android.content.Context, uri: android.net.Uri): String? = runCatching {
-    context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-        val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-        if (nameIndex >= 0 && cursor.moveToFirst()) cursor.getString(nameIndex) else null
-    }
-}.getOrNull()
+// queryDisplayName 已抽至同包 WorkspaceAppPicker.kt 统一复用

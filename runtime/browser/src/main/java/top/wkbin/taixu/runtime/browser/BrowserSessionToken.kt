@@ -2,6 +2,7 @@ package top.wkbin.taixu.runtime.browser
 
 import kotlinx.serialization.Serializable
 import top.wkbin.taixu.core.browser.BrowserFamily
+import top.wkbin.taixu.core.browser.TaiXuNewTab
 
 /**
  * 一个浏览器 tab 的"逻辑身份"。Harness 工具的 args 中传 `tab: String`（字符串 ID），
@@ -12,7 +13,7 @@ data class BrowserSessionToken(
     val tabId: String,
     val family: BrowserFamily,
     val title: String = "",
-    val url: String = "about:blank",
+    val url: String = TaiXuNewTab.URL,
     val createdAt: Long = System.currentTimeMillis(),
 ) {
     companion object {
