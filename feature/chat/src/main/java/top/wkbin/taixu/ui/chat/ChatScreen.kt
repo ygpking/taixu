@@ -77,6 +77,7 @@ import top.wkbin.taixu.core.database.AiModelEntity
 import top.wkbin.taixu.core.model.ApprovalMode
 import top.wkbin.taixu.harness.AssistantText
 import top.wkbin.taixu.harness.HarnessMessage
+import top.wkbin.taixu.harness.SkillSuggestion
 import top.wkbin.taixu.harness.ToolCall
 import top.wkbin.taixu.harness.ToolResult
 import top.wkbin.taixu.harness.UserMessage
@@ -141,6 +142,7 @@ fun ChatScreen(
     val running by viewModel.running.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val input by viewModel.input.collectAsStateWithLifecycle()
+    val hiddenSkillSuggestions by viewModel.hiddenSkillSuggestions.collectAsStateWithLifecycle()
     val pendingAttachments by viewModel.pendingAttachments.collectAsStateWithLifecycle()
     val status by viewModel.status.collectAsStateWithLifecycle()
     val thinkingLive by viewModel.thinkingLive.collectAsStateWithLifecycle()
@@ -579,6 +581,9 @@ fun ChatScreen(
                     onViewSubagentLanes = { showBranches = true },
                     subagentBranches = branches,
                     onOpenSubagentBranch = viewModel::openSubagentResult,
+                    hiddenSkillSuggestions = hiddenSkillSuggestions,
+                    onApplySkillSuggestion = viewModel::applySkillSuggestion,
+                    onDismissSkillSuggestion = viewModel::dismissSkillSuggestion,
                 )
             }
 
@@ -1103,6 +1108,9 @@ private fun ChatPaneContent(
     onViewSubagentLanes: () -> Unit = {},
     subagentBranches: List<top.wkbin.taixu.harness.session.ConversationBranch> = emptyList(),
     onOpenSubagentBranch: (top.wkbin.taixu.harness.session.ConversationBranch) -> Unit = {},
+    hiddenSkillSuggestions: Set<String> = emptySet(),
+    onApplySkillSuggestion: (SkillSuggestion, Boolean) -> Unit = { _, _ -> },
+    onDismissSkillSuggestion: (String) -> Unit = {},
 ) {
     Column(modifier = modifier) {
         ChatMessageList(
@@ -1139,6 +1147,9 @@ private fun ChatPaneContent(
             onViewSubagentLanes = onViewSubagentLanes,
             subagentBranches = subagentBranches,
             onOpenSubagent = onOpenSubagentBranch,
+            hiddenSkillSuggestions = hiddenSkillSuggestions,
+            onApplySkillSuggestion = onApplySkillSuggestion,
+            onDismissSkillSuggestion = onDismissSkillSuggestion,
         )
 
         activePlan?.let { plan ->

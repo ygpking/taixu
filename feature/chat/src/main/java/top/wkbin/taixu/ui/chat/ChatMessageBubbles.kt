@@ -72,6 +72,9 @@ import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import top.wkbin.taixu.harness.AssistantText
 import top.wkbin.taixu.harness.CapabilityEvent
+import top.wkbin.taixu.harness.SkillSuggestion
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.material3.OutlinedButton
 import top.wkbin.taixu.harness.ModelSwitchEvent
 import top.wkbin.taixu.harness.UserMessage
 import top.wkbin.taixu.harness.checkpoint.RewindScope
@@ -839,6 +842,86 @@ internal fun ThinkingBlock(
                         reasoning,
                         modifier = Modifier.fillMaxWidth(),
                     )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 技能进化建议卡片（借鉴千问的对话后技能沉淀/进化）：
+ * 创建新技能 / 更新既有技能 / 忽略，动作完成后由上层隐藏卡片。
+ */
+@Composable
+internal fun SkillSuggestionCard(
+    suggestion: SkillSuggestion,
+    onCreate: () -> Unit,
+    onUpdate: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val isUpdate = suggestion.action == "update"
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                RuntimeIcon(
+                    RuntimeIconName.Sparkles,
+                    Modifier.size(14.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    if (isUpdate) "技能进化建议 · 修复既有技能" else "技能进化建议 · 沉淀为新技能",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            Text(
+                suggestion.skillName,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            if (suggestion.description.isNotBlank()) {
+                Text(
+                    suggestion.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (suggestion.reason.isNotBlank()) {
+                Text(
+                    "依据：" + suggestion.reason,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (isUpdate) {
+                    OutlinedButton(onClick = onUpdate, modifier = Modifier.height(34.dp)) {
+                        Text("更新技能", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+                Button(
+                    onClick = onCreate,
+                    modifier = Modifier.height(34.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp),
+                ) {
+                    Text(if (isUpdate) "另存为新技能" else "创建技能", style = MaterialTheme.typography.labelMedium)
+                }
+                TextButton(onClick = onDismiss, modifier = Modifier.height(34.dp)) {
+                    Text("忽略", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }

@@ -322,6 +322,7 @@ internal fun toolName(tool: HarnessTool, rawToolName: String? = null): String {
         HarnessTool.WRITE -> "write"
         HarnessTool.EDIT -> "edit"
         HarnessTool.BASE -> "base"
+        HarnessTool.LOAD_SKILL -> "load_skill"
         HarnessTool.PROCESS -> "process"
         HarnessTool.HOST -> "host"
         HarnessTool.DOWNLOAD -> "download"

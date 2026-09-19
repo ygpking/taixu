@@ -71,6 +71,7 @@ import top.wkbin.taixu.harness.AssistantText
 import top.wkbin.taixu.harness.CapabilityEvent
 import top.wkbin.taixu.harness.ModelSwitchEvent
 import top.wkbin.taixu.harness.HarnessMessage
+import top.wkbin.taixu.harness.SkillSuggestion
 import top.wkbin.taixu.harness.ToolCall
 import top.wkbin.taixu.harness.ToolResult
 import top.wkbin.taixu.harness.UserMessage
@@ -519,6 +520,7 @@ internal fun SubagentResultSheet(
                     ) { message ->
                         when (message) {
                             is UserMessage -> Unit
+                            is SkillSuggestion -> Unit
                             is AssistantText -> RuntimeCard(containerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
                                 MarkdownText(message.text, Modifier.fillMaxWidth())
                             }
@@ -532,6 +534,7 @@ internal fun SubagentResultSheet(
                             )
                             is CapabilityEvent -> Unit
                             is ModelSwitchEvent -> Unit
+                            is SkillSuggestion -> Unit
                             is ToolResult -> Unit
                         }
                     }

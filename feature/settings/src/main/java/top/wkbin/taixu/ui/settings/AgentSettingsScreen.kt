@@ -105,6 +105,7 @@ fun AgentSettingsScreen(
     // 「上下文与压缩」高级区：默认收起，只暴露「窗口 + 开关」，避免参数过载。
     var showContextAdvanced by remember { mutableStateOf(false) }
     val skills by viewModel.allSkills.collectAsStateWithLifecycle()
+    val skillEvolutionEnabled by viewModel.skillEvolutionSuggestions.collectAsStateWithLifecycle()
     val subagents by viewModel.allSubagents.collectAsStateWithLifecycle()
     val autoSubagentDelegation by viewModel.autoSubagentDelegationEnabled.collectAsStateWithLifecycle()
     val models by viewModel.models.collectAsStateWithLifecycle()
@@ -475,6 +476,29 @@ fun AgentSettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 6.dp, start = 4.dp),
                 )
+            }
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "对话后技能进化建议",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            "每轮工作结束后由模型判断是否值得沉淀新技能或修复既有技能，以卡片形式给出建议",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = skillEvolutionEnabled,
+                        onCheckedChange = { viewModel.setSkillEvolutionSuggestions(it) },
+                    )
+                }
             }
             item {
                 Button(

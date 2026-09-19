@@ -227,8 +227,16 @@ class SettingsDataStore @Inject constructor(
     private val customSystemPromptKey = stringPreferencesKey("custom_system_prompt")
     private val legacyEnvironmentVariablesKey = stringPreferencesKey("environment_variables_json")
     private val environmentPrivacyModeKey = booleanPreferencesKey("environment_privacy_mode")
+    private val skillEvolutionSuggestionsKey = booleanPreferencesKey("skill_evolution_suggestions")
     private val environmentJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; encodeDefaults = true }
     val environmentPrivacyMode: Flow<Boolean> = context.settingsDataStore.data.map { it[environmentPrivacyModeKey] ?: true }
+
+    /** 对话结束后自动建议「沉淀新技能 / 修复既有技能」（千问式自进化闭环） */
+    val skillEvolutionSuggestions: Flow<Boolean> = context.settingsDataStore.data.map { it[skillEvolutionSuggestionsKey] ?: true }
+
+    suspend fun setSkillEvolutionSuggestions(enabled: Boolean) {
+        context.settingsDataStore.edit { it[skillEvolutionSuggestionsKey] = enabled }
+    }
 
     suspend fun setEnvironmentPrivacyMode(enabled: Boolean) {
         context.settingsDataStore.edit { it[environmentPrivacyModeKey] = enabled }

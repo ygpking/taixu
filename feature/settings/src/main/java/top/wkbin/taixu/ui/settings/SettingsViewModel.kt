@@ -74,6 +74,7 @@ class SettingsViewModel @Inject constructor(
     private val appUpdateManager: top.wkbin.taixu.core.network.AppUpdateManager,
     private val subagentRepository: top.wkbin.taixu.core.database.AgentSubagentRepository,
     private val agentSkillRepository: AgentSkillRepository,
+    private val agentPreferences: top.wkbin.taixu.core.datastore.AgentPreferences,
     private val mcpServerRepository: McpServerRepository,
     private val storageMountBindingRepository: StorageMountBindingRepository,
     private val approvalRepository: top.wkbin.taixu.core.database.AgentApprovalRepository,
@@ -794,6 +795,14 @@ class SettingsViewModel @Inject constructor(
 
     fun toggleSkill(skillId: String, enabled: Boolean) {
         viewModelScope.launch { agentSkillRepository.setEnabled(skillId, enabled) }
+    }
+
+    /** 对话后技能进化建议开关（默认开） */
+    val skillEvolutionSuggestions: StateFlow<Boolean> = agentPreferences.skillEvolutionSuggestions
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+
+    fun setSkillEvolutionSuggestions(enabled: Boolean) {
+        viewModelScope.launch { agentPreferences.setSkillEvolutionSuggestions(enabled) }
     }
 
     fun addCustomSkill(name: String, description: String, systemPrompt: String, command: String?) {
