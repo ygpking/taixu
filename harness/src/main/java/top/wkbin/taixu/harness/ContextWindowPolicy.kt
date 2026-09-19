@@ -656,14 +656,18 @@ object ContextWindowPolicy {
      */
     private fun closeToolPairs(messages: List<HarnessMessage>, boundary: Int): Int {
         var closed = boundary.coerceIn(0, messages.size)
+        // 先一次 O(n) 建立 toolCallId -> 最后一次调用下标的索引：每个 ToolResult
+        // 都做全表 indexOfLast 是 O(n^2)，长会话在每次请求组装的热路径上放大。
+        val callIndexById = HashMap<String, Int>(messages.size)
+        messages.forEachIndexed { idx, msg ->
+            if (msg is ToolCall) callIndexById[msg.id] = idx
+        }
         do {
             val previousBoundary = closed
             messages.subList(closed, messages.size)
                 .filterIsInstance<ToolResult>()
                 .forEach { result ->
-                    val callIndex = messages.indexOfLast {
-                        it is ToolCall && it.id == result.toolCallId
-                    }
+                    val callIndex = callIndexById[result.toolCallId] ?: -1
                     if (callIndex in 0 until closed) closed = callIndex
                 }
         } while (closed < previousBoundary)

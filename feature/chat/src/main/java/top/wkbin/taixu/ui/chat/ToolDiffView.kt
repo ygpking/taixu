@@ -21,6 +21,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -309,19 +311,27 @@ private fun FilePathHeader(
     }
 
     // SAF 外部目录导出选择器
+    val exportScope = rememberCoroutineScope()
     val exportDocumentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument(mimeType),
     ) { uri ->
         if (uri != null && previewContent != null) {
-            runCatching {
-                context.contentResolver.openOutputStream(uri)?.use { output ->
-                    output.write(previewContent.toByteArray(Charsets.UTF_8))
-                    output.flush()
-                } ?: error("无法打开目标文件流")
-            }.onSuccess {
-                Toast.makeText(context, context.getString(R.string.chat_artifact_export_success), Toast.LENGTH_SHORT).show()
-            }.onFailure { err ->
-                Toast.makeText(context, context.getString(R.string.chat_artifact_export_failed, err.message ?: ""), Toast.LENGTH_SHORT).show()
+            val content = previewContent
+            // SAF 往返 + 内容可能数 MB，写文件必须离开主线程（此前回调在主线程直接 write，导出大文件即冻结 UI）
+            exportScope.launch {
+                val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.openOutputStream(uri)?.use { output ->
+                            output.write(content.toByteArray(Charsets.UTF_8))
+                            output.flush()
+                        } ?: error("无法打开目标文件流")
+                    }
+                }
+                result.onSuccess {
+                    Toast.makeText(context, context.getString(R.string.chat_artifact_export_success), Toast.LENGTH_SHORT).show()
+                }.onFailure { err ->
+                    Toast.makeText(context, context.getString(R.string.chat_artifact_export_failed, err.message ?: ""), Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }

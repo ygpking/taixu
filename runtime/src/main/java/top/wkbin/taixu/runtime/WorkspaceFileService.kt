@@ -130,6 +130,8 @@ class WorkspaceFileService @Inject constructor(
     private suspend fun <T> ioResult(fallback: String, block: suspend () -> T): AppResult<T> = withContext(Dispatchers.IO) {
         try {
             AppResult.Success(block())
+        } catch (cancellation: kotlinx.coroutines.CancellationException) {
+            throw cancellation
         } catch (throwable: Throwable) {
             AppResult.Failure(AppError(ErrorCode.IO, throwable.message ?: fallback, throwable))
         }

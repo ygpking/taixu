@@ -107,6 +107,8 @@ class ProcessShellExecutor @Inject constructor(
         stream.use { input ->
             val kept = ByteArrayOutputStream(MAX_CAPTURE_BYTES)
             val buffer = ByteArray(READ_BUFFER_BYTES)
+            // 多字节 UTF-8 字符跨读取边界时逐块 String() 会产生 U+FFFD 乱码（中文日志必现）
+            val utf8Decoder = top.wkbin.taixu.runtime.pty.IncrementalUtf8Decoder(READ_BUFFER_BYTES)
             var totalBytes = 0L
             // 🔒 排水循环绝不能被消费端异常杀死：stdout/stderr 两个读取协程并发调用
             // 同一个 onOutput，若回调内部抛出未捕获异常（例如共享 StringBuilder 的数据
@@ -122,7 +124,7 @@ class ProcessShellExecutor @Inject constructor(
                 val remaining = MAX_CAPTURE_BYTES - kept.size()
                 if (remaining > 0) kept.write(buffer, 0, minOf(read, remaining))
                 if (callback != null && read > 0) {
-                    val chunk = String(buffer, 0, read, Charsets.UTF_8)
+                    val chunk = utf8Decoder.decode(buffer, read)
                     try {
                         callback(chunk)
                         consecutiveCallbackFailures = 0

@@ -69,6 +69,9 @@ import top.wkbin.taixu.harness.ToolResult
 import top.wkbin.taixu.ui.components.RuntimeIcon
 import top.wkbin.taixu.ui.components.RuntimeIconName
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.graphics.drawscope.Stroke
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.text.BasicTextField
@@ -256,33 +259,32 @@ internal fun ChatComposer(
 
 
     // 现代化一体化输入胶囊 (Unified Chat Input Capsule with Aurora Glow)
-    val auroraBrush = if (running) {
-        androidx.compose.ui.graphics.Brush.linearGradient(
-            colors = listOf(
-                Color(0xFF00E5FF),
-                Color(0xFF7C4DFF),
-                Color(0xFFFF4081),
-                Color(0xFF00E5FF),
-            ),
-            start = androidx.compose.ui.geometry.Offset(glowOffset, 0f),
-            end = androidx.compose.ui.geometry.Offset(glowOffset + 600f, 600f),
-            tileMode = androidx.compose.ui.graphics.TileMode.Repeated,
-        )
-    } else null
-
+    // 流光值必须在 draw 阶段读取：此前 offset/pulse 在组合期读入 Brush/BorderStroke，
+    // agent 运行全程每帧重组整个输入区。drawBehind 只失效绘制层，零重组。
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .padding(top = 6.dp, bottom = 6.dp)
             .then(
-                if (running && auroraBrush != null) {
-                    Modifier.border(
-                        androidx.compose.foundation.BorderStroke(
-                            (1.2f + 0.3f * glowPulse).dp,
-                            auroraBrush,
-                        ),
-                        RoundedCornerShape(20.dp),
-                    )
+                if (running) {
+                    Modifier.drawBehind {
+                        val brush = androidx.compose.ui.graphics.Brush.linearGradient(
+                            colors = listOf(
+                                Color(0xFF00E5FF),
+                                Color(0xFF7C4DFF),
+                                Color(0xFFFF4081),
+                                Color(0xFF00E5FF),
+                            ),
+                            start = androidx.compose.ui.geometry.Offset(glowOffset, 0f),
+                            end = androidx.compose.ui.geometry.Offset(glowOffset + 600f, 600f),
+                            tileMode = androidx.compose.ui.graphics.TileMode.Repeated,
+                        )
+                        drawRoundRect(
+                            brush = brush,
+                            cornerRadius = CornerRadius(20.dp.toPx()),
+                            style = Stroke(width = (1.2f + 0.3f * glowPulse).dp.toPx()),
+                        )
+                    }
                 } else Modifier
             ),
         shape = RoundedCornerShape(20.dp),

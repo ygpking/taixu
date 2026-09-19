@@ -46,7 +46,11 @@ class LinuxMcpStdioChannel(
     private val maxFrameChars: Int = McpStdioTransport.MAX_FRAME_CHARS,
     private val bufferCapacity: Int = McpStdioTransport.MAX_BUFFERED_LINES,
 ) : McpStdioChannel {
-    private val lines: Channel<String> = Channel(capacity = bufferCapacity)
+    // 必须无界：两次请求之间没有消费者，有界通道一旦被服务端自发输出
+    // （进度通知/日志误写 stdout/banner 重放）填满，send 挂起 → 无人再读 PTY →
+    // 子进程写 stdout 阻塞、整个 server 冻结，下一次请求只能等 600s 超时。
+    // 单帧 1MB 上限已由 maxFrameChars 保证，空闲连接由上层 IDLE_TIMEOUT 回收。
+    private val lines: Channel<String> = Channel(Channel.UNLIMITED)
     override val incoming: ReceiveChannel<String> = lines
     override val isAlive: Boolean get() = session.isAlive
 

@@ -120,6 +120,12 @@ class SettingsDataStore @Inject constructor(
 
     suspend fun setWorkshopKeystores(value: List<WorkshopKeystore>) {
         context.settingsDataStore.edit { prefs ->
+            val current = prefs[workshopKeystoresKey]
+            if (current != null && secretManager.decrypt(current) == null) {
+                // Keystore 短暂故障导致存量密文解密失败时，内存里的"空表"不可信；
+                // 此时任何覆盖写（尤其 clear）都会把全部签名密文永久销毁——拒绝写入。
+                return@edit
+            }
             if (value.isEmpty()) {
                 prefs.remove(workshopKeystoresKey)
             } else {
@@ -140,6 +146,11 @@ class SettingsDataStore @Inject constructor(
 
     suspend fun setGitCredentials(value: List<GitCredential>) {
         context.settingsDataStore.edit { prefs ->
+            val current = prefs[gitCredentialsKey]
+            if (current != null && secretManager.decrypt(current) == null) {
+                // 同 setWorkshopKeystores：解密失败时拒绝覆盖写，防止整表凭据被销毁
+                return@edit
+            }
             if (value.isEmpty()) {
                 prefs.remove(gitCredentialsKey)
             } else {

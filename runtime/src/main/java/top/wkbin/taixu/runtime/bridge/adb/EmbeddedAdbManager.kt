@@ -97,7 +97,8 @@ class EmbeddedAdbManager @Inject constructor(
     private var client: Kadb? = null
 
     // 防止 resolveService 并发（NsdManager 不允许同时多个 resolve）
-    private val resolving = AtomicBoolean(false)
+    // resolve 串行化：NsdManager 不允许并发 resolve；排队保证并发发现的服务都被处理
+    private val resolveMutex = Mutex()
 
     // 已发现的端点缓存；key = serviceName
     private val pairingEndpointMap = ConcurrentHashMap<String, Endpoint>()
@@ -200,30 +201,31 @@ class EmbeddedAdbManager @Inject constructor(
     /**
      * 异步 resolve NsdServiceInfo，获取 host + port。
      * 使用已废弃但在所有版本均稳定的 resolveService API，无 onServiceUpdated 递归问题。
-     * 原子标志串行化保护：NsdManager 不支持并发 resolve。
+     * 串行化保护（Mutex 排队而非丢弃）：NsdManager 不支持并发 resolve；
+     * 此前 CAS 跳过会让并发发现的第二个服务（_adb-tls-pairing 与 _adb-tls-connect
+     * 几乎同时广播）被永久丢弃且 mDNS 不保证重播，配对/连接端点因此缺失。
      */
     @Suppress("DEPRECATION")
     private suspend fun resolveAsync(serviceInfo: NsdServiceInfo, isPairing: Boolean) =
         withContext(Dispatchers.IO) {
-            // 若已有进行中的 resolve，跳过
-            if (!resolving.compareAndSet(false, true)) return@withContext
-            try {
-                val resolved = resolveServiceSuspend(serviceInfo) ?: return@withContext
-                val host = resolved.host?.hostAddress?.takeIf { it.isNotBlank() } ?: return@withContext
-                val port = resolved.port.takeIf { it in VALID_PORTS } ?: return@withContext
-                val name = resolved.serviceName ?: serviceInfo.serviceName ?: return@withContext
-                val endpoint = Endpoint(name = name, host = host, port = port)
-                if (isPairing) pairingEndpointMap[name] = endpoint
-                else connectEndpointMap[name] = endpoint
-                publishDiscoveryState()
-                Log.i(TAG, "NSD resolved: $name @ $host:$port (pairing=$isPairing)")
+            resolveMutex.withLock {
+                try {
+                    val resolved = resolveServiceSuspend(serviceInfo) ?: return@withContext
+                    val host = resolved.host?.hostAddress?.takeIf { it.isNotBlank() } ?: return@withContext
+                    val port = resolved.port.takeIf { it in VALID_PORTS } ?: return@withContext
+                    val name = resolved.serviceName ?: serviceInfo.serviceName ?: return@withContext
+                    val endpoint = Endpoint(name = name, host = host, port = port)
+                    if (isPairing) pairingEndpointMap[name] = endpoint
+                    else connectEndpointMap[name] = endpoint
+                    publishDiscoveryState()
+                    Log.i(TAG, "NSD resolved: $name @ $host:$port (pairing=$isPairing)")
 
-                // 若已配对且发现了连接端点，自动尝试连接
-                if (!isPairing && client == null && preferences.adbPairedOnce.first()) {
-                    connect()
+                    // 若已配对且发现了连接端点，自动尝试连接
+                    if (!isPairing && client == null && preferences.adbPairedOnce.first()) {
+                        connect()
+                    }
+                } finally {
                 }
-            } finally {
-                resolving.set(false)
             }
         }
 
@@ -272,7 +274,11 @@ class EmbeddedAdbManager @Inject constructor(
     suspend fun pair(pairingCode: String): Result<Unit> = pair(null, pairingCode)
 
     /** 显式端口仅作为 mDNS 不可用时的兼容入口。 */
-    suspend fun pair(pairingPort: Int?, pairingCode: String): Result<Unit> = withContext(Dispatchers.IO) {
+    // 必须与 connect() 互斥：配对成功会置位 adbPairedOnce，mDNS 随即触发的自动
+    // connect() 与本函数尾部的 connectTo() 并发时会在 connectTo 内互相 close/覆盖
+    // 对方刚建立的 Kadb client。
+    suspend fun pair(pairingPort: Int?, pairingCode: String): Result<Unit> = mutex.withLock {
+        withContext(Dispatchers.IO) {
         runCatching {
             require(pairingCode.matches(PAIRING_CODE)) { "配对码必须是 6 位数字" }
             val endpoint = pairingEndpoint(pairingPort)
@@ -292,6 +298,7 @@ class EmbeddedAdbManager @Inject constructor(
             _state.value = ConnectionState.Failed(error.userMessage("无线 ADB 配对失败"))
             Log.w(TAG, "wireless adb pairing failed", error)
         }.map { }
+        }
     }
 
     // ── 连接 ────────────────────────────────────────────────────────────────

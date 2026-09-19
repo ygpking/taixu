@@ -234,11 +234,13 @@ class RuntimePathManager @Inject constructor(
             val bundledFile = File(nativeLibraryDir, bundledName)
             val hostFile = File(binDir, hostName)
             if (bundledFile.isFile && bundledFile.length() > MIN_TALLOC_BYTES) {
-                // Refresh tiny native dependencies after an APK update; equal
-                // file length alone does not prove that an old SONAME copy matches.
+                // Refresh tiny native dependencies after an APK update. 此前每次
+                // execute/startSession 都做 readBytes 逐字节比较（每条命令 2 次全量 IO）；
+                // 改用 length + lastModified 判脏：copyTo 的时间戳是拷贝时刻，
+                // APK 更新后 bundled 的 mtime 变新即触发重拷。
                 val needsCopy = !hostFile.isFile ||
                     hostFile.length() != bundledFile.length() ||
-                    !bundledFile.readBytes().contentEquals(hostFile.readBytes())
+                    hostFile.lastModified() < bundledFile.lastModified()
                 if (needsCopy) bundledFile.copyTo(hostFile, overwrite = true)
                 hostFile.setReadable(true, false)
                 hostFile.setWritable(true, true)

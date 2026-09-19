@@ -626,7 +626,9 @@ data class ApiMessage(
 data class ApiToolCall(
     val id: String,
     val type: String = "function",
-    val function: ApiFunctionCall,
+    // 个别网关下发缺 function 字段的 tool_call：此前整个响应 decode 失败；
+    // 给默认值把损失限制到单个工具调用（name 为空时下游本就按无效调用丢弃）
+    val function: ApiFunctionCall = ApiFunctionCall(name = "", arguments = ""),
 )
 
 /**

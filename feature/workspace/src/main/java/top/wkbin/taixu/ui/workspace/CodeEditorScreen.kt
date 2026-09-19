@@ -124,15 +124,24 @@ fun CodeEditorScreen(
         viewModel.openFile(projectName, relativePath)
     }
 
+    // 编辑器自身触发的 VM 回写记录在 pushedContent：fileContent 变为该值时
+    // 不再进入 toString+equals 全文比较（此前每次按键触发 2-3 次 O(n) 全文拷贝）
+    var pushedContent by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<String?>(null) }
+
     LaunchedEffect(fileContent) {
+        if (fileContent == pushedContent) return@LaunchedEffect
         if (editorState.text.toString() != fileContent) {
             editorState.setTextAndPlaceCursorAtEnd(fileContent)
         }
+        pushedContent = fileContent
     }
 
     LaunchedEffect(editorState) {
         snapshotFlow { editorState.text.toString() }.collect { editedText ->
-            if (editedText != fileContent) viewModel.onContentChanged(editedText)
+            if (editedText != fileContent) {
+                viewModel.onContentChanged(editedText)
+                pushedContent = editedText
+            }
         }
     }
 
@@ -211,8 +220,8 @@ fun CodeEditorScreen(
                 }
             } else {
                 // 代码编辑核心区域
-                val lines = remember(fileContent) { fileContent.split('\n') }
-                val lineCount = lines.size
+                // 行数用 count 计算：split 会为取行数创建全部行对象（大文件纯浪费）
+                val lineCount = remember(fileContent) { fileContent.count { it == '\n' } + 1 }
                 val scrollState = rememberScrollState()
                 val horizontalScrollState = rememberScrollState()
 
