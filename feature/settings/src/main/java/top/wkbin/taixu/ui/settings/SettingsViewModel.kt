@@ -82,7 +82,6 @@ class SettingsViewModel @Inject constructor(
     private val appUpdateManager: top.wkbin.taixu.core.network.AppUpdateManager,
     private val subagentRepository: top.wkbin.taixu.core.database.AgentSubagentRepository,
     private val agentSkillRepository: AgentSkillRepository,
-    private val agentPreferences: top.wkbin.taixu.core.datastore.AgentPreferences,
     private val mcpServerRepository: McpServerRepository,
     private val storageMountBindingRepository: StorageMountBindingRepository,
     private val approvalRepository: top.wkbin.taixu.core.database.AgentApprovalRepository,

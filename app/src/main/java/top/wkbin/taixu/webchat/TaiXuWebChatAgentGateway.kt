@@ -20,6 +20,7 @@ import top.wkbin.taixu.harness.CapabilityEvent
 import top.wkbin.taixu.harness.HarnessLoop
 import top.wkbin.taixu.harness.HarnessMessage
 import top.wkbin.taixu.harness.ModelSwitchEvent
+import top.wkbin.taixu.harness.SkillSuggestion
 import top.wkbin.taixu.harness.ToolCall
 import top.wkbin.taixu.harness.ToolResult
 import top.wkbin.taixu.harness.UserMessage
@@ -191,6 +192,21 @@ class TaiXuWebChatAgentGateway @Inject constructor(
                 put("toContextTokens", message.toContextTokens)
                 put("compacted", message.compacted)
                 put("foldedMessageCount", message.foldedMessageCount)
+            },
+            createAt = message.createdAt,
+        )
+        // 技能进化建议为 UI-only 消息（绝不发给模型），webchat 侧渲染为信息卡片
+        is SkillSuggestion -> WebChatMessage(
+            id = message.id,
+            user = 0,
+            type = 2,
+            content = buildJsonObject {
+                put("type", "agent_tool_summary")
+                put("toolTitle", "技能建议: ${message.skillName}")
+                put("toolType", "skill_suggestion")
+                put("status", message.status)
+                put("action", message.action)
+                put("details", message.description)
             },
             createAt = message.createdAt,
         )
