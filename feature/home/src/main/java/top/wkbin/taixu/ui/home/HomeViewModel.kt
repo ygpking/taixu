@@ -259,8 +259,10 @@ class HomeViewModel @Inject constructor(
                     val totalBytes = stat.totalBytes
                     val availBytes = stat.availableBytes
                     val usedBytes = (totalBytes - availBytes).coerceAtLeast(0)
-                    totalGb = String.format("%.1f", totalBytes.toDouble() / (1024 * 1024 * 1024)).toDoubleOrNull() ?: 0.0
-                    usedGb = String.format("%.1f", usedBytes.toDouble() / (1024 * 1024 * 1024)).toDoubleOrNull() ?: 0.0
+                    // 直接保留 Double：此前 String.format 默认 locale 再 toDoubleOrNull，
+                    // 逗号小数语言（de/fr/ru 等）解析失败恒为 0.0
+                    totalGb = totalBytes / (1024.0 * 1024 * 1024)
+                    usedGb = usedBytes / (1024.0 * 1024 * 1024)
                     storagePercent = if (totalBytes > 0) ((usedBytes * 100) / totalBytes).toInt() else 0
                 }
 

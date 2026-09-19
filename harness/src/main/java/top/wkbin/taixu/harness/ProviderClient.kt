@@ -5,6 +5,7 @@ import top.wkbin.taixu.core.datastore.AgentPreferences
 import top.wkbin.taixu.core.tools.ProviderRepository
 import java.io.IOException
 import java.net.SocketTimeoutException
+import java.security.MessageDigest
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.TimeUnit
@@ -190,12 +191,27 @@ internal class ChatApi(
                 val demuxer = ThinkTagStreamDemuxer(onReasoning, onDelta)
                 val toolCalls = mutableMapOf<Int, ToolCallAccumulator>()
                 var usage = ChatUsage()
+                // 收尾标记：[DONE] 见到才算完整流。未见到时结果可能被对端截断——
+                // 不落缓存（避免重试/下一轮回放残缺文本），但正常返回保持兼容
+                //（个别网关确实不发 [DONE]，不能把它们全部判死）。
+                var sawDone = false
                 while (true) {
                     val line = source.readUtf8Line() ?: break
                     if (!line.startsWith("data:")) continue
                     val data = line.removePrefix("data:").trim()
-                    if (data == "[DONE]") break
+                    if (data == "[DONE]") {
+                        sawDone = true
+                        break
+                    }
                     val root = runCatching { json.parseToJsonElement(data) as? JsonObject }.getOrNull()
+                    // 流中错误块（无 choices，此前被 ?: continue 静默吞掉当成功）：
+                    // 显式抛 IOException 走既有重试路径
+                    if (root?.get("error") is JsonObject) {
+                        val message = (root["error"] as? JsonObject)
+                            ?.get("message")?.jsonPrimitive?.contentOrNull
+                            ?: data.take(256)
+                        throw IOException("流式请求失败：$message")
+                    }
                     if (root != null && firstEventState.compareAndSet(
                             ProviderClient.FIRST_EVENT_WAITING,
                             ProviderClient.FIRST_EVENT_RECEIVED,
@@ -259,8 +275,10 @@ internal class ChatApi(
                     reasoningContent = demuxer.fullReasoning.toString().ifEmpty { null },
                     usage = usage,
                 )
-                // 流式成功收尾才落缓存（与失败不缓存保持一致）：相同请求下次重发可直接命中回放。
-                requestCache.put(cacheKey, streamResult)
+                // 见到 [DONE] 才落缓存：截断流不缓存，避免把残缺回复回放给重试/下一轮
+                if (sawDone) {
+                    requestCache.put(cacheKey, streamResult)
+                }
                 streamResult
             }
         } catch (io: IOException) {
@@ -954,11 +972,22 @@ class ProviderClient @Inject constructor(
         internal const val FIRST_EVENT_RECEIVED = 1
         internal const val FIRST_EVENT_TIMED_OUT = 2
 
-        /** 请求缓存 key：模型 + 消息内容哈希（ModelConfig/ApiMessage 均为 data class，hashCode 基于内容）。
+        /** 请求缓存 key：模型 + 消息内容 SHA-256 指纹。
          *  三协议（OpenAI Chat / Anthropic Messages / OpenAI Responses）共用同一 key 空间；
-         *  ModelConfig 的 protocol/responseApiEnabled 参与 hashCode，故跨协议请求天然隔离，不会互相污染缓存。 */
-        internal fun requestCacheKey(model: ModelConfig, messages: List<ApiMessage>): String =
-            "${model.hashCode()}|${messages.hashCode()}"
+         *  ModelConfig 的 protocol/responseApiEnabled 参与指纹，故跨协议请求天然隔离。
+         *  此前用两个 32 位 hashCode 拼接，长消息列表上存在非零碰撞概率——碰撞时会把
+         *  A 对话的回复原样回放给 B 对话（静默上下文错乱），改用 SHA-256 消除。 */
+        internal fun requestCacheKey(model: ModelConfig, messages: List<ApiMessage>): String {
+            val digest = MessageDigest.getInstance("SHA-256")
+            // apiKey 不参与指纹（避免敏感值进入中间字符串），其余字段全部参与
+            digest.update(model.copy(apiKey = null).toString().encodeToByteArray())
+            digest.update(byteArrayOf(0))
+            messages.forEach { message ->
+                digest.update(message.toString().encodeToByteArray())
+                digest.update(byteArrayOf(1))
+            }
+            return digest.digest().joinToString("") { "%02x".format(it) }
+        }
 
         /** 按预估输入规模放宽首字看门狗：超大上下文 Prefill 常超过默认 90s。 */
         internal fun resolveFirstEventTimeoutMs(estimatedTokens: Int): Long = when {

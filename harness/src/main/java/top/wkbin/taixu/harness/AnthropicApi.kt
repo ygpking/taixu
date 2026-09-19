@@ -122,6 +122,8 @@ internal class AnthropicApi(
                 // index -> 工具调用累积器（Claude 以 content block index 标识每个 tool_use）
                 val toolCalls = mutableMapOf<Int, ToolCallAccumulator>()
                 var usage = ChatUsage()
+                // 收尾标记：只有见到 message_stop 才算完整流（EOF 未见到=对端中途断流）
+                var sawMessageStop = false
                 while (true) {
                     val line = source.readUtf8Line() ?: break
                     if (!line.startsWith("data:")) continue
@@ -186,9 +188,28 @@ internal class AnthropicApi(
                                 }
                             }
                         }
-                        "message_stop" -> break
+                        "error" -> {
+                            // 流中错误事件（如 overloaded_error）：此前被 else 分支静默吞掉、
+                            // 循环读到 EOF 当成功返回。显式抛 IOException 走既有重试路径
+                            //（对齐 ResponsesApi 的 response.failed / error 处理）。
+                            val error = event["error"] as? JsonObject
+                            val message = error?.get("message")?.jsonPrimitive?.contentOrNull
+                                ?: event["message"]?.jsonPrimitive?.contentOrNull
+                                ?: "未知流内错误"
+                            throw IOException("Claude 流式请求失败：$message")
+                        }
+                        "message_stop" -> {
+                            sawMessageStop = true
+                            break
+                        }
                         else -> Unit // message_start / ping / content_block_stop / message_delta 等无需处理
                     }
+                }
+                if (!sawMessageStop) {
+                    // 干净 EOF 但未收到 message_stop：对端半关闭导致截断（readUtf8Line 返回
+                    // null 不抛异常）。此前截断结果被当成功返回并写入请求缓存，重试/下一轮
+                    // 会回放残缺文本污染上下文。改为抛异常走重试，且不落缓存。
+                    throw IOException("Claude 流提前结束（未收到 message_stop），响应不完整")
                 }
                 toolCalls.values.forEach { it.publishProgress(onToolProgress, force = true) }
                 val streamResult = ChatResult(
@@ -200,7 +221,7 @@ internal class AnthropicApi(
                     reasoningContent = reasoningText.toString().ifEmpty { null },
                     usage = usage,
                 )
-                // 流式成功收尾才落缓存（失败不缓存）：相同请求下次重发可直接命中回放。
+                // 完整收尾才落缓存（失败不缓存）：相同请求下次重发可直接命中回放。
                 requestCache.put(cacheKey, streamResult)
                 streamResult
             }
@@ -343,6 +364,34 @@ internal class AnthropicApi(
             }
         }
 
+        // Anthropic Messages API 强制 user/assistant 严格交替，连续同角色消息直接
+        // HTTP 400 "roles must alternate"。OpenAI 格式的转写完全允许连续 user：
+        // ① 上一轮以 tool_result（user）结尾时，轮次自动续跑/steering 会追加一条
+        //    普通 user 消息；② 用户在工具结果落地后直接发新消息。故此处把相邻
+        //    同角色消息的 content 块按序拼接合并（tool_result 与 text 块可合法共存
+        //    于同一条 user 消息）。
+        val mergedMessages = mutableListOf<JsonObject>()
+        for (message in anthropicMessages) {
+            val previous = mergedMessages.lastOrNull()
+            val role = message["role"]?.jsonPrimitive?.contentOrNull
+            if (previous != null && role != null &&
+                previous["role"]?.jsonPrimitive?.contentOrNull == role
+            ) {
+                mergedMessages[mergedMessages.size - 1] = buildJsonObject {
+                    put("role", role)
+                    put(
+                        "content",
+                        buildJsonArray {
+                            (previous["content"] as? JsonArray)?.forEach { add(it) }
+                            (message["content"] as? JsonArray)?.forEach { add(it) }
+                        },
+                    )
+                }
+            } else {
+                mergedMessages += message
+            }
+        }
+
         val requestBody = buildJsonObject {
             put("model", model.model)
             // Anthropic 必填；未配置时用安全默认值
@@ -365,7 +414,7 @@ internal class AnthropicApi(
                     .append(ProviderClient.buildToolsTextDescription(dynamicTools))
             }
             if (!model.pureChatMode && systemPrompt.isNotEmpty()) put("system", systemPrompt.toString())
-            put("messages", JsonArray(anthropicMessages))
+            put("messages", JsonArray(mergedMessages))
             // 仅 NATIVE 模式注入标准 tools；纯净模式与 JSON_TEXT / DISABLED 均不注入
             if (!model.pureChatMode && model.toolCallMode == ToolCallMode.NATIVE && dynamicTools.isNotEmpty()) {
                 put(

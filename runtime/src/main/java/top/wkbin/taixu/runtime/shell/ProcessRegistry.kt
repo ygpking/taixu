@@ -13,6 +13,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -57,7 +58,10 @@ class ProcessRegistryImpl @Inject constructor(
     private val prootCommandBuilder: ProotCommandBuilder,
 ) : ProcessRegistry {
     private val mutex = Mutex()
-    private val processes = LinkedHashMap<String, ManagedProcess>()
+    // list()/getLogs() 在 UI 与 harness 线程无锁读取，与 mutex 内的写路径并发；
+    // LinkedHashMap 会在并发读写下抛 ConcurrentModificationException 甚至损坏结构，
+    // 必须用并发容器。展示顺序由 list() 内显式排序保证（见下）。
+    private val processes = ConcurrentHashMap<String, ManagedProcess>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val logsMap = ConcurrentHashMap<String, MutableStateFlow<List<String>>>()
 
@@ -65,14 +69,14 @@ class ProcessRegistryImpl @Inject constructor(
         logsMap.computeIfAbsent(key) { MutableStateFlow(emptyList()) }
 
     private fun appendLog(key: String, line: String) {
-        val flow = getOrCreateLogFlow(key)
-        val current = flow.value
-        val updated = if (current.size >= 500) {
-            current.drop(current.size - 499) + line
-        } else {
-            current + line
+        // StateFlow.value 读-改-写在多协程日志并发下会互相覆盖丢行，必须原子更新
+        getOrCreateLogFlow(key).update { current ->
+            if (current.size >= 500) {
+                current.drop(current.size - 499) + line
+            } else {
+                current + line
+            }
         }
-        flow.value = updated
     }
 
     override suspend fun start(
@@ -156,7 +160,10 @@ class ProcessRegistryImpl @Inject constructor(
         dead.size
     }
 
-    override fun list(): List<ManagedProcess> = processes.values.toList()
+    override fun list(): List<ManagedProcess> =
+        // ConcurrentHashMap 无稳定顺序；此前 LinkedHashMap 按插入序展示，
+        // 用 startedAt（+id 决胜）排序保持等价且确定的行为
+        processes.values.sortedWith(compareBy({ it.startedAt }, { it.id }))
 
     override fun observeLogs(idOrToolId: String): Flow<List<String>> =
         getOrCreateLogFlow(idOrToolId).asStateFlow()

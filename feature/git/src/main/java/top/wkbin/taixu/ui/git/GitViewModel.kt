@@ -286,7 +286,9 @@ class GitViewModel @Inject constructor(
     /** 懒加载提交详情（hash → 完整信息 + diff） */
     fun loadCommitDetail(hash: String) {
         val state = _uiState.value
-        if (state.projectPath.isBlank() || state.commitDetails.containsKey(hash)) return
+        // busy 守卫：详情加载会覆盖单槽 operation 状态，若 push/pull 进行中放行，
+        // 详情先返回会把 operation 清空、UI 解锁，导致对同一 .git 的并发写访问
+        if (state.busy || state.projectPath.isBlank() || state.commitDetails.containsKey(hash)) return
         viewModelScope.launch {
             _uiState.update { it.copy(operation = GitOperation.DETAIL) }
             val detail = gitManager.getCommitDetail(state.projectPath, hash)

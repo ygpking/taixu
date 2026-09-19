@@ -17,6 +17,7 @@
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/syscall.h>
 
 /* 前置声明：strings_array 的失败清理路径会用到这两个辅助函数，
  * 它们定义在文件后半部分，需先声明以满足 C99 的“先声明后使用”。 */
@@ -67,6 +68,24 @@ static void free_strings(char **array) {
 static void throw_io(JNIEnv *env, const char *what) {
     jclass cls = (*env)->FindClass(env, "java/io/IOException");
     if (cls != NULL) (*env)->ThrowNew(env, cls, what);
+}
+
+/*
+ * Close every fd >= first in the forked child before execve.
+ *
+ * fork() 复制宿主 App 进程的全部文件描述符：SQLite 数据库、DataStore（含
+ * API key 密文）、下载临时文件、网络套接字都会被 exec 后的 shell 继承——
+ * PRoot 沙箱内以 root 运行的进程可以直接通过 /proc/self/fd/N 读写宿主
+ * 私有数据，同时泄漏的 fd 也会逐渐耗尽进程配额。优先用 close_range
+ * （Linux 5.9+）原子收口，老内核回退为逐个 close。
+ */
+static void close_from(int first) {
+#if defined(SYS_close_range)
+    if (syscall(SYS_close_range, (unsigned)first, ~0U, 0) == 0) return;
+#endif
+    long max_fd = sysconf(_SC_OPEN_MAX);
+    int limit = (max_fd > 0 && max_fd <= (1 << 20)) ? (int)max_fd : 1024;
+    for (int fd = first; fd < limit; fd++) close(fd);
 }
 
 /*
@@ -128,6 +147,8 @@ Java_top_wkbin_taixu_runtime_pty_NativePty_openAndExec(
         dup2(slave, 2);
         if (slave > 2) close(slave);
         if (master >= 0) close(master);
+        /* stdio 已接管 slave，exec 前关闭全部继承 fd（见 close_from 注释） */
+        close_from(3);
         if (ccwd != NULL) chdir(ccwd);
         if (cargv != NULL && cargv[0] != NULL) {
             execve(cargv[0], cargv, cenvp);

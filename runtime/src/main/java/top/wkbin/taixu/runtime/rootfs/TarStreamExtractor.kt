@@ -243,6 +243,9 @@ class TarStreamExtractor internal constructor(
             return
         }
         if (file.isDirectory) {
+            // walkBottomUp 后序遍历：子项先于父目录被访问，目录在子项清空后可删。
+            // 此前只删文件和符号链接、目录从不删除，whiteout/覆盖场景会残留
+            // 空目录骨架，破坏 overlay 语义（下层已删除的目录结构会"复活"）。
             file.walkBottomUp().forEach { sub ->
                 if (!sub.canWrite()) {
                     sub.setWritable(true, true)
@@ -250,7 +253,7 @@ class TarStreamExtractor internal constructor(
                 val subPath = sub.toPath()
                 if (Files.isSymbolicLink(subPath)) {
                     runCatching { Files.delete(subPath) }
-                } else if (!sub.isDirectory) {
+                } else {
                     sub.delete()
                 }
             }
