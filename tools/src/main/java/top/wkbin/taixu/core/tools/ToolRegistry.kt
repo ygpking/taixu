@@ -336,7 +336,7 @@ class ToolRegistry @Inject constructor(
     private fun loadLocalManifests(): List<ToolManifest> {
         if (!localRoot.isDirectory) return emptyList()
         return localRoot.listFiles().orEmpty().mapNotNull { idDir ->
-            idDir.listFiles().orEmpty().filter { it.isDirectory }.maxByOrNull { it.name }
+            idDir.listFiles().orEmpty().filter { it.isDirectory }.maxWithOrNull { a, b -> compareVersionNames(a.name, b.name) }
                 ?.let { versionDir ->
                     runCatching {
                         json.decodeFromString<ToolManifest>(File(versionDir, "manifest.json").readText())
@@ -344,6 +344,25 @@ class ToolRegistry @Inject constructor(
                     }.getOrNull()
                 }
         }.let { runCatching { ToolManifestValidator.validateAll(it) }.getOrDefault(emptyList()) }
+    }
+
+    /** 版本目录名的自然比较："1.10" > "1.9"。此前字典序 maxByOrNull 会选中旧版本。 */
+    private fun compareVersionNames(a: String, b: String): Int {
+        val sa = a.split('.')
+        val sb = b.split('.')
+        for (i in 0 until maxOf(sa.size, sb.size)) {
+            val va = sa.getOrNull(i)
+            val vb = sb.getOrNull(i)
+            if (va == vb) continue
+            if (va == null) return -1
+            if (vb == null) return 1
+            val na = va.toLongOrNull()
+            val nb = vb.toLongOrNull()
+            if (na != null && nb != null && na != nb) return na.compareTo(nb)
+            val c = va.compareTo(vb)
+            if (c != 0) return c
+        }
+        return 0
     }
 
     private fun download(url: String): ByteArray {

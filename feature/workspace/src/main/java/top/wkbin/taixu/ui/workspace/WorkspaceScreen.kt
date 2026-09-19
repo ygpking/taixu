@@ -855,7 +855,7 @@ fun WorkspaceScreen(
                                     else -> 3
                                 }
                             }
-                            val categorized = logLines.map { line -> classifyLine(line) to line }
+                            val categorized = remember(progress.logOutput) { logLines.map { line -> classifyLine(line) to line } }
                             val depsLogs = categorized.filter { it.first == 0 }.map { it.second }
                             val compileLogs = categorized.filter { it.first == 1 }.map { it.second }
                             val packageLogs = categorized.filter { it.first == 2 }.map { it.second }

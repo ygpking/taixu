@@ -105,7 +105,8 @@ class TarStreamExtractor internal constructor(
             pendingLongLink = null
             pendingPax = emptyMap()
 
-            val cleanEntryName = entryName.trimStart('/', '.').replace('\\', '/')
+            // 只剥路径前缀，保留文件名自身的点前缀：旧写法会把 .bashrc 改名成 bashrc、把 "..." 清成空串
+            val cleanEntryName = entryName.replace('\\', '/').trimStart('/').removePrefix("./")
             if (cleanEntryName.isBlank()) {
                 skipPaddedData(input, header.size)
                 continue
@@ -161,7 +162,7 @@ class TarStreamExtractor internal constructor(
                 TYPE_HARDLINK -> {
                     ensurePathWritable(target.parentFile ?: destination, destination)
                     target.parentFile?.mkdirs()
-                    val cleanLinkName = linkName.trimStart('/', '.').replace('\\', '/')
+                    val cleanLinkName = linkName.replace('\\', '/').trimStart('/').removePrefix("./")
                     val candidateSource = destPath.resolve(cleanLinkName).normalize()
                     if (!candidateSource.startsWith(destPath)) {
                         logWarning("Skipping hardlink outside destination: $linkName", null)

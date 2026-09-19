@@ -255,15 +255,17 @@ class FloatingChatService : Service() {
         snapAnimator?.cancel()
         snapAnimator = null
 
-        lifecycleOwner?.onStop()
-        lifecycleOwner?.onDestroy()
-        lifecycleOwner = null
-
+        // 先把 view 从窗口摘除、再销毁生命周期：View 仍 attached 时进入 DESTROYED
+        // 会让 Compose 的窗口附件回调以已销毁生命周期处理，频繁启停时可能崩溃
         composeView?.let { view ->
             runCatching { windowManager?.removeView(view) }
         }
         composeView = null
         windowManager = null
+
+        lifecycleOwner?.onStop()
+        lifecycleOwner?.onDestroy()
+        lifecycleOwner = null
         serviceScope.cancel()
     }
 

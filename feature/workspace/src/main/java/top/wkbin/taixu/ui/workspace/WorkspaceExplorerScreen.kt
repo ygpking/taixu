@@ -760,9 +760,11 @@ private fun isCodeExtension(ext: String): Boolean = ext in setOf(
     "rs", "go", "sh", "bash", "json", "yaml", "yml", "toml", "md", "html", "css", "sql",
 )
 
+// SimpleDateFormat 非线程安全且创建开销不小；列表每行组合各 new 一个纯属浪费
+private val formatTimeSdf = ThreadLocal.withInitial { SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()) }
+
 private fun formatTime(millis: Long): String {
-    val sdf = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
-    return sdf.format(Date(millis))
+    return formatTimeSdf.get()!!.format(Date(millis))
 }
 
 private fun Long.toReadableSize(): String = when {

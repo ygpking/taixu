@@ -292,10 +292,8 @@ class RoomQuickPhraseRepository @Inject constructor(
     override suspend fun delete(id: String) =
         dao.delete(id)
 
-    override suspend fun resetToDefault() {
-        dao.clearAll()
-        dao.upsertAll(defaultQuickPhrases.map { QuickPhraseEntity.fromDomain(it) })
-    }
+    override suspend fun resetToDefault() =
+        dao.clearAllAndInsertDefaults(defaultQuickPhrases.map { QuickPhraseEntity.fromDomain(it) })
 
     override suspend fun ensureInitialized() {
         if (dao.count() == 0) {

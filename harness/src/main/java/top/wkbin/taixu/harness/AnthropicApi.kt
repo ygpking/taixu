@@ -87,8 +87,9 @@ internal class AnthropicApi(
         // 命中时把缓存的最终文本/推理一次性交给 UI；工具进度不回放（命中无增量可算，结果随 ChatResult 返回）。
         val cacheKey = ProviderClient.requestCacheKey(model, messages)
         requestCache.get(cacheKey)?.let { cached ->
-            if (!cached.content.isNullOrBlank()) onDelta(cached.content)
+            // 与真实流一致：先思考后正文
             if (!cached.reasoningContent.isNullOrBlank()) onReasoning(cached.reasoningContent)
+            if (!cached.content.isNullOrBlank()) onDelta(cached.content)
             return@withContext cached
         }
         val call = okHttpClient.newCall(buildRequest(model, messages, stream = true))

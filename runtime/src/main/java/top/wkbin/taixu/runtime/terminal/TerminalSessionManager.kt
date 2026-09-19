@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 
 /**
  * Multi-session console manager.
@@ -92,10 +93,13 @@ class TerminalSessionManager @Inject constructor(
         workingDirectory: String = DEFAULT_CWD,
         distributionId: String? = null,
         id: String = UUID.randomUUID().toString(),
+        /** 自定义启动配置（如工具的 interactiveSessionConfig）；null = 默认交互 shell。
+         *  showBanner 由 config 自身决定，不再强制 true——协议/TUI 工具会话不容许横幅污染输出。 */
+        sessionConfig: SessionConfig? = null,
     ): TerminalSessionHandle {
         val targetDistro = distributionId?.trim()?.takeIf { it.isNotBlank() } ?: linuxRuntime.activeDistroId.value
         val launch = linuxRuntime.buildInteractiveLaunch(
-            config = SessionConfig(workingDirectory = workingDirectory, showBanner = true),
+            config = sessionConfig ?: SessionConfig(workingDirectory = workingDirectory, showBanner = true),
             distroId = targetDistro,
         )
         android.util.Log.i(
@@ -133,7 +137,7 @@ class TerminalSessionManager @Inject constructor(
                 sortOrder = terminalSessionDao.nextOrder(),
             ),
         )
-        _handles.value = _handles.value + handle
+        _handles.update { it + handle }
         _activeId.value = handle.id
         return handle
     }

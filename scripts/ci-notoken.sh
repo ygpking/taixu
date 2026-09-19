@@ -17,13 +17,17 @@ cd "$REPO_DIR"
 
 cmd="$1"
 
+# 正式版失败报告在 ci-failure-report，-self 自签构建失败报告在 ci-release-self-report；
+# 此前 wait/report 只盯前者，-self 构建失败永远等不到报告。
+REPORT_BRANCHES="ci-failure-report ci-release-self-report"
+
 case "$cmd" in
   remote)
     echo "=== SSH 连通性 ==="
     ssh -T git@github.com 2>&1 | head -2 || true
     echo
     echo "=== 远端引用 ==="
-    git ls-remote origin main ci-failure-report 2>&1
+    git ls-remote origin main $REPORT_BRANCHES 2>&1
     echo
     echo "=== 本地 HEAD ==="
     git log --oneline -1
@@ -44,12 +48,17 @@ case "$cmd" in
 
   report)
     echo "=== 拉取最近一次失败报告 ==="
-    for i in 1 2 3; do
-      if git fetch origin ci-failure-report 2>/dev/null; then
-        git show FETCH_HEAD:ci-failure-report.txt 2>/dev/null | head -60
-        exit 0
-      fi
-      sleep 5
+    for br in $REPORT_BRANCHES; do
+      for i in 1 2 3; do
+        if git fetch origin "$br" 2>/dev/null; then
+          if git cat-file -e "FETCH_HEAD:ci-failure-report.txt" 2>/dev/null; then
+            echo "（来源分支：$br）"
+            git show "FETCH_HEAD:ci-failure-report.txt" 2>/dev/null | head -60
+            exit 0
+          fi
+        fi
+        sleep 5
+      done
     done
     echo "（未取到报告分支，可能目前没有失败，或分支已被删除）"
     ;;
@@ -57,16 +66,29 @@ case "$cmd" in
   wait)
     max="${2:-600}"
     echo "=== 轮询等待构建完成（最多 ${max}s）==="
-    echo "依据：ci-failure-report 分支被 CI 更新（仅在失败时推送）"
+    echo "依据：报告分支 HEAD 相对本轮起点发生变化（仅在失败时推送）"
+    # 记录起点 HEAD：报告分支上残留的上一次旧报告不应被误判为本次构建的结论
+    base=""
+    for br in $REPORT_BRANCHES; do
+      b=$(git ls-remote origin "$br" 2>/dev/null | awk '{print $1}')
+      base="$base $b"
+    done
     start=$(date +%s)
     while [ $(( $(date +%s) - start )) -lt "$max" ]; do
       now=$(date +%H:%M:%S)
-      r=$(git ls-remote origin ci-failure-report 2>/dev/null | awk '{print $1}')
-      echo "[$now] 报告分支 HEAD: ${r:-（无）}"
-      if [ -n "$r" ]; then
-        echo "=== 检测到报告分支已更新，拉取内容 ==="
-        git fetch origin ci-failure-report 2>/dev/null || true
-        git show FETCH_HEAD:ci-failure-report.txt 2>/dev/null | head -60
+      changed=""
+      for br in $REPORT_BRANCHES; do
+        r=$(git ls-remote origin "$br" 2>/dev/null | awk '{print $1}')
+        case " $base " in
+          *" $r "*) ;;       # 与起点一致（含同为空）
+          *) changed="$br" ;;
+        esac
+      done
+      echo "[$now] 报告分支 HEAD: $(git ls-remote origin $REPORT_BRANCHES 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"
+      if [ -n "$changed" ]; then
+        echo "=== 检测到报告分支已更新（$changed），拉取内容 ==="
+        git fetch origin "$changed" 2>/dev/null || true
+        git show "FETCH_HEAD:ci-failure-report.txt" 2>/dev/null | head -60
         exit 0
       fi
       sleep 45

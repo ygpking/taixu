@@ -12,6 +12,7 @@ import top.wkbin.taixu.runtime.service.LocalServiceSpec
 import top.wkbin.taixu.runtime.tools.InstallEvent
 import top.wkbin.taixu.runtime.shell.LinuxSession
 import top.wkbin.taixu.runtime.shell.ManagedProcess
+import top.wkbin.taixu.runtime.shell.SessionConfig
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
@@ -890,6 +891,12 @@ class ToolManager @Inject constructor(
         } else {
             linuxRuntime.startSession(config.copy(workingDirectory = workingDirectory))
         }
+    }
+
+    /** 工具的交互式终端启动配置；未安装/适配器未提供时返回 null（调用方回退普通 shell）。 */
+    suspend fun interactiveSessionConfig(toolId: String): SessionConfig? {
+        requireInstalledTool(toolId)
+        return requireAdapter(toolId).interactiveSessionConfig()
     }
 
     suspend fun verify(toolId: String): ToolVerification {

@@ -85,6 +85,7 @@ private const val MAX_TERMINAL_FONT_SIZE_SP = 24f
 fun TerminalScreen(
     onBack: () -> Unit,
     project: String = "",
+    toolId: String = "",
     showBackButton: Boolean = true,
     viewModel: TerminalViewModel = hiltViewModel(),
 ) {
@@ -173,7 +174,7 @@ fun TerminalScreen(
     var showCreateSession by remember { mutableStateOf(false) }
 
     LaunchedEffect(project) {
-        viewModel.initialize(project)
+        viewModel.initialize(project, toolId)
     }
 
     LaunchedEffect(configuredFontSize) {
