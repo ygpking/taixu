@@ -7,6 +7,7 @@ import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -124,7 +125,7 @@ class LxcImagesClient @Inject constructor(
                     val buffer = ByteArray(64 * 1024)
                     while (true) {
                         // 阻塞 IO 不感知协程取消（对齐 OciRegistryClient 的下载循环）
-                        ensureActive()
+                        currentCoroutineContext().ensureActive()
                         val read = input.read(buffer)
                         if (read < 0) break
                         output.write(buffer, 0, read)

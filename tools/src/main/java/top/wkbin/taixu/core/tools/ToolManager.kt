@@ -637,7 +637,7 @@ class ToolManager @Inject constructor(
         val preservePreviousInstall = operation == OPERATION_UPDATE &&
             previousTool?.installedVersion != null
         installMutex.withLock {
-            check(toolId !in installJobs) { "工具正在安装：$toolId" }
+            check(!installJobs.containsKey(toolId)) { "工具正在安装：$toolId" }
             installJobs[toolId] = currentJob
             installLogRepository.deleteForTool(distroId, toolId)
             updateProgress(ToolInstallProgress(toolId, "准备安装", 0f))
@@ -805,7 +805,7 @@ class ToolManager @Inject constructor(
     suspend fun uninstall(toolId: String, deleteData: Boolean = false) {
         require(isToolSupported(toolId)) { "暂不支持卸载工具：$toolId" }
         installMutex.withLock {
-            check(toolId !in installJobs) { "工具正在安装：$toolId" }
+            check(!installJobs.containsKey(toolId)) { "工具正在安装：$toolId" }
         }
         linuxRuntime.listBackground()
             .filter { it.toolId == toolId }

@@ -16,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -281,7 +282,7 @@ class OciRegistryClient @Inject constructor(
                             while (true) {
                                 // 阻塞 IO 不感知协程取消，长下载必须周期性检查取消状态，
                                 // 否则用户取消安装后 3 路并发仍会把整个大文件跑完
-                                ensureActive()
+                                currentCoroutineContext().ensureActive()
                                 val read = input.read(buffer)
                                 if (read < 0) break
                                 output.write(buffer, 0, read)
