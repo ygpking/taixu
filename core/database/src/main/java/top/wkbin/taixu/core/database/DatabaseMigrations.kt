@@ -283,3 +283,18 @@ val MIGRATION_47_48 = object : Migration(47, 48) {
     }
 }
 
+/**
+ * 新增「单次输入上限」列：每轮请求主动裁切到的目标水位（裁切基准）。
+ *
+ * 与 `contextTokens`（窗口能力声明）语义不同：此前裁切基准直接取窗口值，
+ * 用户把窗口填成 1_000_000 后折叠触发线升到 ~98.7 万，历史堆到 38 万也不折叠 → HTTP 413。
+ * null = 未显式配置，由 ContextBudgetDefaults.resolveInputLimit 按窗口推导。
+ */
+val MIGRATION_48_49 = object : Migration(48, 49) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "ALTER TABLE `harness_models` ADD COLUMN `inputTokenLimit` INTEGER",
+        )
+    }
+}
+

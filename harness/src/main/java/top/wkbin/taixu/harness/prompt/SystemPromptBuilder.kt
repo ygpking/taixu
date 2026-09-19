@@ -154,6 +154,19 @@ class SystemPromptBuilder @Inject constructor(
             "\n\n## 当前任务多步骤执行规划与进度看板 (Active Plan)\n目标：${activePlan.goal}\n步骤与状态：\n${activePlan.stepsJson}"
         } else ""
 
+        // 任务局部工作草稿（scratchpad）：排查假说 / 分析草稿 / 当前子目标与阻塞点。
+        // 这是「任务局部状态」中最容易在长对话压缩后失忆的一层——只存 session 维度、不进 pinned/recall 记忆，
+        // 若不主动注入，模型在压缩后只能凭自觉 scratchpad list 才能看到，极易遗忘。
+        // 与 plan 同级、同为任务局部态；按 updatedAt 降序，取最近 N 条且单条截断，避免撑爆预算。
+        val scratchpads = runCatching { agentContextDao.listScratchpads(sessionId) }.getOrDefault(emptyList())
+        val scratchpadSection = if (scratchpads.isEmpty()) "" else {
+            "\n\n## 当前任务工作草稿 (Scratchpad)\n以下为当前会话的排查假说/草稿/阻塞点记录（任务局部态，低权威），" +
+                "恢复任务时请先核对再继续推进；若已不适用可 scratchpad clear 清理：\n" +
+                scratchpads.sortedByDescending { it.updatedAt }
+                    .take(MAX_SCRATCHPAD_LINES)
+                    .joinToString("\n") { "- [${it.key}]: ${it.value.take(MAX_SCRATCHPAD_VALUE_CHARS)}" }
+        }
+
         val subagentSection = buildSubagentGuidance(toolCallMode)
 
         val hasWorkspace = workspacePath.isNotBlank()
@@ -239,6 +252,7 @@ class SystemPromptBuilder @Inject constructor(
             mcpCapabilitySection,
             pinnedSection,
             planSection,
+            scratchpadSection,
             subagentSection,
             toolCallSection,
             workspaceGuidance,
@@ -463,6 +477,9 @@ class SystemPromptBuilder @Inject constructor(
         private const val MAX_PROMPT_MEMORY_VALUE_CHARS = 512
         private const val MAX_PROMPT_RECALL_QUERY_CHARS = 256
         private const val MAX_WORKSPACE_CACHE_ENTRIES = 16
+        /** scratchpad 注入条数上限与单条截断（与 pinned 1500、recall 512 同量级，避免撑爆预算）。 */
+        private const val MAX_SCRATCHPAD_LINES = 8
+        private const val MAX_SCRATCHPAD_VALUE_CHARS = 512
         const val PROJECT_CONTEXT_MAX_BYTES = 16 * 1024
 
         /** MCP 能力清单里逐个枚举工具全名的数量上限，超过则只报数量（NATIVE 模式下工具列表已含全名与 schema）。 */

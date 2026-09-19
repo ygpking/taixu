@@ -89,7 +89,6 @@ fun AgentSettingsScreen(
     val customSystemPromptEnabled by viewModel.customSystemPromptEnabled.collectAsStateWithLifecycle()
     val customSystemPrompt by viewModel.customSystemPrompt.collectAsStateWithLifecycle()
     val compactionEnabled by viewModel.contextCompactionEnabled.collectAsStateWithLifecycle()
-    val compactionThreshold by viewModel.contextCompactionThreshold.collectAsStateWithLifecycle()
     val maxToolRounds by viewModel.maxToolRounds.collectAsStateWithLifecycle()
     val roundLimitAutoContinuations by viewModel.roundLimitAutoContinuations.collectAsStateWithLifecycle()
     val autoWorkspaceCwd by viewModel.autoWorkspaceCwd.collectAsStateWithLifecycle()
@@ -98,11 +97,13 @@ fun AgentSettingsScreen(
     val approvalMode by viewModel.approvalMode.collectAsStateWithLifecycle()
     val maxToolsPerRound by viewModel.maxToolsPerRound.collectAsStateWithLifecycle()
     val maxConsecutiveFailures by viewModel.maxConsecutiveFailures.collectAsStateWithLifecycle()
-    val contextBudgetTokens by viewModel.contextBudgetTokens.collectAsStateWithLifecycle()
-    val effectiveContextBudget by viewModel.effectiveContextBudget.collectAsStateWithLifecycle()
-    val activeModelDeclaredTokens by viewModel.activeModelDeclaredTokens.collectAsStateWithLifecycle()
     val contextFoldingRatioPercent by viewModel.contextFoldingRatioPercent.collectAsStateWithLifecycle()
     val contextMaxKeepTokens by viewModel.contextMaxKeepTokens.collectAsStateWithLifecycle()
+    val contextArchiveEnabled by viewModel.contextArchiveEnabled.collectAsStateWithLifecycle()
+    // 实际生效的裁切基准（输入上限），供高级区预览同源显示。
+    val effectiveInputLimit by viewModel.effectiveInputLimit.collectAsStateWithLifecycle()
+    // 「上下文与压缩」高级区：默认收起，只暴露「窗口 + 开关」，避免参数过载。
+    var showContextAdvanced by remember { mutableStateOf(false) }
     val skills by viewModel.allSkills.collectAsStateWithLifecycle()
     val subagents by viewModel.allSubagents.collectAsStateWithLifecycle()
     val autoSubagentDelegation by viewModel.autoSubagentDelegationEnabled.collectAsStateWithLifecycle()
@@ -274,35 +275,51 @@ fun AgentSettingsScreen(
                 AgentSettingsGroup {
                     AgentToggleRow(
                         icon = RuntimeIconName.Compress,
-                        title = "开启上下文智能压缩 (Context Compaction)",
-                        subtitle = "多轮工具调用超出阈值时，自动压缩历史中间工具输出日志，保留任务首尾与关键状态",
+                        title = "自动压缩历史",
+                        subtitle = "历史触及水位时自动压缩中间工具输出，保留任务首尾与关键状态；被压掉的内容默认落盘可检索",
                         checked = compactionEnabled,
                         onCheckedChange = viewModel::setContextCompactionEnabled,
                     )
                     if (compactionEnabled) {
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        ThresholdSliderRow(
-                            currentThreshold = compactionThreshold,
-                            onThresholdChange = viewModel::setContextCompactionThreshold,
+                        // 极简原则：只暴露「开关 + 当前会自动裁到多少」。其余参数收进「高级」，
+                        // 默认值即最优，90% 的用户不需要理解它们（pi 式设置面）。
+                        val watermark = remember(effectiveInputLimit, contextFoldingRatioPercent) {
+                            ContextWindowPolicy.foldingLimitFor(effectiveInputLimit, contextFoldingRatioPercent)
+                        }
+                        Text(
+                            "当前策略：每轮请求约在 ${watermark / 1000}K token 处自动压缩" +
+                                "（基准 ${effectiveInputLimit / 1000}K × $contextFoldingRatioPercent%）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
                         )
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        ContextBudgetSliderRow(
-                            currentValue = contextBudgetTokens,
-                            declaredTokens = activeModelDeclaredTokens,
-                            onValueChange = viewModel::setContextBudgetTokens,
+                        ContextAdvancedHeader(
+                            expanded = showContextAdvanced,
+                            onToggle = { showContextAdvanced = !showContextAdvanced },
                         )
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        ContextFoldingRatioSliderRow(
-                            currentValue = contextFoldingRatioPercent,
-                            budget = effectiveContextBudget,
-                            declaredTokens = activeModelDeclaredTokens,
-                            onValueChange = viewModel::setContextFoldingRatioPercent,
-                        )
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        ContextMaxKeepTokensSliderRow(
-                            currentValue = contextMaxKeepTokens,
-                            onValueChange = viewModel::setContextMaxKeepTokens,
-                        )
+                        if (showContextAdvanced) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                            ContextWatermarkRatioSliderRow(
+                                currentValue = contextFoldingRatioPercent,
+                                inputLimit = effectiveInputLimit,
+                                onValueChange = viewModel::setContextFoldingRatioPercent,
+                            )
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                            ContextMaxKeepTokensSliderRow(
+                                currentValue = contextMaxKeepTokens,
+                                onValueChange = viewModel::setContextMaxKeepTokens,
+                            )
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                            AgentToggleRow(
+                                icon = RuntimeIconName.Document,
+                                title = "压缩原文落盘可检索",
+                                subtitle = "被压缩或截断的内容原文写入工作区 .taixu-context/，摘要附路径，agent 可随时用 read / grep 回捞",
+                                checked = contextArchiveEnabled,
+                                onCheckedChange = viewModel::setContextArchiveEnabled,
+                            )
+                        }
                     }
                 }
             }
@@ -1014,12 +1031,52 @@ private fun AutoContinuationSliderRow(
     }
 }
 
+
 @Composable
-private fun ThresholdSliderRow(
-    currentThreshold: Int,
-    onThresholdChange: (Int) -> Unit,
+private fun ContextAdvancedHeader(
+    expanded: Boolean,
+    onToggle: () -> Unit,
 ) {
-    var sliderVal by remember(currentThreshold) { mutableFloatStateOf(currentThreshold.toFloat()) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 52.dp)
+            .clickable { onToggle() }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                "高级",
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+            )
+            Text(
+                "触发水位 / 保留窗口 / 原文落盘。默认值即最优，通常无需调整。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        RuntimeIcon(
+            name = if (expanded) RuntimeIconName.ChevronUp else RuntimeIconName.ChevronDown,
+            modifier = Modifier.size(20.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun ContextWatermarkRatioSliderRow(
+    currentValue: Int,
+    inputLimit: Int,
+    onValueChange: (Int) -> Unit,
+) {
+    var sliderVal by remember(currentValue) { mutableFloatStateOf(currentValue.toFloat()) }
+    // 预览必须基于「实际生效的输入上限」，而非窗口值——否则又会重演「设置页显示一个数、
+    // 引擎按另一个数折叠」的单一真相源缺失缺陷。
+    val previewLimit = remember(sliderVal, inputLimit) {
+        ContextWindowPolicy.foldingLimitFor(inputLimit, sliderVal.toInt())
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1031,28 +1088,33 @@ private fun ThresholdSliderRow(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("压缩触发阈值（用户轮次）", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold))
+            Text("触发水位", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold))
             Text(
-                "${sliderVal.toInt()} 轮",
+                "${sliderVal.toInt()}%",
                 style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace),
                 color = MaterialTheme.colorScheme.primary,
             )
         }
         Text(
-            "当会话历史超过该轮数时启动智能剪裁；该轮数内保持无损，且不低于 5 轮下限",
+            "历史在「裁切基准 × 水位」处开始压缩。调小可更早压缩（省费用、降首字延迟）；" +
+                "100% 表示把基准用满才压缩，可能挤占模型回复空间。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            "按当前设置约在 ${previewLimit / 1000}K token 处压缩（基准 ${inputLimit / 1000}K × ${sliderVal.toInt()}%）",
+            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+            color = MaterialTheme.colorScheme.primary,
         )
         Slider(
             value = sliderVal,
             onValueChange = { sliderVal = it },
-            onValueChangeFinished = { onThresholdChange(sliderVal.toInt()) },
-            valueRange = 5f..40f,
-            steps = 6,
+            onValueChangeFinished = { onValueChange(sliderVal.toInt()) },
+            valueRange = 40f..100f,
+            steps = 5, // 步长 10%
         )
     }
 }
-
 @Composable
 private fun ContextMaxKeepTokensSliderRow(
     currentValue: Int,
@@ -1070,7 +1132,7 @@ private fun ContextMaxKeepTokensSliderRow(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("折叠后保留窗口上限", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold))
+            Text("压缩后保留最近", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold))
             Text(
                 "${sliderVal.toInt()} tok",
                 style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace),
@@ -1078,8 +1140,8 @@ private fun ContextMaxKeepTokensSliderRow(
             )
         }
         Text(
-            "折叠后最多保留多少 token 的近期历史。调小可让长会话的每次请求更小（省费用、降首字延迟）；" +
-                "调大则保留更多上下文细节。单条消息超上限时仍会保住它自身，不会出现空窗口。",
+            "压缩后最多保留多少 token 的近期历史。调小可让长会话每次请求更小（省费用、降首字延迟）；" +
+                "调大则保留更多细节。被移除的原文在「压缩原文落盘」开启时会写入工作区，可检索回捞。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1090,120 +1152,6 @@ private fun ContextMaxKeepTokensSliderRow(
             // 与存储层 SettingsDataStore.setContextMaxKeepTokens 的 coerceIn(2000, 200000) 对齐
             valueRange = 2_000f..200_000f,
             steps = 98, // 步长约 2 千 tok
-        )
-    }
-}
-
-@Composable
-private fun ContextFoldingRatioSliderRow(
-    currentValue: Int,
-    budget: Int,
-    declaredTokens: Int?,
-    onValueChange: (Int) -> Unit,
-) {
-    var sliderVal by remember(currentValue) { mutableFloatStateOf(currentValue.toFloat()) }
-    // 实时预览：按当前比例算出的折叠线，让用户直观看到"拖到多少就按多少折叠"。
-    // 关键：budget 必须是**实际生效预算**（模型档案 contextTokens 优先），否则会出现
-    // 「设置页显示 100K、实际按 400K 折叠」——本次修复的单一真相源缺失缺陷。
-    val previewLimit = remember(sliderVal, budget) {
-        ContextWindowPolicy.foldingLimitFor(budget, sliderVal.toInt())
-    }
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("历史折叠线比例", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold))
-            Text(
-                "${sliderVal.toInt()}%",
-                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace),
-                color = MaterialTheme.colorScheme.primary,
-            )
-        }
-        Text(
-            "历史在「预算 × 比例」处开始折叠；调小可显著降低单次请求 token 量（省费用、降首字延迟）。" +
-                "100% 表示只在预算减去输出/工具预留处折叠。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        // 实时显示换算结果，避免"拖了不知道影响多大"
-        Text(
-            "按当前设置将折叠线约为 ${previewLimit / 1000}K tok",
-            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
-            color = MaterialTheme.colorScheme.primary,
-        )
-        // 说明这个预览数按什么预算折算，避免用户误以为它基于「上下文预算上限」滑块。
-        Text(
-            if (declaredTokens != null) {
-                "以上按当前模型档案声明的上下文上限 ${declaredTokens / 1000}K 计算（模型已单独配置，优先于下方预算滑块）。"
-            } else {
-                "以上按下方「上下文预算上限」滑块的值计算（当前无激活模型声明 contextTokens）。"
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Slider(
-            value = sliderVal,
-            onValueChange = { sliderVal = it },
-            onValueChangeFinished = { onValueChange(sliderVal.toInt()) },
-            // 与存储层 SettingsDataStore.setContextFoldingRatioPercent 的 coerceIn(10, 100) 对齐
-            valueRange = 10f..100f,
-            steps = 8, // 步长 10%
-        )
-    }
-}
-
-@Composable
-private fun ContextBudgetSliderRow(
-    currentValue: Int,
-    declaredTokens: Int?,
-    onValueChange: (Int) -> Unit,
-) {
-    var sliderVal by remember(currentValue) { mutableFloatStateOf(currentValue.toFloat()) }
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("上下文 Token 预算上限", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold))
-            Text(
-                "${sliderVal.toInt()} tok",
-                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace),
-                color = MaterialTheme.colorScheme.primary,
-            )
-        }
-        Text(
-            if (declaredTokens != null) {
-                "当前激活模型档案已单独配置上下文上限 ${declaredTokens / 1000}K，此滑块暂不生效；" +
-                    "仅当模型未配置 contextTokens 时，本值才作为兜底预算。"
-            } else {
-                "当前无激活模型声明 contextTokens，本值即实际生效预算；" +
-                    "长会话历史超出预算将自动折叠早期内容。"
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Slider(
-            value = sliderVal,
-            onValueChange = { sliderVal = it },
-            onValueChangeFinished = { onValueChange(sliderVal.toInt()) },
-            // 与存储层 SettingsDataStore.setContextBudgetTokens 的 coerceIn(4000, 2000000) 对齐：
-            // 此前滑块只到 100 万，导致 >100 万的高窗口模型无法设置，且既有 >100 万的值
-            // 一旦拖动就会被静默降级（Compose Slider 会把超范围值钳到上界）。
-            valueRange = 4_000f..2_000_000f,
-            steps = 199, // 步长约 1 万 tok
         )
     }
 }

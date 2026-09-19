@@ -105,9 +105,11 @@ internal class ChatApi(
             result
         }
 
-    /** 缓存 key：模型 + 消息内容哈希（ModelConfig/ApiMessage 均为 data class，hashCode 基于内容）。 */
+    /** 缓存 key：模型 + 消息内容哈希（ModelConfig/ApiMessage 均为 data class，hashCode 基于内容）。
+     *  见 [ProviderClient.requestCacheKey]——提为顶层以便 Anthropic/Responses 协议共用同一 key 空间。
+     *  ModelConfig 的 protocol/responseApiEnabled 参与 hashCode，故跨协议天然隔离，不会互相污染。 */
     private fun requestCacheKey(model: ModelConfig, messages: List<ApiMessage>): String =
-        "${model.hashCode()}|${messages.hashCode()}"
+        ProviderClient.requestCacheKey(model, messages)
 
     /**
      * 流式调用：逐行读取 SSE（data: ...），每个内容增量立即通过 [onDelta] 回调
@@ -143,6 +145,18 @@ internal class ChatApi(
         onDelta: (String) -> Unit,
         includeUsage: Boolean,
     ): ChatResult = withContext(Dispatchers.IO) {
+        // 流式请求缓存（对齐非流式 chat）：相同请求（模型+消息）在 TTL 内命中直接回放最终结果，
+        // 跳过网络省 token、更快。命中时把缓存的最终文本/工具调用一次性交给 UI（onDelta 回放），
+        // 仅缓存成功结果，失败不落缓存。只缓存最终结果，不缓存流式中间增量。
+        val cacheKey = requestCacheKey(model, messages)
+        requestCache.get(cacheKey)?.let { cached ->
+            // 命中回放：把缓存的最终文本一次性交给 UI（onDelta），推理内容回放给 onReasoning。
+            // 工具进度（onToolProgress）只在真实流式时驱动进度条视觉，命中场景无增量可算，
+            // 不回放——工具调用结果直接随返回的 ChatResult.toolCalls 提供给上层，不受影响。
+            if (!cached.content.isNullOrBlank()) onDelta(cached.content)
+            if (!cached.reasoningContent.isNullOrBlank()) onReasoning(cached.reasoningContent)
+            return@withContext cached
+        }
         val call = okHttpClient.newCall(buildRequest(model, messages, stream = true, includeUsage = includeUsage))
         // 关键：阻塞式 readUtf8Line() 不感知协程取消。用户点"停止"时必须主动 call.cancel()
         // 关闭底层 socket，阻塞读才会立刻抛出 IOException 退出——否则要等读超时，
@@ -239,12 +253,15 @@ internal class ChatApi(
                         it.arguments.toString().ifBlank { "{}" },
                     )
                 }
-                ChatResult(
+                val streamResult = ChatResult(
                     content = demuxer.fullText.toString().ifEmpty { null },
                     toolCalls = calls,
                     reasoningContent = demuxer.fullReasoning.toString().ifEmpty { null },
                     usage = usage,
                 )
+                // 流式成功收尾才落缓存（与失败不缓存保持一致）：相同请求下次重发可直接命中回放。
+                requestCache.put(cacheKey, streamResult)
+                streamResult
             }
         } catch (io: IOException) {
             if (firstEventState.get() == ProviderClient.FIRST_EVENT_TIMED_OUT) {
@@ -486,6 +503,11 @@ data class ModelConfig(
     val dynamicMcpTools: List<top.wkbin.taixu.core.model.McpToolInfo> = emptyList(),
     /** 上下文 Token 容量上限（如 128000，超出时滑动窗口压缩）。 */
     val contextTokens: Int? = null,
+    /**
+     * 单次输入上限（token）：每轮请求主动裁切的裁切基准；null = 未显式配置（按窗口推导）。
+     * 与 contextTokens（窗口能力声明）语义不同，见 AiModelEntity.inputTokenLimit 的说明。
+     */
+    val inputTokenLimit: Int? = null,
     /**
      * 每模型压缩预算覆盖（对齐 pi compaction.modelOverrides）：
      * 压缩触发时保留的最近 token 上限（null = 不启用该收紧）。
@@ -735,8 +757,11 @@ class ProviderClient @Inject constructor(
         .callTimeout(CALL_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .readTimeout(READ_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .build()
-    /** 非流式请求缓存：常驻于 @Singleton 的 ProviderClient，跨请求共享（命中率才不为 0）。 */
+    /** 非流式 + 流式请求缓存：常驻于 @Singleton 的 ProviderClient，跨请求共享（命中率才不为 0）。 */
     private val requestCache = LlmRequestCache()
+
+    /** 本地请求缓存累计命中次数（跨 get 调用只增）；供指标层量化「缓存是否真的在命中」。 */
+    val requestCacheHits: Int get() = requestCache.hitCount
 
     // 流式专用：callTimeout 计时覆盖整个 SSE 响应体读取，长生成（>5min）会被硬掐断、
     // 已流式内容全部丢弃。这里取消 callTimeout（0 = 不限制），长连接依靠
@@ -875,8 +900,8 @@ class ProviderClient @Inject constructor(
             val sanitized = sanitizeApiTranscript(messages)
             when {
                 // 用户显式开启 Responses API 时优先走该协议（仅对 OpenAI 兼容端点有意义）
-                selected.responseApiEnabled -> ResponsesApi(httpClient, json).chat(selected, sanitized)
-                selected.protocol == ApiProtocol.ANTHROPIC -> AnthropicApi(httpClient, json).chat(selected, sanitized)
+                selected.responseApiEnabled -> ResponsesApi(httpClient, json, requestCache).chat(selected, sanitized)
+                selected.protocol == ApiProtocol.ANTHROPIC -> AnthropicApi(httpClient, json, requestCache).chat(selected, sanitized)
                 else -> ChatApi(httpClient, json, requestCache).chat(selected, sanitized)
             }
         }
@@ -891,14 +916,14 @@ class ProviderClient @Inject constructor(
     ): ChatResult = executeWithRotatedApiKey(model, apiKeyScheduler) { selected ->
         val sanitized = sanitizeApiTranscript(messages)
         when {
-            selected.responseApiEnabled -> ResponsesApi(streamHttpClient, json).chatStream(
+            selected.responseApiEnabled -> ResponsesApi(streamHttpClient, json, requestCache).chatStream(
                 selected,
                 sanitized,
                 onReasoning,
                 onToolProgress,
                 onDelta,
             )
-            selected.protocol == ApiProtocol.ANTHROPIC -> AnthropicApi(streamHttpClient, json).chatStream(
+            selected.protocol == ApiProtocol.ANTHROPIC -> AnthropicApi(streamHttpClient, json, requestCache).chatStream(
                 selected,
                 sanitized,
                 onReasoning,
@@ -928,6 +953,12 @@ class ProviderClient @Inject constructor(
         internal const val FIRST_EVENT_WAITING = 0
         internal const val FIRST_EVENT_RECEIVED = 1
         internal const val FIRST_EVENT_TIMED_OUT = 2
+
+        /** 请求缓存 key：模型 + 消息内容哈希（ModelConfig/ApiMessage 均为 data class，hashCode 基于内容）。
+         *  三协议（OpenAI Chat / Anthropic Messages / OpenAI Responses）共用同一 key 空间；
+         *  ModelConfig 的 protocol/responseApiEnabled 参与 hashCode，故跨协议请求天然隔离，不会互相污染缓存。 */
+        internal fun requestCacheKey(model: ModelConfig, messages: List<ApiMessage>): String =
+            "${model.hashCode()}|${messages.hashCode()}"
 
         /** 按预估输入规模放宽首字看门狗：超大上下文 Prefill 常超过默认 90s。 */
         internal fun resolveFirstEventTimeoutMs(estimatedTokens: Int): Long = when {
@@ -1004,6 +1035,7 @@ class ProviderClient @Inject constructor(
                     else -> ToolCallMode.NATIVE
                 },
                 contextTokens = contextTokens,
+                inputTokenLimit = inputTokenLimit,
                 compactionKeepRecentTokens = compactionKeepRecentTokens,
                 compactionReserveTokens = compactionReserveTokens,
                 customHeaders = customHeaders,

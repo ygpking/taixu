@@ -40,6 +40,17 @@ data class AiModelEntity(
     val toolCallMode: String? = null,
     /** 上下文 Token 容量上限（如 128000，超出时自动滑动窗口压缩，null = 默认）。 */
     val contextTokens: Int? = null,
+    /**
+     * 单次输入上限（token）：每轮请求主动裁切到的目标水位，null = 未显式配置（按窗口推导）。
+     *
+     * 与 [contextTokens] 语义**不同**，不可混用：
+     *  - `contextTokens` 回答「整个窗口能装多大」（模型能力声明，不参与裁切）；
+     *  - `inputTokenLimit` 回答「我每轮主动裁到多少」（**裁切基准**）。
+     *
+     * 历史缺陷：裁切基准直接取 `contextTokens`，用户填 1_000_000 后折叠触发线升到 ~98.7 万，
+     * 历史堆到 38 万也不折叠 → 上游 HTTP 413 反复。修法见 [ContextBudgetDefaults.resolveInputLimit]。
+     */
+    val inputTokenLimit: Int? = null,
     /** 自定义请求头（多行 Key: Value 格式，请求时追加注入）。 */
     val customHeaders: String = "",
     /** 纯净排查模式：关闭太墟系统提示词与工具定义注入，仅发送纯用户消息。 */

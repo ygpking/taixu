@@ -315,11 +315,18 @@ class SubagentLaneRunner @Inject constructor(
      * 并给系统提示词、工具 schema 与本轮输出留出余量。
      */
     private suspend fun laneHistoryBudget(model: top.wkbin.taixu.harness.ModelConfig): Int {
-        val budget = ContextWindowPolicy.clampedBudget(
+        val windowBudget = ContextWindowPolicy.clampedBudget(
             model.contextTokens,
             runCatching { settingsDataStore.contextBudgetTokens.first() }
                 .getOrDefault(ContextBudgetDefaults.DEFAULT_TOKENS),
         )
+        // 与主循环同源：lane 的裁切/压缩基准取「单次输入上限」，而非窗口值。
+        val inputLimit = ContextWindowPolicy.resolveInputLimit(
+            model.inputTokenLimit,
+            windowBudget,
+            runCatching { settingsDataStore.inputTokenLimit.first() }.getOrNull(),
+        )
+        val budget = minOf(inputLimit, windowBudget)
         return (budget * LANE_HISTORY_BUDGET_FRACTION).toInt().coerceAtLeast(MIN_LANE_HISTORY_TOKENS)
     }
 

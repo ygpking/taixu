@@ -657,28 +657,67 @@ class SettingsDataStore @Inject constructor(
     }
 
     /**
-     * 折叠线比例（百分比，默认 100）。历史在「预算的百分之几」处开始折叠。
+     * 单次输入上限（token，默认 [ContextBudgetDefaults.DEFAULT_INPUT_LIMIT]）。
      *
-     * 语义：折叠触发线 = min(预算 × 比例, 预算 − 协议预留)。
-     *  - 100 表示只在预算减去预留处折叠（与旧行为一致，向后兼容）；
-     *  - 调小则更早折叠历史，降低单次请求 token 量（省费用、降首字延迟、减少限流）。
-     * 之所以需要它：模型上限常被填成 100 万，若只在「上限 − 预留」处折叠，
-     * 长会话会长期以数十万 token 的请求运行，代价很高。
+     * **这是每轮请求的裁切基准**，与 [contextBudgetTokens]（窗口能力声明）语义不同：
+     *  - `contextBudgetTokens` 回答「整个窗口能装多大」，只用于兜底与合理性校验；
+     *  - `inputTokenLimit` 回答「每轮主动裁到多少」，引擎的折叠触发线以此为准。
+     *
+     * 历史缺陷：裁切基准曾取窗口值，用户填 100 万后折叠线升到 ~98.7 万，
+     * 历史堆到 38 万也不折叠 → HTTP 413。全局默认 12.8 万即可防止此类失控。
+     * 模型档案未单独配置 inputTokenLimit 时，回退到此全局值。
+     */
+    private val inputTokenLimitKey = androidx.datastore.preferences.core.intPreferencesKey("agent_input_token_limit")
+    val inputTokenLimit: Flow<Int> = context.settingsDataStore.data.map {
+        it[inputTokenLimitKey] ?: ContextBudgetDefaults.DEFAULT_INPUT_LIMIT
+    }
+    suspend fun setInputTokenLimit(value: Int) {
+        context.settingsDataStore.edit {
+            it[inputTokenLimitKey] = ContextBudgetDefaults.normalizeInputLimit(value)
+        }
+    }
+
+    /**
+     * 触发水位（百分比，默认 [ContextBudgetDefaults.DEFAULT_FOLDING_RATIO_PERCENT]，当前 90）。
+     * 历史在「裁切基准的百分之几」处开始折叠。
+     *
+     * 语义收敛后不再暴露给普通用户（进「高级」区）：正常由引擎按
+     * [ContextWindowPolicy.resolveInputLimit] 推导的基准 × 该比例自动决定触发点。
+     * 保留此键仅为兼容老配置与高级微调；调小则更早折叠（省费用、降首字延迟）。
      */
     private val contextFoldingRatioPercentKey = androidx.datastore.preferences.core.intPreferencesKey("agent_context_folding_ratio_percent")
-    val contextFoldingRatioPercent: Flow<Int> = context.settingsDataStore.data.map { it[contextFoldingRatioPercentKey] ?: 100 }
+    val contextFoldingRatioPercent: Flow<Int> = context.settingsDataStore.data.map {
+        it[contextFoldingRatioPercentKey] ?: ContextBudgetDefaults.DEFAULT_FOLDING_RATIO_PERCENT
+    }
     suspend fun setContextFoldingRatioPercent(value: Int) { context.settingsDataStore.edit { it[contextFoldingRatioPercentKey] = value.coerceIn(10, 100) } }
 
     /**
-     * 折叠后「保留窗口」的 token 上限（默认 20000，参考 OMP 的 compaction.keepRecentTokens）。
+     * 折叠后「保留窗口」的 token 上限（默认 [ContextBudgetDefaults.DEFAULT_MAX_KEEP_TOKENS]，当前 40000）。
      *
      * 为什么需要：只按「条数」保留会失控——单条 tool_result 可达上万 token，
      * 保留 10 条就可能留下十几万 token，压缩执行了但下一轮请求依旧庞大。
      * 该值作为条数下限之上的护栏，把保留窗口的 token 总量夹住。
      */
     private val contextMaxKeepTokensKey = androidx.datastore.preferences.core.intPreferencesKey("agent_context_max_keep_tokens")
-    val contextMaxKeepTokens: Flow<Int> = context.settingsDataStore.data.map { it[contextMaxKeepTokensKey] ?: 20_000 }
+    val contextMaxKeepTokens: Flow<Int> = context.settingsDataStore.data.map {
+        it[contextMaxKeepTokensKey] ?: ContextBudgetDefaults.DEFAULT_MAX_KEEP_TOKENS
+    }
     suspend fun setContextMaxKeepTokens(value: Int) { context.settingsDataStore.edit { it[contextMaxKeepTokensKey] = value.coerceIn(2_000, 200_000) } }
+
+    /**
+     * 压缩/截断前是否把被移除的原文落盘到工作区 `.taixu-context/`（默认开，OMP 范式）。
+     *
+     * 为什么需要：默认压缩只把旧内容换成语义摘要，摘要里若不给出「原文在哪」，
+     * agent 事后就再也拿不回细节（只能读到被压缩后的简述）。开启后：
+     *  1. 被移除的内容原文写入 `.taixu-context/<会话id>/<序号>-<类型>.md`；
+     *  2. 生成摘要时附上文件路径与检索提示（`read` / `grep` 可回捞）。
+     *
+     * 「默认全留、超限才压」：该开关只影响「被压掉的那部分」是否留档，不影响是否压缩。
+     * 关闭则退化为「纯摘要、无原文」（旧行为）。
+     */
+    private val contextArchiveEnabledKey = booleanPreferencesKey("agent_context_archive_enabled")
+    val contextArchiveEnabled: Flow<Boolean> = context.settingsDataStore.data.map { it[contextArchiveEnabledKey] ?: true }
+    suspend fun setContextArchiveEnabled(value: Boolean) { context.settingsDataStore.edit { it[contextArchiveEnabledKey] = value } }
 
     /**
      * 单轮最多允许执行的工具调用数量（默认 12）。超过则本轮回填占位结果并提示模型，

@@ -419,8 +419,8 @@ class ContextWindowPolicyTest {
     fun `keepRecentTokens override tightens the retained window`() {
         val messages = buildList<HarnessMessage> {
             repeat(20) { index ->
-                add(UserMessage("u-$index", index * 2L, "request $index " + "a".repeat(300)))
-                add(AssistantText("a-$index", index * 2L + 1, "answer $index " + "b".repeat(300)))
+                add(UserMessage("u-$index", index * 2L, "request $index " + "a".repeat(800)))
+                add(AssistantText("a-$index", index * 2L + 1, "answer $index " + "b".repeat(800)))
             }
         }
 
@@ -468,8 +468,8 @@ class ContextWindowPolicyTest {
     fun `per-model reserveTokens override raises the compaction threshold`() {
         val messages = buildList<HarnessMessage> {
             repeat(10) { index ->
-                add(UserMessage("u-$index", index * 2L, "request $index " + "a".repeat(600)))
-                add(AssistantText("a-$index", index * 2L + 1, "answer $index " + "b".repeat(600)))
+                add(UserMessage("u-$index", index * 2L, "request $index " + "a".repeat(6_000)))
+                add(AssistantText("a-$index", index * 2L + 1, "answer $index " + "b".repeat(6_000)))
             }
         }
 

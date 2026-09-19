@@ -68,7 +68,17 @@ class SessionModelSwitcher @Inject constructor(
         // 触发压缩——压缩时机与所用模型都偏离预期。toContextTokens 仅作 UI 展示，
         // 保留标称窗口值。
         val defaultBudget = defaultBudget()
-        val toBudget = ContextWindowPolicy.clampedBudget(profile.contextTokens, defaultBudget)
+        val windowBudgetForProfile = ContextWindowPolicy.clampedBudget(profile.contextTokens, defaultBudget)
+        // 决策口径必须与 ApiContextAssembler 一致：那里已改为按「单次输入上限」裁切，
+        // 此处若仍按窗口值判断，会出现「切换判定无需压缩、实际请求又压缩」的分歧。
+        val toBudget = minOf(
+            ContextWindowPolicy.resolveInputLimit(
+                profile.inputTokenLimit,
+                windowBudgetForProfile,
+                runCatching { settingsDataStore.inputTokenLimit.first() }.getOrNull(),
+            ),
+            windowBudgetForProfile,
+        )
         val fromBudget = previousProfile?.contextTokens?.let {
             ContextWindowPolicy.resolveBudget(it, defaultBudget)
         }
@@ -76,6 +86,9 @@ class SessionModelSwitcher @Inject constructor(
 
         val compactionEnabled = runCatching {
             settingsDataStore.contextCompactionEnabled.first()
+        }.getOrDefault(true)
+        val archiveEnabled = runCatching {
+            settingsDataStore.contextArchiveEnabled.first()
         }.getOrDefault(true)
         val context = compactionManager.project(sessionId)
         val systemTokens = ContextWindowPolicy.estimateReservedPromptTokens(
@@ -105,7 +118,14 @@ class SessionModelSwitcher @Inject constructor(
                 val targetModelConfig = providerClient?.let { client ->
                     runCatching { client.resolveSavedModelProfile(profile.id, resolvedVariant) }.getOrNull()
                 }
-                compactionManager.compact(sessionId, context, keepFrom, model = targetModelConfig)
+                compactionManager.compact(
+                    sessionId,
+                    context,
+                    keepFrom,
+                    model = targetModelConfig,
+                    archiveEnabled = archiveEnabled,
+                    workspacePath = session.workspace.takeIf { it.isNotBlank() },
+                )
                 compacted = true
                 folded = keepFrom
             } else {

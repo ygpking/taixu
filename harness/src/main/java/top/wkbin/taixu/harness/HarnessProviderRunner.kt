@@ -1,6 +1,8 @@
 package top.wkbin.taixu.harness
 
 import top.wkbin.taixu.core.database.HarnessSessionEntity
+import top.wkbin.taixu.core.datastore.AgentPreferences
+import kotlinx.coroutines.flow.first
 import java.io.EOFException
 import java.io.IOException
 import java.io.InterruptedIOException
@@ -32,6 +34,7 @@ class HarnessProviderRunner @Inject constructor(
     private val capabilityWriter: CapabilityEventWriter,
     private val agentEventLogger: AgentEventLogger,
     private val contextAssembler: ApiContextAssembler,
+    private val agentPreferences: AgentPreferences,
 ) {
     /** 按最新用户消息中的 @提及 过滤动态 MCP 工具，并写入能力挂载记录 */
     suspend fun resolveEffectiveModel(sessId: String, model: ModelConfig): ModelConfig {
@@ -97,6 +100,9 @@ class HarnessProviderRunner @Inject constructor(
         var imageStripped = false
         // 上下文超限降级只做一次，避免与预算收缩形成死循环。
         var contextOverflowRetried = false
+        // 「压缩后仍 413、且本地估算未超」时置位：判定为字节/媒体层 413（非 token），
+        // 不再做无谓的 token 压缩（对齐 OMP session-maintenance.ts:2255-2270）。
+        var byteOverflowDiagnosed = false
         val estimatedRequestTokens = estimateTokens(requestMessages)
         val maxNetworkRetries = maxNetworkRetriesFor(estimatedRequestTokens, retryPolicy.maxRetries)
         // 显示的「分母」：瞬态传输故障（Socket/EOF/TLS/5xx）会被 effectiveRetryBudget 放宽到
@@ -233,17 +239,36 @@ class HarnessProviderRunner @Inject constructor(
                     ("http 413" in lowerMsg || "上下文上限" in lowerMsg ||
                         ProviderClient.isContextOverflowError(0, lowerMsg))
                 ) {
-                    val budget = ContextWindowPolicy.resolveEffectiveBudget(requestModel.contextTokens)
+                    // 判定基准 = 实际生效的裁切基准（模型档案 inputTokenLimit → 全局 → 按窗口推导），
+                    // 不再是窗口值。用窗口值会让「本已超限」的请求被误判为「没超」，从而不做任何降级。
+                    val effectiveInputLimit = ContextWindowPolicy.resolveInputLimit(
+                        requestModel.inputTokenLimit,
+                        ContextWindowPolicy.resolveEffectiveBudget(requestModel.contextTokens),
+                        runCatching { agentPreferences.inputTokenLimit.first() }.getOrNull(),
+                    )
                     val currentTokens = estimateTokens(requestMessages)
-                    if (currentTokens >= (budget * 0.8).toInt()) {
+                    // 413 分型保险丝（对齐 OMP）：本地估算已明显低于裁切基准（< 0.9 倍）却仍被拒，
+                    // 说明服务端拒的不是 token 数，而是请求体字节数 / 媒体大小（或网关硬限）。
+                    // 此时再压缩 token 纯属白费功夫（还会白白降级历史），改为给出可操作提示后失败。
+                    if (currentTokens < (effectiveInputLimit * 0.9).toInt()) {
+                        byteOverflowDiagnosed = true
+                        agentEventLogger.log(
+                            sessId, "ContextOverflowByteLimit",
+                            "服务端返回 413，但本地估算 $currentTokens tokens 未超裁切基准 $effectiveInputLimit" +
+                                "（< 90%），判定为请求体字节 / 媒体大小超限而非 token 超限，不做 token 压缩。" +
+                                "建议：减少图片附件、缩短单条超长文本，或调低该模型档案的「单次输入上限」。",
+                            throwable,
+                        )
+                    } else if (currentTokens >= (effectiveInputLimit * 0.8).toInt()) {
                         contextOverflowRetried = true
-                        val shrunken = (budget * 0.5).toInt()
-                            .coerceAtLeast(ContextWindowPolicy.MIN_CONTEXT_BUDGET)
-                        requestModel = requestModel.copy(contextTokens = shrunken)
+                        // 收紧的是裁切基准（inputTokenLimit），而非窗口值——引擎已不再用 contextTokens 做裁切。
+                        val shrunken = (effectiveInputLimit * 0.5).toInt()
+                            .coerceAtLeast(ContextWindowPolicy.MIN_INPUT_LIMIT)
+                        requestModel = requestModel.copy(inputTokenLimit = shrunken)
                         requestMessages = assembleFor(requestModel)
                         agentEventLogger.log(
                             sessId, "ContextOverflowFallback",
-                            "请求超出上下文上限，已把预算 $budget → $shrunken tokens 强制折叠后重试一次",
+                            "请求超出单次输入上限，已把裁切基准 $effectiveInputLimit → $shrunken tokens 强制折叠后重试一次",
                             throwable,
                         )
                         streamText.clear()
@@ -286,7 +311,15 @@ class HarnessProviderRunner @Inject constructor(
                     // 移除空的流式气泡；错误通过 error state 展示，不写入消息历史
                     messageProjector.remove(sessId, assistantId)
                 }
-                return TurnProviderOutcome.Failed(friendly(throwable))
+                // 字节层 413 时给出针对性提示：压缩历史救不了，必须从请求体体积/媒体下手。
+                val failureMessage = if (byteOverflowDiagnosed) {
+                    "请求被服务端拒绝 (HTTP 413)，但当前上下文并未超出模型上限——" +
+                        "多半是请求体字节数或附件（图片/超长文本）触发了网关硬限。" +
+                        "请减少图片附件、缩短单条超长内容，或调低该模型的「单次输入上限」后重试。"
+                } else {
+                    friendly(throwable)
+                }
+                return TurnProviderOutcome.Failed(failureMessage)
             }
         }
         messageProjector.endStreaming(sessId)

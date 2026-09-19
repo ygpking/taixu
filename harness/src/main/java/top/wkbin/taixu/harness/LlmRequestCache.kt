@@ -19,12 +19,15 @@ internal class LlmRequestCache(
     private data class Entry(val result: ChatResult, val expiresAt: Long)
 
     private val map = LinkedHashMap<String, Entry>()
+    // 命中计数（只增，供指标层读取，供量化验证「流式缓存是否真的命中」）。
+    @Volatile private var _hitCount = 0
 
     @Synchronized
     fun get(key: String): ChatResult? {
         val entry = map.remove(key) ?: return null
         if (clock() > entry.expiresAt) return null
         map[key] = entry // 重新插入末尾，实现 LRU 最近使用
+        _hitCount++
         return entry.result
     }
 
@@ -41,4 +44,7 @@ internal class LlmRequestCache(
     fun clear() = map.clear()
 
     val size: Int @Synchronized get() = map.size
+
+    /** 本地请求缓存累计命中次数（跨 get 调用只增）；供指标层量化「缓存是否真的在命中」。 */
+    val hitCount: Int @Synchronized get() = _hitCount
 }

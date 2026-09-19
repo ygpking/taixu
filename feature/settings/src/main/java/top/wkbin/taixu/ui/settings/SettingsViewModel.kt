@@ -20,6 +20,7 @@ import top.wkbin.taixu.core.tools.AgentModelDiscovery
 import top.wkbin.taixu.core.tools.AgentProviderCatalog
 import top.wkbin.taixu.core.tools.AgentModelConnectionTester
 import top.wkbin.taixu.core.tools.ProviderEndpointPolicy
+import top.wkbin.taixu.core.model.ContextBudgetDefaults
 import top.wkbin.taixu.core.model.ExecutionMode
 import top.wkbin.taixu.harness.ContextWindowPolicy
 import top.wkbin.taixu.core.model.McpConnectionState
@@ -639,6 +640,26 @@ class SettingsViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Eagerly, ContextWindowPolicy.DEFAULT_CONTEXT_BUDGET)
 
     /**
+     * 当前**实际生效**的「单次输入上限」（裁切基准），与引擎 `ApiContextAssembler` 同源：
+     * 模型档案 `inputTokenLimit` → 全局 `agent_input_token_limit` → 按窗口推导（50%，上限 12.8 万）。
+     *
+     * 设置页「触发水位预览」以本值为基准，才能做到「引擎按多少裁、设置页就显示多少」。
+     * 与 [effectiveContextBudget]（窗口能力）严格区分：窗口只用于推导，不参与裁切。
+     */
+    val effectiveInputLimit: StateFlow<Int> = combine(
+        models,
+        contextBudgetTokens,
+        settingsDataStore.inputTokenLimit,
+    ) { list, fallback, globalInputLimit ->
+        val active = list.firstOrNull { it.isActive }
+        val windowBudget = ContextWindowPolicy.resolveEffectiveBudget(active?.contextTokens ?: fallback)
+        minOf(
+            ContextWindowPolicy.resolveInputLimit(active?.inputTokenLimit, windowBudget, globalInputLimit),
+            windowBudget,
+        )
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, ContextBudgetDefaults.DEFAULT_INPUT_LIMIT)
+
+    /**
      * 当前「全局激活模型」在档案里声明的上下文上限（`contextTokens`）；无激活模型或未配置时为 null。
      *
      * 为什么设置页需要它：真正决定折叠的预算以「模型档案的 contextTokens」优先，全局预算
@@ -663,13 +684,17 @@ class SettingsViewModel @Inject constructor(
         ContextWindowPolicy.resolveEffectiveBudget(declared ?: fallback)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, ContextWindowPolicy.DEFAULT_CONTEXT_BUDGET)
 
-    /** 折叠线比例（百分比，默认 100）：历史在预算的百分之几处开始折叠。 */
+    /** 触发水位（百分比，默认 85）：历史在「裁切基准 × 本比例」处开始折叠。已收敛进「高级」区。 */
     val contextFoldingRatioPercent: StateFlow<Int> = settingsDataStore.contextFoldingRatioPercent
-        .stateIn(viewModelScope, SharingStarted.Eagerly, 100)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, ContextBudgetDefaults.DEFAULT_FOLDING_RATIO_PERCENT)
 
-    /** 折叠后保留窗口的 token 上限（默认 20000，参考 OMP keepRecentTokens）。 */
+    /** 压缩后保留窗口的 token 上限（默认 20000，参考 OMP keepRecentTokens）。 */
     val contextMaxKeepTokens: StateFlow<Int> = settingsDataStore.contextMaxKeepTokens
-        .stateIn(viewModelScope, SharingStarted.Eagerly, 20_000)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, ContextBudgetDefaults.DEFAULT_MAX_KEEP_TOKENS)
+
+    /** 压缩/截断前把原文落盘到 `.taixu-context/`（默认开，OMP 范式），供 agent 事后检索回捞。 */
+    val contextArchiveEnabled: StateFlow<Boolean> = settingsDataStore.contextArchiveEnabled
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
     val maxToolsPerRound: StateFlow<Int> = settingsDataStore.maxToolsPerRound
         .stateIn(viewModelScope, SharingStarted.Eagerly, 12)
@@ -720,6 +745,10 @@ class SettingsViewModel @Inject constructor(
     /** 保留窗口 token 上限：2000~200000。约束折叠后剩余历史的 token 总量。 */
     fun setContextMaxKeepTokens(value: Int) {
         viewModelScope.launch { settingsDataStore.setContextMaxKeepTokens(value) }
+    }
+
+    fun setContextArchiveEnabled(value: Boolean) {
+        viewModelScope.launch { settingsDataStore.setContextArchiveEnabled(value) }
     }
 
     fun setMaxToolRounds(value: Int) {
@@ -1204,6 +1233,7 @@ class SettingsViewModel @Inject constructor(
         reasoningEffort: String? = null,
         toolCallMode: String? = null,
         contextTokens: Int? = null,
+        inputTokenLimit: Int? = null,
         compactionKeepRecentTokens: Int? = null,
         compactionReserveTokens: Int? = null,
         customHeaders: String = "",
@@ -1229,6 +1259,7 @@ class SettingsViewModel @Inject constructor(
                     reasoningEffort = reasoningEffort,
                     toolCallMode = toolCallMode,
                     contextTokens = contextTokens,
+                    inputTokenLimit = inputTokenLimit,
                     compactionKeepRecentTokens = compactionKeepRecentTokens,
                     compactionReserveTokens = compactionReserveTokens,
                     customHeaders = customHeaders,
@@ -1256,6 +1287,7 @@ class SettingsViewModel @Inject constructor(
         reasoningEffort: String? = null,
         toolCallMode: String? = null,
         contextTokens: Int? = null,
+        inputTokenLimit: Int? = null,
         compactionKeepRecentTokens: Int? = null,
         compactionReserveTokens: Int? = null,
         customHeaders: String = "",
@@ -1285,6 +1317,7 @@ class SettingsViewModel @Inject constructor(
                     reasoningEffort = reasoningEffort,
                     toolCallMode = toolCallMode,
                     contextTokens = contextTokens,
+                    inputTokenLimit = inputTokenLimit,
                     compactionKeepRecentTokens = compactionKeepRecentTokens,
                     compactionReserveTokens = compactionReserveTokens,
                     customHeaders = customHeaders,

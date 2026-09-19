@@ -60,6 +60,11 @@ class AiProfileWriter @Inject constructor(
         val reasoningEffort: String? = null,
         val toolCallMode: String? = null,
         val contextTokens: Int? = null,
+        /**
+         * 单次输入上限（token，裁切基准）：每轮请求主动裁切到的目标水位。
+         * null = 未显式配置，由引擎按 `窗口 × 50%`（上限 12.8 万）推导。
+         */
+        val inputTokenLimit: Int? = null,
         /** 每模型压缩预算覆盖：压缩触发时保留的最近 token 上限（null = 不启用）。 */
         val compactionKeepRecentTokens: Int? = null,
         /** 每模型压缩预算覆盖：为 LLM 响应预留的 token（null = 内置默认）。 */
@@ -99,6 +104,8 @@ class AiProfileWriter @Inject constructor(
                 // 写入侧规范化：此前原样落库，用户填 0 或 999999999 会出现在模型档案卡片上
                 // （「0k / 999999k 上下文」），与引擎 resolveEffectiveBudget 的实际取值不一致。
                 contextTokens = normalizeContextTokens(request.contextTokens),
+                // 写入侧同样规范化输入上限，保证「填多少/存多少/按多少裁切」闭环。
+                inputTokenLimit = request.inputTokenLimit?.let(ContextBudgetDefaults::normalizeInputLimit),
                 compactionKeepRecentTokens = request.compactionKeepRecentTokens,
                 compactionReserveTokens = request.compactionReserveTokens,
                 customHeaders = request.customHeaders.trim(),

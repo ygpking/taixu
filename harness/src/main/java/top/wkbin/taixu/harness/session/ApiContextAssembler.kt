@@ -44,17 +44,27 @@ class ApiContextAssembler @Inject constructor(
         thinkingMode: Boolean = false,
     ): List<ApiMessage> {
         val compactionEnabled = runCatching { settingsDataStore.contextCompactionEnabled.first() }.getOrDefault(true)
+        // 压缩/截断前是否把原文落盘（OMP 范式）——失败只降级为「纯摘要」，不中断压缩。
+        val archiveEnabled = runCatching { settingsDataStore.contextArchiveEnabled.first() }.getOrDefault(true)
         // 与 SessionModelSwitcher/clampedBudget、ChatViewModel 面板同源：占用判定、面板显示、
         // 实际请求组装必须走同一预算口径，否则会出现「显示 500K、实际按 96K 折叠」两张皮。
         // 预算来源：模型单独配置优先，否则全局设置，再兜底 DEFAULT_CONTEXT_BUDGET。
         val declaredTokens = model.contextTokens
             ?: runCatching { settingsDataStore.contextBudgetTokens.first() }.getOrDefault(ContextWindowPolicy.DEFAULT_CONTEXT_BUDGET)
-        val budgetTokens = ContextWindowPolicy.resolveEffectiveBudget(declaredTokens)
-        // 「压缩触发阈值（用户轮次）」此前是僵尸设置：UI 可调、引擎从不读取，拖了没反应。
-        // 现在把它换算成「最少保留消息条数」传入折叠决策，使设置真正生效。
-        val minKeepMessages = ContextWindowPolicy.keepMessagesForRounds(
-            runCatching { settingsDataStore.contextCompactionThreshold.first() }.getOrNull(),
-        )
+        // 窗口能力：回答「总共能装多大」。只用于系统提示词容量上限与合理性校验，不参与裁切。
+        val windowBudget = ContextWindowPolicy.resolveEffectiveBudget(declaredTokens)
+        // 裁切基准：回答「每轮主动裁到多少」。优先级 = 模型档案 inputTokenLimit > 全局 inputTokenLimit > 按窗口推导。
+        // 历史缺陷：此处曾直接用 resolveEffectiveBudget(窗口) 当裁切基准，用户填 100 万后折叠线升到 ~98.7 万，
+        // 输入峰值 38 万永不越线 → BudgetContinuations=0 → HTTP 413 频发。
+        val globalInputLimit = runCatching { settingsDataStore.inputTokenLimit.first() }.getOrNull()
+        val inputLimit = ContextWindowPolicy.resolveInputLimit(model.inputTokenLimit, windowBudget, globalInputLimit)
+        // 输入上限不得超过窗口本身（窗口更小时以窗口为准，避免把请求堆过物理上限）。
+        val budgetTokens = minOf(inputLimit, windowBudget)
+        // 保留条数下限固定为 MIN_KEEP_MESSAGES（约最近 3 轮），不再由「用户轮次」设置驱动。
+        // 归因：旧设置 `contextCompactionThreshold` 是横向的「另一种计量单位」，与 token 水位并列
+        // 会让用户无从判断该调哪个；OMP 的触发判定只看 token（compaction.ts thresholdPercent）。
+        // 该 key 在数据层保留（不炸老配置），但引擎不再消费，触发完全由下面的 token 水位决定。
+        val minKeepMessages = ContextWindowPolicy.MIN_KEEP_MESSAGES
         // 「折叠线比例」：让历史在预算的一部分处就开始折叠。
         // 与面板同源读取同一个偏好，保证两侧折叠决策一致。
         val foldingRatioPercent = runCatching { settingsDataStore.contextFoldingRatioPercent.first() }
@@ -128,6 +138,8 @@ class ApiContextAssembler @Inject constructor(
                     compactedContext,
                     computedKeepFromIndex,
                     model = model,
+                    archiveEnabled = archiveEnabled,
+                    workspacePath = workspacePath,
                 )
                 msgs = compactedContext.messages
                 // compact 返回的保留窗口来自原始 transcript（未截断），重放一次截断，

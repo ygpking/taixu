@@ -26,7 +26,7 @@ class AnthropicApiTest {
     fun setUp() {
         server = MockWebServer()
         server.start()
-        api = AnthropicApi(OkHttpClient(), Json { ignoreUnknownKeys = true })
+        api = AnthropicApi(OkHttpClient(), Json { ignoreUnknownKeys = true }, LlmRequestCache())
     }
 
     @After

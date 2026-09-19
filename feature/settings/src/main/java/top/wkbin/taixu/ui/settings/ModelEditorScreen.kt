@@ -982,7 +982,7 @@ private fun ModelEditorContent(
                                     value = maxTokensText,
                                     onValueChange = { maxTokensText = it.filter(Char::isDigit) },
                                     modifier = Modifier.weight(1f),
-                                    label = { Text("Max Tokens") },
+                                    label = { Text("最大输出 Token") },
                                     placeholder = { Text("8000") },
                                     singleLine = true,
                                     shape = compactFieldShape,
@@ -993,7 +993,7 @@ private fun ModelEditorContent(
                                     value = contextTokensText,
                                     onValueChange = { contextTokensText = it.filter(Char::isDigit) },
                                     modifier = Modifier.weight(1f),
-                                    label = { Text("上下文上限") },
+                                    label = { Text("上下文窗口 (必填)") },
                                     placeholder = { Text("128000") },
                                     singleLine = true,
                                     shape = compactFieldShape,
@@ -1001,6 +1001,13 @@ private fun ModelEditorContent(
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                 )
                             }
+                            Text(
+                                "最大输出 Token = 单次回复的长度上限（不参与历史裁切）；" +
+                                    "上下文窗口 = 该模型总共能装多大，请照服务商填写——引擎据此自动决定每轮裁到多少，" +
+                                    "无需你手算。留空则按全局兜底。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
 
                             // Top P 滑块
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {

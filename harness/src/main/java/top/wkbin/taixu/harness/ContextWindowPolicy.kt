@@ -12,12 +12,6 @@ object ContextWindowPolicy {
     private const val MAX_SYSTEM_PROMPT_FRACTION = 0.60
     private const val MIN_SYSTEM_PROMPT_TOKENS = 512
     /**
-     * 输入预算占模型窗口的比例（上游 v0.15.0 口径，0.75）。
-     * 折叠触发线同时取本地 [foldingLimitFor] 与 `budget × 本比例 − 预留` 两者中更严的一条，
-     * 使不同窗口档位下都不会把历史挤到 completion/工具 schema 的空间里。
-     */
-    private const val INPUT_BUDGET_FRACTION = 0.75
-    /**
      * 上下文预算的单一真相源（single source of truth）。
      *
      * 语义约定（用户可见、可预期）：
@@ -35,6 +29,39 @@ object ContextWindowPolicy {
     }
 
     /**
+     * 解析「单次输入上限」= 每轮请求主动裁切到的目标水位，即**裁切基准**。
+     *
+     * 与 [resolveEffectiveBudget]（上下文窗口能力）严格区分，二者不可混用：
+     *  - 窗口：回答「整个模型总共能装多大」，**不参与**裁切决策；
+     *  - 输入上限：回答「我每轮主动裁到多少」，折叠触发线以此为准。
+     *
+     * 历史缺陷：裁切基准曾直接取窗口值。用户把窗口填成 1_000_000 后，折叠触发线
+     * 随之升到 ~98.7 万，而实际输入峰值仅 38 万 → 永不折叠（BudgetContinuations=0）→ HTTP 413。
+     *
+     * 取值优先级：
+     *  1. 模型档案 `inputTokenLimit`（显式配置）；
+     *  2. 全局 `agent_input_token_limit`；
+     *  3. 按窗口推导：`窗口 × [ContextBudgetDefaults.INPUT_LIMIT_WINDOW_RATIO_PERCENT]%`，
+     *     且不超过 [ContextBudgetDefaults.DEFAULT_INPUT_LIMIT]。
+     *
+     * 规则 3 的兜底意义：即便用户把窗口填成 1_000_000，未显式配置时输入上限也只到 12.8 万，
+     * 从根上杜绝「窗口填多大、请求就堆多大」的失控。
+     */
+    fun resolveInputLimit(
+        declaredInputLimit: Int?,
+        windowBudget: Int,
+        globalInputLimit: Int? = null,
+    ): Int {
+        if (declaredInputLimit != null && declaredInputLimit > 0) {
+            return ContextBudgetDefaults.normalizeInputLimit(declaredInputLimit)
+        }
+        if (globalInputLimit != null && globalInputLimit > 0) {
+            return ContextBudgetDefaults.normalizeInputLimit(globalInputLimit)
+        }
+        return ContextBudgetDefaults.resolveInputLimit(null, windowBudget)
+    }
+
+    /**
      * 历史折叠触发线（token）。
      *
      * 公式：`min(预算 × 比例, 预算 − 协议预留)`，再夹到 [MIN_CONTEXT_BUDGET] 以上。
@@ -45,17 +72,32 @@ object ContextWindowPolicy {
      *
      * 面板必须显示本函数的结果（而非原始预算），使「填多少、看到多少、实际按多少折叠」三处一致。
      */
-    fun foldingLimitFor(budget: Int, ratioPercent: Int = DEFAULT_FOLDING_RATIO_PERCENT): Int {
+    fun foldingLimitFor(
+        budget: Int,
+        ratioPercent: Int = DEFAULT_FOLDING_RATIO_PERCENT,
+        reserveTokens: Int? = null,
+    ): Int {
         if (budget <= 0) return 0
-        val reserved = RESERVED_OUTPUT_TOKENS + TOOL_SCHEMA_RESERVE_TOKENS
+        // per-model 自定义输出预留优先（对齐 pi reserveTokens）；未提供时用内置预留（输出 + 工具 schema）。
+        val reserved = (reserveTokens ?: RESERVED_OUTPUT_TOKENS) + TOOL_SCHEMA_RESERVE_TOKENS
         val hardCeiling = budget - reserved
         val safeRatio = ratioPercent.coerceIn(MIN_FOLDING_RATIO_PERCENT, MAX_FOLDING_RATIO_PERCENT)
         val scaled = (budget.toLong() * safeRatio / 100L).toInt()
         return minOf(scaled, hardCeiling).coerceAtLeast(MIN_CONTEXT_BUDGET)
     }
 
-    /** 折叠线比例的默认值（100 = 只在「预算 − 预留」处折叠，与旧行为一致）。 */
-    const val DEFAULT_FOLDING_RATIO_PERCENT = 100
+    /** 折叠线比例的默认值。真相源见 [ContextBudgetDefaults.DEFAULT_FOLDING_RATIO_PERCENT]（85）。 */
+    /**
+     * 默认触发水位（窗口百分比）。真相源见 [ContextBudgetDefaults.DEFAULT_FOLDING_RATIO_PERCENT]。
+     *
+     * 语义已从「用户调节旋钮」收敛为「固定安全水位」：正常只由 [resolveInputLimit] 推导出的
+     * 输入上限决定，用户不再需要理解它。取 85 = 给 completion / 工具 schema / 协议开销留 15% 余量，
+     * 与 OMP `thresholdPercent` 的保守取值一致。
+     *
+     * 历史缺陷：本值曾为 100，且在设置页作为「历史折叠线比例」滑块暴露给用户，
+     * 叠加「基准取窗口值（100 万）」后折叠线被顶到 ~98.7 万，历史堆到 38 万也不触发 → HTTP 413。
+     */
+    const val DEFAULT_FOLDING_RATIO_PERCENT = ContextBudgetDefaults.DEFAULT_FOLDING_RATIO_PERCENT
     /** 折叠线比例下限：低于此值会频繁折叠，历史几乎留不住。 */
     const val MIN_FOLDING_RATIO_PERCENT = 10
     /** 折叠线比例上限。 */
@@ -69,7 +111,7 @@ object ContextWindowPolicy {
      * 下一轮请求依旧庞大 —— 表现为「压缩日志有了、token 却降不下来」。
      * 该值只作为条数下限之上的护栏：永远不会让保留窗口少于最后一条消息。
      */
-    const val DEFAULT_MAX_KEEP_TOKENS = 20_000
+    const val DEFAULT_MAX_KEEP_TOKENS = ContextBudgetDefaults.DEFAULT_MAX_KEEP_TOKENS
 
     /** 预留：completion 输出空间（协议硬需求，与模型档位无关）。 */
     private const val RESERVED_OUTPUT_TOKENS = 8_192
@@ -77,6 +119,10 @@ object ContextWindowPolicy {
     private const val TOOL_SCHEMA_RESERVE_TOKENS = 4_096
     /** 兜底预算（模型未单独配置 contextTokens 且全局设置未生效时使用）。真相源见 [ContextBudgetDefaults]。 */
     const val DEFAULT_CONTEXT_BUDGET = ContextBudgetDefaults.DEFAULT_TOKENS
+    /** 单次输入上限默认值（裁切基准兜底）。真相源见 [ContextBudgetDefaults]。 */
+    const val DEFAULT_INPUT_LIMIT = ContextBudgetDefaults.DEFAULT_INPUT_LIMIT
+    /** 单次输入上限下界。真相源见 [ContextBudgetDefaults]。 */
+    const val MIN_INPUT_LIMIT = ContextBudgetDefaults.MIN_INPUT_LIMIT
     /** 预算下界：低于此值连系统提示词都放不下，属无效配置。真相源见 [ContextBudgetDefaults]。 */
     const val MIN_CONTEXT_BUDGET = ContextBudgetDefaults.MIN_TOKENS
     /** 预算上界：仅作为「明显异常输入」的护栏（如手误多打几个零），非模型能力限制。 */
@@ -88,6 +134,9 @@ object ContextWindowPolicy {
      * 该下限受预算约束：小窗口模型会自动少保，但至少保住最近一轮。
      *
      * 用户可在「设置 → 压缩触发阈值（用户轮次）」覆盖该下限，见 [keepMessagesForRounds]。
+     *
+     * ⚠️ 2026-09 重构后：该「轮次阈值」设置已从引擎触发链路移除（触发只看 token，对齐 OMP），
+     * 普通用户不再看到此参数；[keepMessagesForRounds] 保留仅供内部/测试调用，常量仍生效。
      *
      * ⚠️ 与 token 上限的关系（重要）：本常量只是「条数」维度的**下限**，
      * 最终保留窗口还要再过一道 [DEFAULT_MAX_KEEP_TOKENS] 的 token 上限护栏。
@@ -400,9 +449,9 @@ object ContextWindowPolicy {
      * 计算滑动窗口起点。
      *
      * 参数为两侧（本地 fork 与上游 v0.15.0）并集，缺省值即各自历史默认行为：
-     * @param minKeepMessages 强制保留的最近消息条数下限。默认 [MIN_KEEP_MESSAGES]；
-     *   调用方可由用户设置「压缩触发阈值（用户轮次）」经 [keepMessagesForRounds] 换算后传入。
-     * @param foldingRatioPercent 折叠线比例（百分比，默认 100 = 与旧行为一致）。
+     * @param minKeepMessages 强制保留的最近消息条数下限。默认 [MIN_KEEP_MESSAGES]。
+     *   2026-09 重构后调用方一律传常量（触发只看 token，不再由「用户轮次」设置驱动）。
+     * @param foldingRatioPercent 折叠线比例（百分比，默认 [DEFAULT_FOLDING_RATIO_PERCENT]=85）。
      * @param maxKeepTokens 保留窗口的 token 总量上限（默认 [DEFAULT_MAX_KEEP_TOKENS]，参考 OMP
      *   的 keepRecentTokens=20000）。这是「条数下限」之上的第二道护栏：只按条数保留会失控
      *   （单条 tool_result 可达上万 token，10 条就可能留下十几万 token）。
@@ -425,13 +474,12 @@ object ContextWindowPolicy {
         if (budget <= 0) {
             return alignKeepFromIndex(messages, minimalKeepFromIndex(messages))
         }
-        // 折叠触发线同时受本地预算护栏与上游输入预算线约束，取更严者（见 [foldingLimitFor]）。
-        val localLimit = foldingLimitFor(budget, foldingRatioPercent) - systemTokens
-        val upstreamLimit = (budget * INPUT_BUDGET_FRACTION).toInt() -
-            systemTokens - (reserveTokens ?: RESERVED_OUTPUT_TOKENS) - TOOL_SCHEMA_RESERVE_TOKENS
-        // rawLimit<=0 时只保留最小近轮：「防失忆」由 minKeepMessages 强制保留最近若干条
-        // + alignKeepFromIndex 的工具对闭合共同覆盖。
-        val rawLimit = minOf(localLimit, upstreamLimit)
+        // 折叠触发线：与 foldingLimitFor 同口径（budget × 水位，且不超过 budget − 协议预留）。
+        // 曾额外叠加 `budget × 0.75` 的 upstreamLimit，导致折叠线被二次折上折压到 ~0.75×budget，
+        // 大窗口被架空虚置、历史过早折叠（「记不住」根因之一）。现统一口径；
+        // per-model 的 reserveTokens 仍生效（并入 foldingLimitFor 的预留计算）。
+        val localLimit = foldingLimitFor(budget, foldingRatioPercent, reserveTokens) - systemTokens
+        val rawLimit = localLimit
         if (rawLimit <= 0) {
             return alignKeepFromIndex(messages, minimalKeepFromIndex(messages))
         }
@@ -450,7 +498,10 @@ object ContextWindowPolicy {
                 // MIN_KEEP_MESSAGES=10 条就可能留下十几万 token。
                 val forcedFloor = ((messages.size - minKeepMessages).coerceAtLeast(0))
                 var candidate = (index + 1).coerceIn(0, messages.lastIndex).coerceAtMost(forcedFloor)
-                candidate = shrinkToTokenCap(messages, candidate, maxKeepTokens)
+                // 保留窗口 token 上限：以配置的 maxKeepTokens 为下限基数，但随预算动态放大到至少 budget/4，
+                // 使大窗口（如 256K→预算 230K）不再被固定的 40K 上限卡住——历史保留与窗口同比例增长。
+                val effectiveKeepCap = maxOf(maxKeepTokens, budget / 4)
+                candidate = shrinkToTokenCap(messages, candidate, effectiveKeepCap)
                 var boundary = alignKeepFromIndex(messages, candidate)
                 // Split-turn（对齐 pi）：单个用户轮次自身超预算时，按用户轮次对齐会把
                 // 整个巨型轮次保留下来，kept 仍超限，下一次请求必然溢出。

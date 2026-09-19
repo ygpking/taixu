@@ -102,14 +102,19 @@ extensions.configure<ApplicationExtension> {
         }
         release {
             manifestPlaceholders["appLabel"] = if (taiXuDevBuild) "TaiXuDev" else "太墟"
-            isMinifyEnabled = true
-            isShrinkResources = true
+            isMinifyEnabled = false
+            isShrinkResources = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
             if (signingConfigured) {
                 signingConfig = signingConfigs.getByName("release")
+            } else {
+                // 未配置正式签名（TAIXU_RELEASE_STORE_FILE 等）时回退 debug 签名：
+                // release 版（R8 + 资源压缩）即可直接安装验证，无需另建 keystore。
+                // 正式分发仍应配置专属签名——此处仅作为本地/CI 便利回退。
+                signingConfig = signingConfigs.getByName("debug")
             }
         }
     }

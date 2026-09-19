@@ -608,17 +608,20 @@ class ChatViewModel @Inject constructor(
             defaultBudget = defaultBudget,
         )
     }.combine(
-        // 四个设置项一起并入：压缩开关 + 用户轮次阈值 + 折叠线比例 + 保留窗口 token 上限。
+        // 设置项一起并入：压缩开关 + 折叠线比例 + 保留窗口 token 上限 + 单次输入上限。
+        // 注：轮次阈值 stream 仍参与 combine 仅为触发重算，其值不再驱动折叠（触发只看 token）。
         // 面板与引擎都用同一组值做折叠决策，保证同源（避免再次出现「两张皮」）。
         kotlinx.coroutines.flow.combine(
             settingsDataStore.contextCompactionEnabled,
             settingsDataStore.contextCompactionThreshold,
             settingsDataStore.contextFoldingRatioPercent,
             settingsDataStore.contextMaxKeepTokens,
-        ) { enabled, threshold, ratio, maxKeep -> CompactionTuning(enabled, threshold, ratio, maxKeep) },
+            settingsDataStore.inputTokenLimit,
+        ) { enabled, _threshold, ratio, maxKeep, inputLimit ->
+            CompactionTuning(enabled, ratio, maxKeep, inputLimit)
+        },
     ) { inputs, compaction ->
         val compactionEnabled = compaction.enabled
-        val compactionThreshold = compaction.threshold
         val foldingRatioPercent = compaction.ratio
         val maxKeepTokens = compaction.maxKeepTokens
         val activeModel = inputs.activeModel
@@ -637,8 +640,19 @@ class ChatViewModel @Inject constructor(
         val subagentTokens = if (toolDisabled) 0 else ContextWindowPolicy.DEFAULT_SUBAGENT_TOKENS
 
         val totalSystemTokens = systemPromptTokens + toolDefinitionTokens + rulesTokens + skillTokens + mcpTokens + subagentTokens
-        // 与引擎同源：面板显示的预算 = resolveEffectiveBudget(用户设置)，杜绝「显示 500K、实际按 96K 折叠」两张皮。
-        val budget = ContextWindowPolicy.resolveEffectiveBudget(activeModel?.contextTokens ?: inputs.defaultBudget)
+        // 窗口能力：用户在该模型档案里填的 contextTokens（仅作标称上限展示与兜底校验，不参与裁切）。
+        val windowBudget = ContextWindowPolicy.resolveEffectiveBudget(activeModel?.contextTokens ?: inputs.defaultBudget)
+        // 与引擎同源：裁切/折叠基准取「单次输入上限」（模型档案 inputTokenLimit → 全局 inputTokenLimit → 按窗口推导）。
+        // 历史缺陷：此处曾直接用窗口值当基准，用户填 100 万后折叠线升到 ~98.7 万、输入 38 万永不折叠，
+        // 面板同时显示「模型上限 100 万 / 折叠线 98.7 万」，与引擎「从不折叠」互为两张皮。
+        val budget = minOf(
+            ContextWindowPolicy.resolveInputLimit(
+                activeModel?.inputTokenLimit,
+                windowBudget,
+                compaction.inputTokenLimit,
+            ),
+            windowBudget,
+        )
 
         // 与引擎同源（ApiContextAssembler）：把全量 UI 消息投影成「实际会发送的那份」再估算。
         // 引擎在压缩判定前会截断老轮次工具结果（浏览器快照、长 read 等大输出），面板此前漏了这一步，
@@ -659,8 +673,8 @@ class ChatViewModel @Inject constructor(
             skillsTokens = skillTokens,
             mcpTokens = mcpTokens,
             subagentTokens = subagentTokens,
-            // 与引擎同源：用户轮次阈值决定「最少保留条数」，面板据此估算折叠后的用量。
-            minKeepMessages = ContextWindowPolicy.keepMessagesForRounds(compactionThreshold),
+            // 与引擎同源：保留条数下限固定为 MIN_KEEP_MESSAGES（触发只看 token，不再受轮次设置影响）。
+            minKeepMessages = ContextWindowPolicy.MIN_KEEP_MESSAGES,
             // 同样与引擎同源：折叠线比例参与折叠决策。
             foldingRatioPercent = foldingRatioPercent,
             // 保留窗口 token 上限（条数下限之上的护栏），与引擎同源。
@@ -678,8 +692,8 @@ class ChatViewModel @Inject constructor(
             // 分母 = 折叠触发线（含用户设定的比例）；与 usedTokens 同源同尺度，
             // 保证「已用/分母=百分比」自洽。
             limitTokens = ContextWindowPolicy.foldingLimitFor(budget, foldingRatioPercent),
-            // 标称上限：用户在模型档案里填的值，供面板标注「模型上限 X」，不参与比例计算。
-            declaredTokens = budget,
+            // 标称上限：用户在模型档案里填的窗口值，供面板标注「模型上限 X」，不参与比例计算。
+            declaredTokens = windowBudget,
             // 折叠线比例：面板据此标注「按 X% 折叠」，让三个数（上限/比例/折叠线）都透明可见。
             foldingRatioPercent = foldingRatioPercent,
             systemTokens = totalSystemTokens,
@@ -1473,9 +1487,9 @@ enum class ComposerSendMode(val queue: PromptQueue) {
  */
 private data class CompactionTuning(
     val enabled: Boolean,
-    val threshold: Int,
     val ratio: Int,
     val maxKeepTokens: Int,
+    val inputTokenLimit: Int,
 )
 
 private data class ContextUsageInputs(

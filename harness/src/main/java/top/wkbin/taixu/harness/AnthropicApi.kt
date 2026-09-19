@@ -43,14 +43,18 @@ import kotlin.time.Duration.Companion.milliseconds
 internal class AnthropicApi(
     private val okHttpClient: OkHttpClient,
     private val json: Json,
+    private val requestCache: LlmRequestCache,
 ) {
     @OptIn(InternalCoroutinesApi::class)
     suspend fun chat(model: ModelConfig, messages: List<ApiMessage>): ChatResult =
         withContext(Dispatchers.IO) {
+            // 非流式请求缓存：相同请求在 TTL 内命中直接复用（省 token、更快）；只缓存成功结果，失败不落缓存
+            val cacheKey = ProviderClient.requestCacheKey(model, messages)
+            requestCache.get(cacheKey)?.let { cached -> return@withContext cached }
             val call = okHttpClient.newCall(buildRequest(model, messages, stream = false))
             // 与流式路径一致：取消时立即关闭 socket，避免"停止"后阻塞到读超时
             val cancelHandle = coroutineContext[Job]?.invokeOnCompletion(onCancelling = true) { call.cancel() }
-            try {
+            val result = try {
                 call.execute().use { response ->
                     val body = response.body.string()
                     if (!response.isSuccessful) {
@@ -67,6 +71,8 @@ internal class AnthropicApi(
             } finally {
                 cancelHandle?.dispose()
             }
+            requestCache.put(cacheKey, result)
+            result
         }
 
     @OptIn(InternalCoroutinesApi::class)
@@ -77,6 +83,14 @@ internal class AnthropicApi(
         onToolProgress: (ToolCallStreamProgress) -> Unit = {},
         onDelta: (String) -> Unit,
     ): ChatResult = withContext(Dispatchers.IO) {
+        // 流式请求缓存（对齐 ChatApi）：相同请求命中直接回放最终结果，跳过网络省 token。
+        // 命中时把缓存的最终文本/推理一次性交给 UI；工具进度不回放（命中无增量可算，结果随 ChatResult 返回）。
+        val cacheKey = ProviderClient.requestCacheKey(model, messages)
+        requestCache.get(cacheKey)?.let { cached ->
+            if (!cached.content.isNullOrBlank()) onDelta(cached.content)
+            if (!cached.reasoningContent.isNullOrBlank()) onReasoning(cached.reasoningContent)
+            return@withContext cached
+        }
         val call = okHttpClient.newCall(buildRequest(model, messages, stream = true))
         // 与 ChatApi 一致：取消时立即关闭 socket，保证"停止"秒级生效
         val cancelHandle = coroutineContext[Job]?.invokeOnCompletion(onCancelling = true) { call.cancel() }
@@ -177,7 +191,7 @@ internal class AnthropicApi(
                     }
                 }
                 toolCalls.values.forEach { it.publishProgress(onToolProgress, force = true) }
-                ChatResult(
+                val streamResult = ChatResult(
                     content = text.toString().ifEmpty { null },
                     // 无参数的工具调用（input={}）不会下发 input_json_delta，累积结果为空串，须兜底为 "{}"
                     toolCalls = toolCalls.values.map {
@@ -186,6 +200,9 @@ internal class AnthropicApi(
                     reasoningContent = reasoningText.toString().ifEmpty { null },
                     usage = usage,
                 )
+                // 流式成功收尾才落缓存（失败不缓存）：相同请求下次重发可直接命中回放。
+                requestCache.put(cacheKey, streamResult)
+                streamResult
             }
         } catch (io: IOException) {
             if (firstEventState.get() == ProviderClient.FIRST_EVENT_TIMED_OUT) {

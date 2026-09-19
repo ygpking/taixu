@@ -74,6 +74,8 @@ class CompactionManager @Inject constructor(
         keepFromIndex: Int,
         laneName: String = SessionTreeStore.MAIN_LANE,
         model: ModelConfig? = null,
+        archiveEnabled: Boolean = false,
+        workspacePath: String? = null,
     ): CompactedContext {
         require(keepFromIndex in 1..context.messages.size) { "Compaction must remove at least one message" }
         val lane = repository.ensureLane(sessionId, laneName)
@@ -107,15 +109,35 @@ class CompactionManager @Inject constructor(
             mergeRollingSummary(previousSummaries.joinToString("\n\n"), incrementalSummary)
         }
         val now = System.currentTimeMillis()
+        // 先取历史累计折叠条数（用于归档文件头与 payload），再归档。
         val previousFoldedCount = repository.latestBranchEntryOfType(sessionId, lane.leafId, ENTRY_TYPE)
             ?.let { entry ->
                 runCatching { json.decodeFromString(CompactionPayload.serializer(), entry.payloadJson) }.getOrNull()
             }
             ?.let { it.cumulativeCompactedMessageCount ?: it.compactedMessageCount }
             ?: 0
+        // 原文归档（OMP 范式）：把被折叠掉的原始消息完整写入工作区 `.taixu-context/`，
+        // 并在摘要末尾附「原文索引」，让 agent 事后能用 read/grep 回捞精确细节。
+        // 归档失败返回 null，不影响压缩主流程（见 ContextArchive 的容错设计）。
+        val archiveId = ContextArchive.archiveId(now, collapsed.size)
+        val archivedRelativePath = if (archiveEnabled) {
+            ContextArchive.archive(
+                workspacePath = workspacePath,
+                sessionId = sessionId,
+                messages = collapsed,
+                reason = "上下文压缩：本批折叠 ${collapsed.size} 条（累计 ${previousFoldedCount + collapsed.size} 条）",
+                archiveId = archiveId,
+            )
+        } else {
+            null
+        }
+        val summaryWithIndex = summary + (
+            ContextArchive.indexNote(archivedRelativePath, collapsed.size)
+                .ifBlank { ContextArchive.searchEntryNote(collapsed.size) }
+            )
         val payload = CompactionPayload(
             sourceLeafId = lane.leafId,
-            summary = summary,
+            summary = summaryWithIndex,
             retainedMessagesJson = json.encodeToString(ListSerializer(HarnessMessage.serializer()), retained),
             compactedMessageCount = collapsed.size,
             cumulativeCompactedMessageCount = previousFoldedCount + collapsed.size,
@@ -136,12 +158,13 @@ class CompactionManager @Inject constructor(
         Log.d(
             "ContextCompaction",
             "压缩会话 $sessionId：折叠 ${collapsed.size} 条（累计 ${payload.cumulativeCompactedMessageCount}），" +
-                "保留 ${retained.size} 条，摘要 ${summary.length} 字符" +
+                "保留 ${retained.size} 条，摘要 ${summaryWithIndex.length} 字符" +
                 "（${if (llmSummary != null) "LLM 结构化" else "机械回退"}），" +
                 "折叠分支摘要 ${context.branchSummaries.size} 份，" +
+                (archivedRelativePath?.let { "原文归档 → $it，" } ?: "未归档原文，") +
                 "压缩前估算 ${payload.estimatedTokensBefore} tokens",
         )
-        return CompactedContext(summary, retained)
+        return CompactedContext(summaryWithIndex, retained)
     }
 
     private fun decodeMessage(entry: HarnessEntryEntity): HarnessMessage? =

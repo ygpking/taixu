@@ -21,7 +21,7 @@ class ResponsesApiTest {
     fun setUp() {
         server = MockWebServer()
         server.start()
-        api = ResponsesApi(OkHttpClient(), Json { ignoreUnknownKeys = true })
+        api = ResponsesApi(OkHttpClient(), Json { ignoreUnknownKeys = true }, LlmRequestCache())
     }
 
     @After
