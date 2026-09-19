@@ -76,11 +76,13 @@ class HostGuiController @Inject constructor(
                 }
 
                 val nodes = AndroidGuiXmlParser.parse(xmlContent, onlyInteractive)
+                // rawXml 不再随观察结果持有：uiautomator 全量 XML 可达数 MB，挂存会让每次
+                // screen_observe 都把整棵节点树常驻 Java 堆（无人消费的死重，曾致 target
+                // footprint OOM）。解析所需的瞬态字符串在此作用域结束后即可被 GC 回收。
                 ScreenObservation(
                     packageName = foreground.first,
                     activityName = foreground.second,
                     nodes = nodes,
-                    rawXml = xmlContent,
                 )
             }
         } finally {

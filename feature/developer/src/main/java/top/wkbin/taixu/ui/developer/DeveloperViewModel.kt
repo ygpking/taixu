@@ -4,7 +4,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import top.wkbin.taixu.core.common.logging.AppLogger
 import top.wkbin.taixu.core.common.result.AppResult
-import top.wkbin.taixu.core.datastore.SettingsDataStore
+import top.wkbin.taixu.core.datastore.AgentPreferences
+import top.wkbin.taixu.core.datastore.OnboardingPreferences
+import top.wkbin.taixu.core.datastore.RegistryPreferences
+import top.wkbin.taixu.core.datastore.RuntimePreferences
 import top.wkbin.taixu.core.model.RuntimeState
 import top.wkbin.taixu.core.model.InstalledRuntime
 import top.wkbin.taixu.core.tools.RuntimeManager
@@ -32,7 +35,10 @@ import kotlinx.coroutines.launch
 class DeveloperViewModel @Inject constructor(
     private val linuxRuntime: LinuxRuntime,
     private val runtimeManager: RuntimeManager,
-    private val settingsDataStore: SettingsDataStore,
+    private val runtimePreferences: RuntimePreferences,
+    private val agentPreferences: AgentPreferences,
+    private val registryPreferences: RegistryPreferences,
+    private val onboardingPreferences: top.wkbin.taixu.core.datastore.OnboardingPreferences,
     private val toolRegistry: ToolRegistry,
     private val toolManager: ToolManager,
     private val logger: AppLogger,
@@ -83,12 +89,12 @@ class DeveloperViewModel @Inject constructor(
     private val _logcatOutput = MutableStateFlow("")
     val logcatOutput: StateFlow<String> = _logcatOutput.asStateFlow()
 
-    val adbNotificationEnabled: StateFlow<Boolean> = settingsDataStore.adbNotificationEnabled
+    val adbNotificationEnabled: StateFlow<Boolean> = runtimePreferences.adbNotificationEnabled
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     fun setAdbNotificationEnabled(enabled: Boolean) {
         viewModelScope.launch {
-            settingsDataStore.setAdbNotificationEnabled(enabled)
+            runtimePreferences.setAdbNotificationEnabled(enabled)
         }
     }
 
@@ -156,11 +162,11 @@ class DeveloperViewModel @Inject constructor(
         }
     }
 
-    val registryManifestUrl: StateFlow<String> = settingsDataStore.registryManifestUrl
+    val registryManifestUrl: StateFlow<String> = registryPreferences.manifestUrl
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
-    val registrySignatureUrl: StateFlow<String> = settingsDataStore.registrySignatureUrl
+    val registrySignatureUrl: StateFlow<String> = registryPreferences.signatureUrl
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
-    val registryPublicKey: StateFlow<String> = settingsDataStore.registryPublicKey
+    val registryPublicKey: StateFlow<String> = registryPreferences.publicKey
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
     private val _registryStatus = MutableStateFlow<String?>(null)
     val registryStatus: StateFlow<String?> = _registryStatus.asStateFlow()
@@ -174,7 +180,7 @@ class DeveloperViewModel @Inject constructor(
         _registryStatusIsError.value = isError
     }
 
-    val agentLoggingEnabled: StateFlow<Boolean> = settingsDataStore.agentLoggingEnabled
+    val agentLoggingEnabled: StateFlow<Boolean> = agentPreferences.agentLoggingEnabled
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
     private val _agentLogSize = MutableStateFlow(0L)
     val agentLogSize: StateFlow<Long> = _agentLogSize.asStateFlow()
@@ -183,7 +189,7 @@ class DeveloperViewModel @Inject constructor(
 
     fun setAgentLoggingEnabled(enabled: Boolean) {
         viewModelScope.launch {
-            settingsDataStore.setAgentLoggingEnabled(enabled)
+            agentPreferences.setAgentLoggingEnabled(enabled)
             refreshAgentLogSize()
         }
     }
@@ -203,7 +209,7 @@ class DeveloperViewModel @Inject constructor(
 
     fun saveRegistryConfig(manifestUrl: String, signatureUrl: String, publicKey: String) {
         viewModelScope.launch {
-            settingsDataStore.setRegistryConfig(manifestUrl, signatureUrl, publicKey)
+            registryPreferences.setRegistryConfig(manifestUrl, signatureUrl, publicKey)
             setRegistryStatus("工具清单配置已保存。")
         }
     }
@@ -387,7 +393,7 @@ class DeveloperViewModel @Inject constructor(
                 // A factory-style runtime reset intentionally restarts the
                 // complete first-run flow: environment download, then model
                 // selection/configuration.
-                settingsDataStore.setOnboardingCompleted(false)
+                onboardingPreferences.setOnboardingCompleted(false)
                 result
             }
                 .onSuccess { result ->
