@@ -7,7 +7,6 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -23,10 +22,13 @@ import top.wkbin.taixu.harness.UserMessage
  * `SessionTreeStore.laneLocks` 泄漏回归测试。
  *
  * 缺陷：`laneLocks` 的 key 形如 `"$sessionId/$laneName"`，`deleteSession` 原先只删库数据、
- * 不删锁 —— 每删一个会话就永久留下它的 Mutex（无人再引用，却被 map 强引用），
+ * 不删锁 —— 每删一个会话就永久留下它的 Mutex（无人再引用，却被 map 强引用）。
  * 会话 id 是 UUID 不复用，于是纯泄漏且随会话数单调增长。
  * 同届的十余个 session 维度容器（SessionMessageProjector/CheckpointStore/…）都有清理，
  * 唯独这一处漏了。
+ *
+ * 注意：只有真正走 [SessionTreeStore.append]/[SessionTreeStore.rewindBefore] 等
+ * "持锁操作"才会创建 lane 锁；[SessionTreeStore.ensureMainLane] 只建 lane 行，不建锁。
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -56,9 +58,8 @@ class SessionTreeStoreLaneLockTest {
     @Test
     fun `deleting a session releases its lane locks`() = runBlocking {
         val sessionId = "session-lane-lock"
-        store.ensureMainLane(sessionId)
         store.append(sessionId, UserMessage(id = "m1", createdAt = 1L, text = "hi"))
-        assertEquals("append/ensure 应创建至少一把 lane 锁", 1, store.laneLockCountForTest)
+        assertEquals("append 应创建 lane 锁", 1, store.laneLockCountForTest)
 
         store.deleteSession(sessionId)
         assertEquals("删除会话后 lane 锁必须被回收", 0, store.laneLockCountForTest)
@@ -66,8 +67,6 @@ class SessionTreeStoreLaneLockTest {
 
     @Test
     fun `lane locks of sibling sessions are not affected`() = runBlocking {
-        store.ensureMainLane("a")
-        store.ensureMainLane("b")
         store.append("a", UserMessage(id = "a1", createdAt = 1L, text = "x"))
         store.append("b", UserMessage(id = "b1", createdAt = 2L, text = "y"))
         assertEquals(2, store.laneLockCountForTest)
@@ -80,20 +79,21 @@ class SessionTreeStoreLaneLockTest {
     }
 
     /**
-     * 关键边界：会话 id 互为前缀时不能误删（"a" 不能把 "ab" 的锁带走）。
-     * 这正是"用分隔符拼 key + 带分隔符做前缀匹配"要挡住的情况。
+     * 关键边界：会话 id 互为前缀时不能误删（"user" 不能把 "user-2" 的锁带走）。
+     * 这正是「用分隔符拼 key + 带分隔符做前缀匹配」要挡住的情况 ——
+     * 若清理写成 `startsWith(sessionId)`（漏掉分隔符），本用例会失败。
      */
     @Test
     fun `prefix-looking session ids do not delete each other's locks`() = runBlocking {
-        store.ensureMainLane("user")
-        store.ensureMainLane("user-2")
+        store.append("user", UserMessage(id = "u1", createdAt = 1L, text = "x"))
+        store.append("user-2", UserMessage(id = "u2", createdAt = 2L, text = "y"))
         assertEquals(2, store.laneLockCountForTest)
 
         store.deleteSession("user")
-        assertEquals(1, store.laneLockCountForTest)
-        assertTrue(
-            "user-2 的锁仍在（否则前缀匹配漏了分隔符）",
-            store.laneLockCountForTest == 1,
-        )
+
+        assertEquals("只应删掉 'user' 的锁，'user-2' 必须留下", 1, store.laneLockCountForTest)
+        // 反向确认留下的是 user-2：再删它应当清空
+        store.deleteSession("user-2")
+        assertEquals(0, store.laneLockCountForTest)
     }
 }
