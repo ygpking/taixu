@@ -62,7 +62,8 @@ class AiProfileWriter @Inject constructor(
         val contextTokens: Int? = null,
         /**
          * 单次输入上限（token，裁切基准）：每轮请求主动裁切到的目标水位。
-         * null = 未显式配置，由引擎按 `窗口 × 50%`（上限 12.8 万）推导。
+         * null = 未显式配置，由引擎按窗口推导（比例与护栏见
+         * `ContextBudgetDefaults.resolveInputLimit`）。
          */
         val inputTokenLimit: Int? = null,
         /** 每模型压缩预算覆盖：压缩触发时保留的最近 token 上限（null = 不启用）。 */

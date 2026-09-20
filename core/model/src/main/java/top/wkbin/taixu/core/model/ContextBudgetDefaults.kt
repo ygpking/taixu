@@ -77,13 +77,17 @@ object ContextBudgetDefaults {
     const val INPUT_LIMIT_WINDOW_RATIO_PERCENT = 90
 
     /**
-     * 触发水位（裁切基准的百分比，默认 90）。历史在「裁切基准 × 本比例」处开始折叠。
+     * 触发水位（裁切基准的百分比，默认见下方常量值）。历史在「裁切基准 × 本比例」处开始折叠。
      *
      * 与 [INPUT_LIMIT_WINDOW_RATIO_PERCENT] 的分工：
-     *  - 前者决定「基准是多少」（输入上限，默认 12.8 万）；
-     *  - 本值决定「基准用到百分之几才触发折叠」（90%，给输出与工具 schema 留 10% 余量；
-     *    不足部分由 upstreamLimit 里的 RESERVED_OUTPUT_TOKENS + TOOL_SCHEMA_RESERVE 兜底）。
-     * 二者相乘 = 实际触发线（约 11.5 万）。85→90：更晚触发折叠，让长对话保留更多原始历史、减少过早摘要。
+     *  - 前者决定「基准是多少」（输入上限）；
+     *  - 本值决定「基准用到百分之几才触发折叠」，给输出与工具 schema 留出余量；
+     *    不足部分由 `ContextWindowPolicy.foldingLimitFor` 里的
+     *    RESERVED_OUTPUT_TOKENS + TOOL_SCHEMA_RESERVE 兜底。
+     *
+     * ⚠️ 不要在注释里手算「实际触发线 = 多少万」：基准 × 本比例 × 预留扣除是三级运算，
+     * 手算值会随任一常量调整而失效（本文件曾写"约 11.5 万"，在默认窗口 256K + 两处 90%
+     * 下实际是 **约 20.7 万**）。要看数值请跑 `foldingLimitFor`。
      */
     const val DEFAULT_FOLDING_RATIO_PERCENT = 90
 

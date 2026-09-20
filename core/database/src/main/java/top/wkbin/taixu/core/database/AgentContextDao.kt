@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -105,6 +106,31 @@ interface AgentContextDao {
 
     @Query("DELETE FROM agent_plans WHERE sessionId = :sessionId")
     suspend fun deletePlanBySession(sessionId: String)
+
+    @Query("DELETE FROM agent_scratchpads WHERE sessionId = :sessionId")
+    suspend fun clearScratchpads(sessionId: String)
+
+    /**
+     * 删除某会话产生、且**生命周期绑定该会话**的记忆。
+     *
+     * 判据：`scope = 'session'`（owner 即 sessionId）。`global` / `project` 的 owner 不是会话 id，
+     * 它们的语义就是"跨会话"，**不能**被单次会话删除带走。
+     */
+    @Query("DELETE FROM agent_memories WHERE scope = 'session' AND ownerId = :sessionId")
+    suspend fun deleteSessionScopedMemories(sessionId: String)
+
+    /**
+     * 会话删除时的全部上下文数据清理，**单事务**执行。
+     *
+     * 收进一个 `@Transaction` 而不是让调用方逐个调：三张表要么一起清、要么都不清，
+     * 避免"清了两张、第三张漏掉"这种半清理状态（也少一个漏调的机会）。
+     */
+    @Transaction
+    suspend fun deleteSessionContextData(sessionId: String) {
+        deletePlanBySession(sessionId)
+        clearScratchpads(sessionId)
+        deleteSessionScopedMemories(sessionId)
+    }
 
     // ========== 工作草稿 (Scratchpad) ==========
 

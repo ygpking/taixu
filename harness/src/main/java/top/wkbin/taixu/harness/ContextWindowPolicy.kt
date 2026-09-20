@@ -44,8 +44,9 @@ object ContextWindowPolicy {
      *  3. 按窗口推导：`窗口 × [ContextBudgetDefaults.INPUT_LIMIT_WINDOW_RATIO_PERCENT]%`，
      *     且不超过 [ContextBudgetDefaults.DEFAULT_INPUT_LIMIT]。
      *
-     * 规则 3 的兜底意义：即便用户把窗口填成 1_000_000，未显式配置时输入上限也只到 12.8 万，
-     * 从根上杜绝「窗口填多大、请求就堆多大」的失控。
+     * 规则 3 的兜底意义：输入上限随窗口线性放大（不再有与模型脱钩的固定硬帽），
+     * 但始终被封在窗口之内——不会出现「窗口填多大、请求就堆多大」的失控。
+     * 数值请以 [ContextBudgetDefaults.resolveInputLimit] 为准，注释不复述具体数字。
      */
     fun resolveInputLimit(
         declaredInputLimit: Int?,
@@ -94,16 +95,12 @@ object ContextWindowPolicy {
         return limited - systemTokens.coerceAtLeast(0)
     }
 
-    /** 折叠线比例的默认值。真相源见 [ContextBudgetDefaults.DEFAULT_FOLDING_RATIO_PERCENT]（85）。 */
     /**
-     * 默认触发水位（窗口百分比）。真相源见 [ContextBudgetDefaults.DEFAULT_FOLDING_RATIO_PERCENT]。
+     * 折叠线比例的默认值。真相源见 [ContextBudgetDefaults.DEFAULT_FOLDING_RATIO_PERCENT]。
      *
-     * 语义已从「用户调节旋钮」收敛为「固定安全水位」：正常只由 [resolveInputLimit] 推导出的
-     * 输入上限决定，用户不再需要理解它。取 85 = 给 completion / 工具 schema / 协议开销留 15% 余量，
-     * 与 OMP `thresholdPercent` 的保守取值一致。
-     *
-     * 历史缺陷：本值曾为 100，且在设置页作为「历史折叠线比例」滑块暴露给用户，
-     * 叠加「基准取窗口值（100 万）」后折叠线被顶到 ~98.7 万，历史堆到 38 万也不触发 → HTTP 413。
+     * ⚠️ 不要在注释里复述具体数值：本文件曾把 85 写进三处 KDoc（本行、下方 [DEFAULT_FOLDING_RATIO_PERCENT]
+     * 的说明、[computeKeepFromIndex] 的参数文档），而真相源已改为 90 —— 注释与代码漂移后
+     * 会误导后续调参。**引用常量即可，让数值只有一处**。
      */
     const val DEFAULT_FOLDING_RATIO_PERCENT = ContextBudgetDefaults.DEFAULT_FOLDING_RATIO_PERCENT
     /** 折叠线比例下限：低于此值会频繁折叠，历史几乎留不住。 */
@@ -459,7 +456,8 @@ object ContextWindowPolicy {
      * 参数为两侧（本地 fork 与上游 v0.15.0）并集，缺省值即各自历史默认行为：
      * @param minKeepMessages 强制保留的最近消息条数下限。默认 [MIN_KEEP_MESSAGES]。
      *   2026-09 重构后调用方一律传常量（触发只看 token，不再由「用户轮次」设置驱动）。
-     * @param foldingRatioPercent 折叠线比例（百分比，默认 [DEFAULT_FOLDING_RATIO_PERCENT]=85）。
+     * @param foldingRatioPercent 折叠线比例（百分比，默认 [DEFAULT_FOLDING_RATIO_PERCENT]，
+     *   数值以常量定义为准，此处不复述）。
      * @param maxKeepTokens 保留窗口的 token 总量上限（默认 [DEFAULT_MAX_KEEP_TOKENS]，参考 OMP
      *   的 keepRecentTokens=20000）。这是「条数下限」之上的第二道护栏：只按条数保留会失控
      *   （单条 tool_result 可达上万 token，10 条就可能留下十几万 token）。
@@ -502,7 +500,7 @@ object ContextWindowPolicy {
         val limit = rawLimit
         var used = 0
         for (index in messages.indices.reversed()) {
-            val tokens = tokensOf(messages[index])
+            val tokens = messageTokens(messages[index])
             if (used + tokens > limit) {
                 // 强制保留最近 minKeepMessages 条（即使已超 limit），避免「只留 2 条」导致
                 // 模型记不住前因。上限受预算约束：小窗口模型自动少保，但至少保住最近一轮。
@@ -566,7 +564,14 @@ object ContextWindowPolicy {
         return boundary
     }
 
-    /** 单条消息的 token 估算（与 computeKeepFromIndex 内的口径保持一致）。 */
+    /**
+     * 单条消息的 token 估算 —— **全类唯一的定义**。
+     *
+     * 此前存在一份逐字节相同的 `tokensOf`，两份都只服务于本文件的裁剪计算，
+     * 注释还都写着"与另一处口径保持一致"——典型的"靠注释同步"，
+     * 任一侧改权重另一侧就会静默分叉（同族教训：注释不会运行）。
+     * 已合并为一份，重复定义不允许再加。
+     */
     private fun messageTokens(message: HarnessMessage): Int = when (message) {
         is CapabilityEvent, is ModelSwitchEvent, is SkillSuggestion -> 0
         is UserMessage -> estimateTokens(message.text) + message.imageUrls.size * 1_000
@@ -589,7 +594,7 @@ object ContextWindowPolicy {
         if (keepRecentTokens <= 0 || keepFrom <= 0) return keepFrom
         var used = 0
         for (index in messages.indices.reversed()) {
-            used += tokensOf(messages[index])
+            used += messageTokens(messages[index])
             if (used > keepRecentTokens) {
                 val keepRecentBoundary = alignSplitTurnBoundary(messages, index + 1).coerceAtLeast(1)
                 val tightened = maxOf(keepRecentBoundary, keepFrom)
@@ -599,17 +604,8 @@ object ContextWindowPolicy {
         return keepFrom
     }
 
-    private fun tokensOf(message: HarnessMessage): Int = when (message) {
-        is CapabilityEvent, is ModelSwitchEvent, is SkillSuggestion -> 0
-        is UserMessage -> estimateTokens(message.text) + message.imageUrls.size * 1_000
-        is AssistantText -> estimateTokens(assistantTextForContext(message.text)) +
-            estimateTokens(message.reasoning.orEmpty())
-        is ToolResult -> estimateTokens(message.output)
-        is ToolCall -> estimateTokens(message.args.toString()) + estimateTokens(message.reasoning.orEmpty())
-    }
-
     private fun keptTokens(messages: List<HarnessMessage>, keepFrom: Int): Int =
-        messages.drop(keepFrom).sumOf(::tokensOf)
+        messages.drop(keepFrom).sumOf(::messageTokens)
 
     /**
      * Split-turn 轮内切割：从 [candidate] 向后回退到最近的合法切点。

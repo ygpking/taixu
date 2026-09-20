@@ -87,6 +87,7 @@ class HarnessLoop @Inject constructor(
     private val turnRunner: TurnRunner,
     private val rewindController: top.wkbin.taixu.harness.checkpoint.RewindController,
     private val branchSummarizer: top.wkbin.taixu.harness.compaction.BranchSummarizer,
+    private val agentContextRepository: top.wkbin.taixu.core.database.AgentContextRepository,
     private val skillEvolutionAdvisor: top.wkbin.taixu.harness.skill.SkillEvolutionAdvisor? = null,
 ) {
     private val loopScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -429,6 +430,12 @@ class HarnessLoop @Inject constructor(
         sessionCancelEpochs.remove(id)
         cancellingSessions.remove(id)
         tombstonedSessions.remove(id)
+        // 会话生命周期绑定的上下文数据（计划 / 工作草稿 / scope=session 的记忆）。
+        // 此前**没有任何调用方**在删会话时清这三张表 → 每删一个会话就永久留下孤儿数据
+        // （会话 id 是 UUID 不复用，这些行不会被任何会话再读到）。
+        // global / project 记忆不在此列——它们的语义是跨会话。
+        runCatching { agentContextRepository.deleteSessionContextData(id) }
+            .onFailure { logger.w("清理会话上下文数据失败：$id", it) }
         if (sessionTracker.currentSessionId.value == id) {
             val remaining = sessionDao.observeAll().first()
             val nextSession = remaining.firstOrNull { it.id != id }

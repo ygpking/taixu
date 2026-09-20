@@ -649,7 +649,8 @@ class SettingsViewModel @Inject constructor(
 
     /**
      * 当前**实际生效**的「单次输入上限」（裁切基准），与引擎 `ApiContextAssembler` 同源：
-     * 模型档案 `inputTokenLimit` → 全局 `agent_input_token_limit` → 按窗口推导（50%，上限 12.8 万）。
+     * 模型档案 `inputTokenLimit` → 全局 `agent_input_token_limit` →
+     * 按窗口推导（比例与护栏见 `ContextBudgetDefaults.resolveInputLimit`）。
      *
      * 设置页「触发水位预览」以本值为基准，才能做到「引擎按多少裁、设置页就显示多少」。
      * 与 [effectiveContextBudget]（窗口能力）严格区分：窗口只用于推导，不参与裁切。

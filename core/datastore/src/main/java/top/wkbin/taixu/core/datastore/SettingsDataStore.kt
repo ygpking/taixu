@@ -683,7 +683,8 @@ class SettingsDataStore @Inject constructor(
      *  - `inputTokenLimit` 回答「每轮主动裁到多少」，引擎的折叠触发线以此为准。
      *
      * 历史缺陷：裁切基准曾取窗口值，用户填 100 万后折叠线升到 ~98.7 万，
-     * 历史堆到 38 万也不折叠 → HTTP 413。全局默认 12.8 万即可防止此类失控。
+     * 历史堆到 38 万也不折叠 → HTTP 413。现改由「单次输入上限」统一约束
+     * （见 `ContextBudgetDefaults.resolveInputLimit`），默认值随窗口推导而非固定值。
      * 模型档案未单独配置 inputTokenLimit 时，回退到此全局值。
      */
     private val inputTokenLimitKey = androidx.datastore.preferences.core.intPreferencesKey("agent_input_token_limit")

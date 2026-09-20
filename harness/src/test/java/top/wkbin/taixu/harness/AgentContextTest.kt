@@ -470,4 +470,16 @@ private class FakeAgentContextDao : AgentContextRepository {
     override suspend fun clearScratchpads(sessionId: String) {
         scratchpads.keys.removeAll { it.startsWith("${sessionId}__") }
     }
+
+    /** 与 [AgentContextDao.deleteSessionScopedMemories] 同语义：只删 scope=session 且 owner 匹配的。 */
+    override suspend fun deleteSessionScopedMemories(sessionId: String) {
+        memories.values.removeAll { it.scope == "session" && it.ownerId == sessionId }
+    }
+
+    /** 与 [AgentContextDao.deleteSessionContextData] 同语义：三张表一起清。 */
+    override suspend fun deleteSessionContextData(sessionId: String) {
+        deletePlanBySession(sessionId)
+        clearScratchpads(sessionId)
+        deleteSessionScopedMemories(sessionId)
+    }
 }
