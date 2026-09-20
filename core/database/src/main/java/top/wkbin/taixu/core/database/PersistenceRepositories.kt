@@ -189,6 +189,26 @@ interface AgentContextRepository {
     fun observeScratchpads(sessionId: String): Flow<List<AgentScratchpadEntity>>
     suspend fun deleteScratchpad(sessionId: String, key: String)
     suspend fun clearScratchpads(sessionId: String)
+
+    /**
+     * 删除该会话产生、且生命周期绑定该会话的记忆（`scope = 'session'`）。
+     * `global` / `project` 记忆**不**在此列——它们的语义是跨会话。
+     */
+    suspend fun deleteSessionScopedMemories(sessionId: String)
+
+    /**
+     * 会话删除时的**全部**上下文数据清理（plan + scratchpad + session 记忆）。
+     *
+     * 为什么必须有一个聚合入口：这三张表都以 sessionId 为键，此前**没有任何调用方**
+     * 在删会话时清它们（`clearScratchpads` / `deletePlanBySession` 只被 UI 手动按钮与
+     * 工具的自清理动作调用过）——于是每删一个会话就在库里永久留下它的计划、草稿与
+     * session 记忆。会话 id 是 UUID 且不复用，这些行**不会被任何会话再读到**，
+     * 是纯孤儿数据：白占磁盘，且 `scope='session'` 的记忆还会参与
+     * `searchMemories` / `countMemories` 的统计口径。
+     *
+     * 收成一个方法而不是让调用方逐个调：少一个"漏调其中之一"的机会。
+     */
+    suspend fun deleteSessionContextData(sessionId: String)
 }
 
 @Singleton
@@ -273,6 +293,9 @@ class RoomAgentContextRepository @Inject constructor(private val dao: AgentConte
     override fun observeScratchpads(sessionId: String) = dao.observeScratchpads(sessionId)
     override suspend fun deleteScratchpad(sessionId: String, key: String) = dao.deleteScratchpad(sessionId, key)
     override suspend fun clearScratchpads(sessionId: String) = dao.clearScratchpads(sessionId)
+    override suspend fun deleteSessionScopedMemories(sessionId: String) = dao.deleteSessionScopedMemories(sessionId)
+
+    override suspend fun deleteSessionContextData(sessionId: String) = dao.deleteSessionContextData(sessionId)
 }
 
 interface QuickPhraseRepository {
