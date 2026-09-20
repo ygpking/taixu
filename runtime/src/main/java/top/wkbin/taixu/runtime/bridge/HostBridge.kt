@@ -202,7 +202,7 @@ class HostBridge @Inject constructor(
     private fun checkAuth(headers: Map<String, String>): Boolean {
         val auth = headers["authorization"] ?: return false
         val token = auth.removePrefix("Bearer ").removePrefix("bearer ").trim()
-        return token == bridgeKey
+        return HostBridgeAuth.matches(token, bridgeKey)
     }
 
     // ============================ 端点实现 ============================
