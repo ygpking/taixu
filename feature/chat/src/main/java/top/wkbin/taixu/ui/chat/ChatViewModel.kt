@@ -569,14 +569,6 @@ class ChatViewModel @Inject constructor(
     /** 已成功落地的建议 id：进程内幂等标记，防止重复点击产生重复技能（失败会回滚以便重试）。 */
     private val appliedSkillSuggestionIds = mutableSetOf<String>()
 
-    /** 技能创建/更新失败提示（null 表示无错误）；UI 消费后应调用 clearSkillSuggestionError()。 */
-    private val _skillSuggestionError = MutableStateFlow<String?>(null)
-    val skillSuggestionError: StateFlow<String?> = _skillSuggestionError.asStateFlow()
-
-    fun clearSkillSuggestionError() {
-        _skillSuggestionError.value = null
-    }
-
     val activeSkills: StateFlow<List<top.wkbin.taixu.core.model.AgentSkill>> = agentSkillRepository.activeSkills
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -1099,9 +1091,10 @@ class ChatViewModel @Inject constructor(
             if (result.isSuccess) {
                 _hiddenSkillSuggestions.update { it + suggestion.id }
             } else {
-                // 失败不再静默：回滚幂等标记（允许重试），保留卡片并明确告知用户。
+                // 失败不再静默：回滚幂等标记（允许重试），保留卡片并复用既有 notice 通道
+                // （ChatScreen 已消费 notice 并弹 Toast + 自动 clearNotice），无需改动 UI 层。
                 appliedSkillSuggestionIds.remove(suggestion.id)
-                _skillSuggestionError.value = "技能创建失败：" +
+                _notice.value = "技能创建失败：" +
                     (result.exceptionOrNull()?.message ?: "未知错误") + "（可重试）"
             }
         }
