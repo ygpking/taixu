@@ -1,5 +1,7 @@
 package top.wkbin.taixu.service
 
+import kotlin.math.absoluteValue
+
 /**
  * Agent 常驻通知的 Notification id 分配。
  *

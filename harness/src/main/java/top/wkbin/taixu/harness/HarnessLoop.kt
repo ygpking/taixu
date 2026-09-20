@@ -101,6 +101,12 @@ class HarnessLoop @Inject constructor(
     private val sessionLoopDetectors = ConcurrentHashMap<String, ToolCallLoopDetector>()
     /** Sessions being deleted; reject new runs and skip pending drainage. */
     private val tombstonedSessions = ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * 已完成「中断恢复」处理的会话 id（每个会话只恢复一次）。
+     * 必须随会话删除一并清掉：会话 id 是 UUID 不复用，不清就是随会话数单调增长的泄漏；
+     * 且若将来存在同 id 重建路径，残留的登记会让新会话**跳过**中断恢复。
+     */
     private val recoveredSessions = ConcurrentHashMap.newKeySet<String>()
 
     private val _sessionPendingMessages = ConcurrentHashMap<String, MutableStateFlow<List<PendingMessage>>>()
@@ -430,6 +436,7 @@ class HarnessLoop @Inject constructor(
         sessionCancelEpochs.remove(id)
         cancellingSessions.remove(id)
         tombstonedSessions.remove(id)
+        recoveredSessions.remove(id)
         if (sessionTracker.currentSessionId.value == id) {
             val remaining = sessionDao.observeAll().first()
             val nextSession = remaining.firstOrNull { it.id != id }

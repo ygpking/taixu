@@ -55,7 +55,7 @@ class ApprovalNodeExecutor @Inject constructor(
                 executionId = context.executionId,
                 nodeId = node.id,
                 title = node.title,
-                description = listOf(interpolate(node.description, context), context.previousOutput().take(24_000)).filter(String::isNotBlank).joinToString("\n\n"),
+                description = listOf(interpolateRaw(node.description, context), context.previousOutput().take(24_000)).filter(String::isNotBlank).joinToString("\n\n"),
                 requestedVariables = node.config["requestedVariables"]
                     ?.split(',')?.map(String::trim)?.filter(String::isNotEmpty).orEmpty(),
             ),
