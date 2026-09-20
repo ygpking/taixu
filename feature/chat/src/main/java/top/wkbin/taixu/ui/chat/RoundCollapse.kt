@@ -52,8 +52,20 @@ fun projectChatMessages(
     // 过滤掉已被 ToolCard 内部独立消费渲染的 ToolResult，所有思考过程与工具调用按自然单行流呈现。
     // 同时把「原始下标」一次性算入渲染项：组合期据此做 O(1) 读取，
     // 免除在 Lazy 项内对 messages 反复 indexOfFirst 造成的 O(n²) 扫描。
-    return messages
-        .mapIndexedNotNull { index, message ->
-            if (message is ToolResult) null else ChatRenderItem.MessageItem(message, rawIndex = index)
+    //
+    // 实现说明：旧写法 `messages.mapIndexedNotNull { ... }` 会创建 2 个 List 再合并
+    // （mapNotNull 内部 collectTo，先 ArrayList 累积、末尾再复制一次）。本函数在
+    // 流式输出期间被反复调用（每帧一次），长会话下每次多分配一次原表大小的数组，
+    // 属无谓的 GC 压力。改为单趟构建：先按 size 预分配，只复制可见项，并就地重排。
+    val projected = ArrayList<ChatRenderItem>(messages.size)
+    for (index in messages.indices) {
+        val message = messages[index]
+        if (message !is ToolResult) {
+            projected.add(ChatRenderItem.MessageItem(message, rawIndex = index))
         }
+    }
+    // 预分配后容量常大于实际条目数。ArrayList 不暴露"收缩容量"的 API，
+    // 但 `toList()` 会走优化路径：size == capacity 时直接返回副本，否则精确复制。
+    // 这里统一交给它处理，避免超容量数组被 LazyColumn 长期持有。
+    return projected.toList()
 }

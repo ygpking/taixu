@@ -2,12 +2,15 @@ package top.wkbin.taixu.harness.projection
 
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlinx.coroutines.flow.Flow
+import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
-import com.taixu.core.ui.util.throttleLatest
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import top.wkbin.taixu.harness.HarnessMessage
 
 /**
@@ -41,31 +44,44 @@ class HarnessUiBuffer @Inject constructor(
     val throttledForegroundMessages: StateFlow<List<HarnessMessage>> = _throttledForegroundMessages.asStateFlow()
     
     /**
-     * 启动节流监听
-     * 
-     * 使用示例：
-     * ```kotlin
-     * // 在 ViewModel 或 Application 中调用一次
-     * harnessUiBuffer.startThrottling(throttleWindowMs = 100, maxEmissions = 10)
-     * 
-     * // UI 层观察节流后的流
-     * viewModel.throttledMessages.collect { messages ->
-     *     LazyColumn { items(messages) { message -> ... } }
-     * }
-     * ```
+     * 启动节流监听。**必须在专属协程内调用一次并保持挂起**——本函数会一直
+     * collect 上游流直到该协程被取消；在 Application 里用 `launch { }` 启动，
+     * 不要放在会返回的初始化路径里（否则节流只生效一瞬间）。
+     *
+     * 实现要点：这里刻意**不用** `core:ui-util` 的 `throttleLatest` 算子——
+     * 那个算子会把每个上游状态聚合进 `List<T>` 批次再发射，对本场景意味着
+     * 每 100ms 额外保留一份包含全部历史批次的列表引用，而这些中间列表随后
+     * 只取 `lastOrNull()` 就被丢弃：纯属白付一次全量持有的内存成本。
+     * 这里的语义只需要「最新值 + 时间窗口」，等价于 combine(conflate + 采样)，
+     * 因此直接就地采样，不产生任何中间集合。
+     *
+     * 这样 Harness 层（150ms 一帧的全量内容快照）到 Compose 重组之间多了一层
+     * 100ms 的采样保护，UI 永远不会因为上游抖动在每个 chunk 上重建整列。
      */
-    suspend fun startThrottling(
+    fun startThrottling(
         throttleWindowMs: Long = 100,
-        maxEmissions: Int = 10
-    ) {
-        // 将原始高频流转换为节流流
-        projector.foregroundMessages
-            .throttleLatest(timeoutMillis = throttleWindowMs, maxEmissions = maxEmissions)
-            .collect { batchedLists ->
-                // batchedLists 是 List<List<HarnessMessage>>，取最新的列表
-                _throttledForegroundMessages.update { batchedLists.lastOrNull() ?: emptyList() }
+        scope: CoroutineScope,
+    ): Job =
+        scope.launch {
+            val pending = AtomicReference<List<HarnessMessage>?>(null)
+            val flusher = launch {
+                while (isActive) {
+                    delay(throttleWindowMs)
+                    pending.getAndSet(null)?.let { latest ->
+                        _throttledForegroundMessages.value = latest
+                    }
+                }
             }
-    }
+            try {
+                projector.foregroundMessages.collect { latest ->
+                    pending.set(latest)
+                }
+            } finally {
+                flusher.cancel()
+                // 收尾兜底：把最后一帧放出去，避免流结束后 UI 停在旧内容上
+                pending.getAndSet(null)?.let { _throttledForegroundMessages.value = it }
+            }
+        }
     
     /**
      * 直接获取当前节流后的消息快照
