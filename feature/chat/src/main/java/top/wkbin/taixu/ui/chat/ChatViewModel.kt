@@ -566,6 +566,17 @@ class ChatViewModel @Inject constructor(
     private val _hiddenSkillSuggestions = MutableStateFlow<Set<String>>(emptySet())
     val hiddenSkillSuggestions: StateFlow<Set<String>> = _hiddenSkillSuggestions.asStateFlow()
 
+    /** 已成功落地的建议 id：进程内幂等标记，防止重复点击产生重复技能（失败会回滚以便重试）。 */
+    private val appliedSkillSuggestionIds = mutableSetOf<String>()
+
+    /** 技能创建/更新失败提示（null 表示无错误）；UI 消费后应调用 clearSkillSuggestionError()。 */
+    private val _skillSuggestionError = MutableStateFlow<String?>(null)
+    val skillSuggestionError: StateFlow<String?> = _skillSuggestionError.asStateFlow()
+
+    fun clearSkillSuggestionError() {
+        _skillSuggestionError.value = null
+    }
+
     val activeSkills: StateFlow<List<top.wkbin.taixu.core.model.AgentSkill>> = agentSkillRepository.activeSkills
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -1064,7 +1075,10 @@ class ChatViewModel @Inject constructor(
     /** 应用技能进化建议：asNew=true 沉淀为新技能；false 按目标 id 更新既有技能（内置技能自动转另存） */
     fun applySkillSuggestion(suggestion: SkillSuggestion, asNew: Boolean) {
         viewModelScope.launch {
-            runCatching {
+            // 幂等闸门：同一建议重复点击（含重启后卡片复活）不得产生重复技能。
+            // 以建议 id 为技能 id 种子，重复落地命中的是同一行（REPLACE 去重）。
+            if (!appliedSkillSuggestionIds.add(suggestion.id)) return@launch
+            val result = runCatching {
                 val target = allSkills.value.firstOrNull { it.id == suggestion.targetSkillId }
                 if (suggestion.action == "update" && target != null && !target.isBuiltin && !asNew) {
                     agentSkillRepository.addCustom(
@@ -1076,20 +1090,39 @@ class ChatViewModel @Inject constructor(
                         ),
                     )
                 } else {
-                    agentSkillRepository.addCustom(suggestion.toAgentSkill())
+                    // 另存为新技能时按名称去重：同名会让 load_skill 命中哪条变得不确定，
+                    // 且「另存」与原名同名在语义上也自相矛盾。冲突时追加序号后缀。
+                    val finalName = uniqueSkillName(suggestion.skillName)
+                    agentSkillRepository.addCustom(suggestion.toAgentSkill(finalName))
                 }
             }
-            _hiddenSkillSuggestions.update { it + suggestion.id }
+            if (result.isSuccess) {
+                _hiddenSkillSuggestions.update { it + suggestion.id }
+            } else {
+                // 失败不再静默：回滚幂等标记（允许重试），保留卡片并明确告知用户。
+                appliedSkillSuggestionIds.remove(suggestion.id)
+                _skillSuggestionError.value = "技能创建失败：" +
+                    (result.exceptionOrNull()?.message ?: "未知错误") + "（可重试）"
+            }
         }
+    }
+
+    /** 生成不与现有技能重名的名称：冲突时追加 -2、-3 … */
+    private fun uniqueSkillName(base: String): String {
+        val existing = allSkills.value.map { it.name.lowercase() }.toSet()
+        if (base.lowercase() !in existing) return base
+        var index = 2
+        while ("${base}-$index".lowercase() in existing) index++
+        return "$base-$index"
     }
 
     fun dismissSkillSuggestion(id: String) {
         _hiddenSkillSuggestions.update { it + id }
     }
 
-    private fun SkillSuggestion.toAgentSkill(): top.wkbin.taixu.core.model.AgentSkill = top.wkbin.taixu.core.model.AgentSkill(
-        id = "custom_" + java.util.UUID.randomUUID().toString().take(8),
-        name = skillName,
+    private fun SkillSuggestion.toAgentSkill(nameOverride: String? = null): top.wkbin.taixu.core.model.AgentSkill = top.wkbin.taixu.core.model.AgentSkill(
+        id = "custom_" + suggestionIdSeed(),
+        name = nameOverride ?: skillName,
         description = description.ifBlank { "由对话进化建议创建" },
         systemPrompt = systemPrompt,
         triggerCommand = triggerCommand,
@@ -1098,6 +1131,11 @@ class ChatViewModel @Inject constructor(
         isBuiltin = false,
         category = "进化",
     )
+
+    /** 技能 id 种子：优先从建议 id 派生（保证同一建议重复落地同 id），缺失时退化为随机。 */
+    private fun SkillSuggestion.suggestionIdSeed(): String =
+        id.takeIf { it.isNotBlank() }?.replace(Regex("[^A-Za-z0-9]"), "")?.takeLast(8)?.takeIf { it.length == 8 }
+            ?: java.util.UUID.randomUUID().toString().take(8)
 
     fun startHealingTask(title: String, prompt: String) {
         viewModelScope.launch {

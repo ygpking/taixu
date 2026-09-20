@@ -245,22 +245,36 @@ class ToolExecutor @Inject constructor(
                     false to "当前没有已启用的技能。请提示用户到「设置 → 智能体」启用技能后重试。"
                 } else {
                     val queryLower = query.lowercase()
-                    val matched = skills.firstOrNull { skill ->
+                    // 精确匹配（name / id / 去斜杠 triggerCommand）：大小写无关。
+                    val exact = skills.filter { skill ->
                         val candidates = setOf(
                             skill.name.lowercase(),
                             skill.id.lowercase(),
                             skill.triggerCommand?.removePrefix("/")?.lowercase().orEmpty(),
                         )
                         queryLower in candidates
-                    } ?: skills.firstOrNull { skill ->
-                        skill.name.lowercase().contains(queryLower) ||
-                            (skill.triggerCommand?.removePrefix("/")?.lowercase()?.contains(queryLower) == true)
                     }
-                    if (matched == null) {
-                        false to "未找到匹配的技能：$query。可用技能：${skills.joinToString("、") { it.name }}"
+                    // 模糊匹配仅作兜底，且必须唯一命中——若命中多条还静默取第一条，
+                    // 会出现「load_skill("Git") 却加载了 Git 敏捷工作流」这类选错技能的问题。
+                    val fuzzy = if (exact.isEmpty()) {
+                        skills.filter { skill ->
+                            skill.name.lowercase().contains(queryLower) ||
+                                (skill.triggerCommand?.removePrefix("/")?.lowercase()?.contains(queryLower) == true)
+                        }
                     } else {
-                        true to "【技能已加载：${matched.name}】(category=${matched.category})\n" +
-                            matched.systemPrompt.trim()
+                        emptyList()
+                    }
+                    val pool = if (exact.isNotEmpty()) exact else fuzzy
+                    when {
+                        pool.isEmpty() -> false to "未找到匹配的技能：$query。可用技能：" +
+                            skills.joinToString("、") { it.name }
+                        pool.size > 1 -> false to "技能名 $query 匹配到多个技能：" +
+                            pool.joinToString("、") { it.name } + "。请使用完整技能名或 id 重试。"
+                        else -> {
+                            val matched = pool.first()
+                            true to "【技能已加载：${matched.name}】(category=${matched.category})\n" +
+                                matched.systemPrompt.trim()
+                        }
                     }
                 }
             }

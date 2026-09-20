@@ -67,14 +67,25 @@ class SkillEvolutionAdvisor @Inject constructor(
 
     private suspend fun analyzeAndEmit(sessId: String) {
         if (!settingsDataStore.skillEvolutionSuggestions.first()) return
+
+        // 必须先取快照再判门槛：早退路径不应占用冷却窗口（否则一次空跑会让真正有价值的
+        // 下一轮在 30 分钟内被静默吞掉）。
+        val messages = projector.messagesFlow(sessId).value
+        val digest = buildConversationDigest(messages) ?: return
+
+        // 工具调用门槛：仅当本轮有足够多的工具调用（= 确实做了步骤化工作）才值得花一次
+        // LLM 调用做分析。此前 MIN_TOOL_CALLS 是死常量（定义了从不使用），导致寒暄式的
+        // 单轮对话也会触发分析，既烧 token 又产出噪声建议。
+        if (countRecentToolCalls(messages) < MIN_TOOL_CALLS) return
+
         val now = System.currentTimeMillis()
         synchronized(lastSuggestionAt) {
             val last = lastSuggestionAt[sessId] ?: 0L
             if (now - last < COOLDOWN_MS) return
             lastSuggestionAt[sessId] = now
+            lastSuggestionAt.pruneIfStale(now)
         }
-        val messages = projector.messagesFlow(sessId).value
-        val digest = buildConversationDigest(messages) ?: return
+
         val skills = skillRepository.allSkills.first()
         val model = resolveModel(sessId) ?: return
 
@@ -120,8 +131,25 @@ class SkillEvolutionAdvisor @Inject constructor(
         private const val DEFAULT_MAX_TOKENS = 2000
         private const val MAX_DIGEST_CHARS = 9000
 
-        internal fun buildConversationDigest(messages: List<HarnessMessage>): String? {
+        /** 统计最近一轮（自最后一条用户消息起）的工具调用次数，用于技能进化门槛判定。 */
+        internal fun countRecentToolCalls(messages: List<HarnessMessage>): Int {
             val lastUserIndex = messages.indexOfLast { it is UserMessage }
+            if (lastUserIndex < 0) return 0
+            return messages.drop(lastUserIndex).count { it is ToolCall }
+        }
+
+        /**
+         * 清理冷却表的过期条目：lastSuggestionAt 以 sessId 为键且只在单例内增长，
+         * 长跑设备上会话数无上限，不清理会缓慢泄漏内存。冷却窗口外的键可直接移除。
+         */
+        private fun HashMap<String, Long>.pruneIfStale(now: Long) {
+            val iterator = entries.iterator()
+            while (iterator.hasNext()) {
+                if (now - iterator.next().value >= COOLDOWN_MS) iterator.remove()
+            }
+        }
+
+        internal fun buildConversationDigest(messages: List<HarnessMessage>): String? {            val lastUserIndex = messages.indexOfLast { it is UserMessage }
             if (lastUserIndex < 0) return null
             val sb = StringBuilder()
             messages.drop(lastUserIndex).forEach { msg ->
