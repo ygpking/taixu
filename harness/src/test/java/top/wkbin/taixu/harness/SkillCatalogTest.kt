@@ -37,6 +37,23 @@ class SkillCatalogTest {
         assertTrue(text.contains("把文档导出为 PDF"))
     }
 
+    /**
+     * 回归防线：目录文案必须给出「开工前主动扫描」的动作指引。
+     *
+     * 背景：旧文案只写「当用户请求与某条描述匹配时」加载，属被动等匹配。实际运行中模型
+     * 接手任务后往往凭自身记忆直接开干，从不主动扫目录，成套的专业做法（含踩过的坑）被闲置。
+     * 本断言锁定主动措辞，防止回退。
+     */
+    @Test
+    fun `catalog tells model to scan before starting`() {
+        val text = renderSkillCatalog(
+            listOf(skill("s1", "pdf-export", "把文档导出为 PDF")),
+            excludeIds = emptySet(),
+        )
+        assertTrue("目录应要求开工前先扫：$text", text.contains("开工前"))
+        assertTrue("目录应给出命中后的加载动作：$text", text.contains("load_skill"))
+    }
+
     @Test
     fun `excluded and disabled skills are omitted`() {
         val text = renderSkillCatalog(
