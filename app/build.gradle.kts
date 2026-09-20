@@ -6,8 +6,13 @@ import java.util.Properties
 import org.gradle.kotlin.dsl.configure
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
+// 版本号规则（用户 2026-09-20 定）：
+//   versionName 以 0.16.01 起步，此后每次自签包第三段递进（0.16.02、0.16.03…）。
+//   versionCode 只要求「严格递增」即可覆盖安装，故紧接历史值递进（33 → 34 → 35…），
+//   不跳号——跳大会导致日后想装回上游官方包（其 versionCode 尚低）时被系统拒绝降级。
+//   注意：versionName 仅用于展示，安卓只比较 versionCode。
 val appVersionName = "0.16.01"
-val appVersionCode = 1601
+val appVersionCode = 34
 
 // TaiXuDev 双包构建开关：CI（.github/workflows/taixudev-build.yml）设 TAIXU_DEV_BUILD=1 时，
 // 产出独立预览包 top.wkbin.taixu.dev / 应用名 TaiXuDev / 版本后缀 -dev，
