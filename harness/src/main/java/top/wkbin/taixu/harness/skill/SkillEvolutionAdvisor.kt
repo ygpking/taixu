@@ -51,6 +51,7 @@ class SkillEvolutionAdvisor @Inject constructor(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lastSuggestionAt = HashMap<String, Long>()
+    private val lastSuggestionAtLock = Any()
 
     /** 只在成功 run 结束后由 HarnessLoop 调用；内部全量容错，绝不向调用方抛异常。 */
     fun maybeSuggest(sessId: String) {
@@ -79,14 +80,23 @@ class SkillEvolutionAdvisor @Inject constructor(
         if (countRecentToolCalls(messages) < MIN_TOOL_CALLS) return
 
         val now = System.currentTimeMillis()
-        synchronized(lastSuggestionAt) {
+        // 冷却判定与写入必须在同一临界区内。**不能**直接 `synchronized(lastSuggestionAt)`：
+        // 本轮修复给 pruneIfStale 换成了 `entries.removeIf`（ConcurrentModificationException 修复），
+        // 而锁对象若与被修改的容器是同一个，就要求"所有对该 map 的访问都持锁"——
+        // 这条不变式靠注释是守不住的。用独立的锁对象，把"保护范围"与"被保护数据"解耦。
+        synchronized(lastSuggestionAtLock) {
             val last = lastSuggestionAt[sessId] ?: 0L
             if (now - last < COOLDOWN_MS) return
             lastSuggestionAt[sessId] = now
             lastSuggestionAt.pruneIfStale(now)
         }
 
-        val skills = skillRepository.allSkills.first()
+        // 只把**已启用**技能交给顾问判断：被用户禁用的技能在 load_skill 里被 activeSkills 门禁挡住，
+        // 在目录里被 isEnabled 过滤，是"不可用"的。把 allSkills 全量喂进来会产生两类无效建议：
+        //   ① update 指向一个禁用技能 —— 用户即使采纳也不会生效（load_skill 拒绝加载它）；
+        //   ② create 被"同名技能已存在"（含禁用项）挡下 → 静默 return null，白烧一次 LLM 调用。
+        // 与 selectSkills / renderSkillCatalog / load_skill 的门禁保持同一口径（全链路只认 isEnabled）。
+        val skills = skillRepository.activeSkills.first()
         val model = resolveModel(sessId) ?: return
 
         val analysisModel = model.copy(
@@ -141,6 +151,8 @@ class SkillEvolutionAdvisor @Inject constructor(
         /**
          * 清理冷却表的过期条目：lastSuggestionAt 以 sessId 为键且只在单例内增长，
          * 长跑设备上会话数无上限，不清理会缓慢泄漏内存。冷却窗口外的键可直接移除。
+         *
+         * 调用约定：**必须在 [lastSuggestionAtLock] 临界区内调用**（见 analyzeAndEmit）。
          */
         private fun HashMap<String, Long>.pruneIfStale(now: Long) {
             val iterator = entries.iterator()

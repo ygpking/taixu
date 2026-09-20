@@ -41,6 +41,9 @@ interface AgentSkillDao {
     suspend fun insertAll(skills: List<AgentSkillEntity>)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(skills: List<AgentSkillEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(skill: AgentSkillEntity)
 
     @Query("UPDATE agent_skills SET isEnabled = :enabled WHERE id = :id AND isImmutable = 0")
@@ -65,8 +68,37 @@ class AgentSkillRepository @Inject constructor(
 
     private val directorySyncMutex = Mutex()
 
+    /**
+     * 把内置技能播种到库中，并**同步正文改动**。
+     *
+     * 历史行为是 `insertAll(IGNORE)` —— 只补缺、不更新已存在的行。后果：内置技能的正文
+     * （systemPrompt）一旦在代码里修过，**已安装用户永远拿不到**（那一行早就存在，
+     * `IGNORE` 直接跳过）。手机端没法像开发机那样清库，于是"改了技能但用户看不到"
+     * 会一直静默持续。同族对比：`AgentSubagentDao.syncBuiltinCatalog` 早就用
+     * `catalogRevision` 做了版本化重播种，技能侧缺失同一机制。
+     *
+     * 这里不引入 revision 常量（需要新表/迁移），改用**内容差异比较**——
+     * 自愈且不会因为忘记递增版本号而失效：
+     * - 逐字段比对"除 isEnabled 外的全部内容"；
+     * - 仅当内容不一致时才 upsert；
+     * - upsert 时沿用库中 `isEnabled`，**不覆盖用户手动开关**。
+     *
+     * 幂等：内容一致时不做任何写入（避免每次启动都全表 REPLACE）。
+     */
     suspend fun ensureInitialized() {
-        dao.insertAll(BuiltinSkills.presets.map(AgentSkill::toEntity))
+        val existing = dao.observeAll().first().associateBy { it.id }
+        val updates = BuiltinSkills.presets.mapNotNull { preset ->
+            val target = preset.toEntity()
+            val saved = existing[preset.id]
+            when {
+                saved == null -> target
+                // 内容一致 → 不动（保住 isEnabled，也避免无谓写库）
+                saved.contentEqualsIgnoringEnabled(target) -> null
+                // 内容变了 → 用代码侧的新内容，但保留用户的启用选择
+                else -> target.copy(isEnabled = saved.isEnabled)
+            }
+        }
+        if (updates.isNotEmpty()) dao.upsertAll(updates)
     }
 
     suspend fun setEnabled(id: String, enabled: Boolean) {
@@ -163,8 +195,11 @@ class AgentSkillRepository @Inject constructor(
          * - UTF-8 BOM 与 CRLF 行尾容错（Windows 记事本保存的文件此前整体解析失败）；
          * - key 大小写不敏感，值可带单/双引号；
          * - `description: >` / `|-` 等多行折叠块（官方技能模板常见写法，此前解析为空）；
-         * - 未加引号值尾部的 `# 注释` 剥离；
-         * - 未知字段（allowed-tools / license / metadata 等）安全忽略。
+         * - 未加引号值尾部的 `# 注释` 剥离（加引号值里的 `#` 保留）。
+         *
+         * **刻意不支持的 YAML 形态**（窄实现，不是缺陷）：块标量内部的空行（遇空行即终止块）、
+         * 嵌套映射（`test:` 下的子键会被误认为顶层 key）、引号内成对使用的引号。
+         * SKILL.md 的 frontmatter 实际只用 name/description，无需完整 YAML 解析器。
          */
         fun parseFrontmatter(markdown: String): Map<String, String> {
             var text = markdown
@@ -181,15 +216,32 @@ class AgentSkillRepository @Inject constructor(
                     index++
                     continue
                 }
-                val key = trimmed.substringBefore(':').trim().lowercase()
-                var value = trimmed.substringAfter(':').trim()
+                // 分隔冒号必须落在**引号之外**：`"name": value` 这类加引号的 key 若用
+                // substringBefore(':') 会在引号内部断开，产出 key=`"na` 的垃圾条目，
+                // 真正的键值对整条丢失；而引号在 .trim('"','\'') 时被剥掉，连痕迹都不留。
+                val separator = unquotedColonIndex(trimmed)
+                if (separator <= 0) {
+                    index++
+                    continue
+                }
+                val key = trimmed.substring(0, separator).trim().trim('"', '\'')
+                var value = trimmed.substring(separator + 1).trim()
                 index++
-                // 折叠/字面块指示符（含 chomping 修饰：>-、|-、>+ 等）
-            if (value.startsWith(">") || value.startsWith("|")) {
-                    // 折叠/字面块标量：取后续缩进行并折叠为单行
+                if (value.startsWith(">") || value.startsWith("|")) {
+                    // 折叠/字面块标量（含 chomping 修饰：>-、|-、>+ 等）。
+                    // 按 YAML 规范区分两种风格：`>` 把换行折成空格，`|` **保留换行**——
+                    // 此前两者都无条件 append(' ')，`description: |` 的多行描述被压成一整行。
+                    val foldToSpaces = value.startsWith(">")
                     val block = StringBuilder()
-                    while (index < lines.size && (lines[index].startsWith(" ") || lines[index].startsWith("\t") || lines[index].isBlank())) {
-                        block.append(' ').append(lines[index].trim())
+                    while (index < lines.size &&
+                        (lines[index].startsWith(" ") || lines[index].startsWith("\t") || lines[index].isBlank())
+                    ) {
+                        if (foldToSpaces) {
+                            block.append(' ').append(lines[index].trim())
+                        } else {
+                            if (block.isNotEmpty()) block.append('\n')
+                            block.append(lines[index].trim())
+                        }
                         index++
                     }
                     value = block.toString().trim()
@@ -200,9 +252,26 @@ class AgentSkillRepository @Inject constructor(
                     }
                     value = value.trim('"', '\'')
                 }
-                if (key.isNotEmpty() && value.isNotEmpty()) result[key] = value
+                if (key.isNotEmpty() && value.isNotEmpty()) result[key.lowercase()] = value
             }
             return result
+        }
+
+        /**
+         * 首个**不在引号内**的 `:` 下标；没有则返回 -1。
+         * 单/双引号状态分别跟踪（`"it's"` 内的单引号不应翻转状态）。
+         */
+        private fun unquotedColonIndex(line: String): Int {
+            var inSingle = false
+            var inDouble = false
+            line.forEachIndexed { i, ch ->
+                when {
+                    ch == '\'' && !inDouble -> inSingle = !inSingle
+                    ch == '"' && !inSingle -> inDouble = !inDouble
+                    ch == ':' && !inSingle && !inDouble -> return i
+                }
+            }
+            return -1
         }
 
         /** Claude/OpenMinis 技能名规范：小写、空白折叠为连字符、上限 64 字符。 */
@@ -210,6 +279,24 @@ class AgentSkillRepository @Inject constructor(
             raw.trim().lowercase().replace(Regex("\\s+"), "-").take(64)
     }
 }
+
+/**
+ * 除 `isEnabled` 外的内容是否完全一致。
+ *
+ * 用于 [AgentSkillRepository.ensureInitialized] 判断内置技能是否需要同步：
+ * `isEnabled` 是**用户的选择**，不属于"内容"，不能拿它来判定"要不要重播种"
+ * （否则用户关掉某个技能后，下次启动就会把自己的选择判成"内容不同"而互相覆盖）。
+ */
+private fun AgentSkillEntity.contentEqualsIgnoringEnabled(other: AgentSkillEntity): Boolean =
+    name == other.name &&
+        description == other.description &&
+        systemPrompt == other.systemPrompt &&
+        triggerCommand == other.triggerCommand &&
+        iconName == other.iconName &&
+        isBuiltin == other.isBuiltin &&
+        isImmutable == other.isImmutable &&
+        category == other.category &&
+        resourcePath == other.resourcePath
 
 private fun AgentSkillEntity.toModel() = AgentSkill(
     id = id,

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { request, setAuthToken } from "./api";
+import { clearSessionCookie, plantSessionCookie, request, setAuthToken } from "./api";
 import { ChatPanel } from "./components/ChatPanel";
 import { ContextPane } from "./components/ContextPane";
 import { ConversationSidebar } from "./components/ConversationSidebar";
@@ -263,6 +263,8 @@ export default function App() {
     try {
       await request("/session/bootstrap", { method: "POST", body: { token } });
       setAuthToken(token);
+      // 同步种下 Cookie：SSE（EventSource 无法设请求头）此后不再需要把配对码放进 URL
+      plantSessionCookie(token);
       localStorage.setItem(TOKEN_STORAGE_KEY, token);
       const bootstrap = await request<BootstrapPayload>("/bootstrap");
       const info = bootstrap?.workspace?.workspace ?? null;
@@ -284,6 +286,7 @@ export default function App() {
       ]);
     } catch (error) {
       setAuthToken("");
+      clearSessionCookie();
       localStorage.removeItem(TOKEN_STORAGE_KEY);
       setLoginError(errorMessage(error));
       setAuthenticated(false);
