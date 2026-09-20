@@ -8,28 +8,23 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
+import top.wkbin.taixu.harness.MentionExtractor
 
 /** 构建精准匹配技能与插件实体的正则表达式（优先长词带空格全称匹配） */
-
 internal fun buildMentionRegex(knownNames: List<String>): Regex {
     val sorted = knownNames.filter { it.isNotBlank() }.sortedByDescending { it.length }
     val escaped = sorted.map { Regex.escape(it) }
-    val pattern = if (escaped.isNotEmpty()) {
-        """@(${escaped.joinToString("|")}|[^$MENTION_HARD_BOUNDARY]+)"""
+    val generic = """[^${MentionExtractor.MENTION_HARD_BOUNDARY}]+"""
+    // 与 MentionExtractor 同一套：已知名单最长优先 + 邮箱/词边界保护 + 硬终止符。
+    // 终止符直接复用后端常量，不再各写一份——两处不一致时会出现
+    // 「UI 高亮了、后端没解析」的静默漂移。
+    val body = if (escaped.isNotEmpty()) {
+        """${escaped.joinToString("|")}|$generic"""
     } else {
-        """@([^$MENTION_HARD_BOUNDARY]+)"""
+        generic
     }
-    return Regex(pattern)
+    return Regex("""(?<![\w.+-])@($body)""")
 }
-
-/**
- * 与后端 top.wkbin.taixu.harness.MentionExtractor 保持同一套终止符口径，
- * 避免"UI 高亮了、后端却没解析出来"的两套标准（曾因 UI 支持空格全名而后端不支持，
- * 导致「Git 敏捷工作流」这类技能静默失效）。
- * 注意 `[` `]` 必须转义——未转义的 `]` 会提前终结正则字符类。
- */
-internal const val MENTION_HARD_BOUNDARY =
-    "\\s@,，:：;；!！?？。、()（）\\[\\]【】{}<>《》\"'“”‘’`|/\\\\"
 
 /** 为文本中的 @能力 实体添加自适应半透明高亮样式（支持带空格全称） */
 internal fun formatMentionText(

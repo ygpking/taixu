@@ -285,8 +285,18 @@ fun AgentSettingsScreen(
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         // 极简原则：只暴露「开关 + 当前会自动裁到多少」。其余参数收进「高级」，
                         // 默认值即最优，90% 的用户不需要理解它们（pi 式设置面）。
-                        val watermark = remember(effectiveInputLimit, contextFoldingRatioPercent) {
-                            ContextWindowPolicy.foldingLimitFor(effectiveInputLimit, contextFoldingRatioPercent)
+                        // 与下方滑块预览同源：都扣掉引擎同款 system/输出/工具 schema 预留，
+                        // 否则同一界面两处数字会对不上（曾出现「文案说按 X 压缩、滑块说 Y」）。
+                        val watermarkSystemTokens = ContextWindowPolicy.estimateReservedPromptTokens(
+                            pureChat = false,
+                            toolDisabled = false,
+                        )
+                        val watermark = remember(effectiveInputLimit, contextFoldingRatioPercent, watermarkSystemTokens) {
+                            ContextWindowPolicy.foldingLimitFor(
+                                budget = effectiveInputLimit,
+                                ratioPercent = contextFoldingRatioPercent,
+                                systemTokens = watermarkSystemTokens,
+                            )
                         }
                         Text(
                             "当前策略：每轮请求约在 ${watermark / 1000}K token 处自动压缩" +

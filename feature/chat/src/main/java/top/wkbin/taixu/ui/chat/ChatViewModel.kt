@@ -699,7 +699,13 @@ class ChatViewModel @Inject constructor(
             usedTokens = effectiveUsage.totalTokens,
             // 分母 = 折叠触发线（含用户设定的比例）；与 usedTokens 同源同尺度，
             // 保证「已用/分母=百分比」自洽。
-            limitTokens = ContextWindowPolicy.foldingLimitFor(budget, foldingRatioPercent),
+            // 必须与上方 estimateEffectiveUsage（分子侧）传同一套 systemTokens：
+            // 只扣分子不扣分母会让百分比虚高（用户以为快超限，实际还有余量）。
+            limitTokens = ContextWindowPolicy.foldingLimitFor(
+                budget = budget,
+                ratioPercent = foldingRatioPercent,
+                systemTokens = totalSystemTokens,
+            ),
             // 标称上限：用户在模型档案里填的窗口值，供面板标注「模型上限 X」，不参与比例计算。
             declaredTokens = windowBudget,
             // 折叠线比例：面板据此标注「按 X% 折叠」，让三个数（上限/比例/折叠线）都透明可见。

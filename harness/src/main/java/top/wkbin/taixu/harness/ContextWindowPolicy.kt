@@ -81,12 +81,17 @@ object ContextWindowPolicy {
         if (budget <= 0) return 0
         // per-model 自定义输出预留优先（对齐 pi reserveTokens）；未提供时用内置预留（输出 + 工具 schema）。
         val reserved = (reserveTokens ?: RESERVED_OUTPUT_TOKENS) + TOOL_SCHEMA_RESERVE_TOKENS
-        // 再减去 system prompt 自身占用：系统提示（含技能目录/规则块注入）同样吃预算，
-        // 若不计入，面板显示的折叠线会高于引擎实际可用空间，用户按面板调参会撞上上下文超限。
-        val hardCeiling = budget - reserved - systemTokens.coerceAtLeast(0)
+        val hardCeiling = budget - reserved
         val safeRatio = ratioPercent.coerceIn(MIN_FOLDING_RATIO_PERCENT, MAX_FOLDING_RATIO_PERCENT)
         val scaled = (budget.toLong() * safeRatio / 100L).toInt()
-        return minOf(scaled, hardCeiling).coerceAtLeast(MIN_CONTEXT_BUDGET)
+        // systemTokens 必须在「夹过 MIN_CONTEXT_BUDGET 下限」之后再扣，保持既有扣减顺序
+        // 「比例水位 → 协议预留 → system 占用」：
+        //  · budget=4_000、systemTokens=4_000（预算已被 system 吃光）时，本式得 4_000−4_000=0，
+        //    下游据此只保留最小最近轮；
+        //  · 若把 systemTokens 并进 hardCeiling 一起夹下限，MIN_CONTEXT_BUDGET 会把结果抬回 4_000，
+        //    「预算耗尽」反而保留全部历史——ContextWindowPolicyTest / SessionModelSwitcherTest 会挂。
+        val limited = minOf(scaled, hardCeiling).coerceAtLeast(MIN_CONTEXT_BUDGET)
+        return limited - systemTokens.coerceAtLeast(0)
     }
 
     /** 折叠线比例的默认值。真相源见 [ContextBudgetDefaults.DEFAULT_FOLDING_RATIO_PERCENT]（85）。 */

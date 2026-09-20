@@ -89,12 +89,15 @@ class CcSwitchClient @Inject constructor(
     ): Result<Boolean> = withContext(Dispatchers.IO) {
         runCatching {
             // agentId/providerId 均外部可注入：路径段用 HttpUrl 编码，JSON 用结构化序列化，
-            // 不再手工拼 URL/JSON 字符串
+            // 不再手工拼 URL/JSON 字符串。
+            // 注意路径段顺序必须是 /api/agents/{id}/switch —— 曾漏掉 "agents" 一段，
+            // 请求打到 /api/{id}/switch，daemon 无此端点，切换 provider 静默失效。
             val url = okhttp3.HttpUrl.Builder()
                 .scheme("http")
                 .host("127.0.0.1")
                 .port(port)
                 .addPathSegment("api")
+                .addPathSegment("agents")
                 .addPathSegment(agentId)
                 .addPathSegment("switch")
                 .build()
@@ -137,9 +140,25 @@ class CcSwitchClient @Inject constructor(
         port: Int = 19870,
     ): Result<Boolean> = withContext(Dispatchers.IO) {
         runCatching {
-            val payload = if (version != null) """{"version":"$version"}""" else "{}"
+            // agentId 走路径段、version 走 JSON body，两者都外部可注入。
+            // 曾用 "http://127.0.0.1:$port/api/agents/$agentId/install" 直接拼接：
+            //  ① agentId 含 "/" 或 "?" 可改写请求路径（如 ../ 越权打到其他端点）；
+            //  ② version 走 """{"version":"$version"}""" 插值，含引号即可破坏 JSON 结构。
+            // 现统一改用 HttpUrl.Builder + JSONObject，与 switchAgentProvider 同口径。
+            val url = okhttp3.HttpUrl.Builder()
+                .scheme("http")
+                .host("127.0.0.1")
+                .port(port)
+                .addPathSegment("api")
+                .addPathSegment("agents")
+                .addPathSegment(agentId)
+                .addPathSegment("install")
+                .build()
+            val payload = org.json.JSONObject().apply {
+                if (version != null) put("version", version)
+            }.toString()
             val request = Request.Builder()
-                .url("http://127.0.0.1:$port/api/agents/$agentId/install")
+                .url(url)
                 .post(payload.toRequestBody(jsonMediaType))
                 .build()
             client.newCall(request).execute().use { response ->
