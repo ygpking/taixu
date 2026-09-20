@@ -22,6 +22,7 @@ import top.wkbin.taixu.core.model.SessionRunState
 import top.wkbin.taixu.harness.HarnessLoop
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -32,7 +33,6 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlin.math.absoluteValue
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
@@ -50,10 +50,19 @@ class AgentForegroundService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var collecting = false
     private var processLock: PowerManager.WakeLock? = null
-    private val activeNotifSessionIds = mutableSetOf<String>()
+    /**
+     * 以下四个容器在 Main 线程（[serviceScope] 的 collectLatest 回调）写入，
+     * 却被 IO 线程（[startNotificationRefresh] 的刷新循环）读取。
+     * 原先用 `mutableSetOf` / `mutableMapOf`：HashMap 在 add/put 触发扩容时，
+     * 并发遍历的 `toList()` 可能读到 rehash 中间态 —— 轻则快照缺条目（通知漏更新/漏发完成通知），
+     * 重则抛 ConcurrentModificationException 打死刷新协程（通知时长从此不再走字）。
+     * 换成 ConcurrentHashMap 支撑的实现，与仓库内 SessionMessageProjector / SessionStateMirrors
+     * 等同类容器保持同一口径。
+     */
+    private val activeNotifSessionIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
     /** 记录每个会话开始运行的时间戳，用于通知中显示已运行时长。 */
-    private val sessionStartTimes = mutableMapOf<String, Long>()
-    /** 定时刷新通知的 Job，运行期间每 30 秒更新一次，降低被系统判定为闲置服务的概率。 */
+    private val sessionStartTimes: MutableMap<String, Long> = ConcurrentHashMap()
+    /** 定时刷新通知的 Job，运行期间每 2 秒更新一次，降低被系统判定为闲置服务的概率。 */
     private var notificationRefreshJob: Job? = null
 
     override fun onCreate() {
@@ -122,13 +131,18 @@ class AgentForegroundService : Service() {
                             } else {
                                 stopNotificationRefresh()
                                 val previouslyRunning = activeNotifSessionIds.toList()
+                                // 通知 id 依赖 activeNotifSessionIds 的成员（primary 会话特判为
+                                // PRIMARY_NOTIFICATION_ID）。必须在 clear() **之前**算好：
+                                // 清空后再算，集合为空 → 每个会话都落回 PRIMARY_NOTIFICATION_ID，
+                                // 同一轮内多个会话完成时后写覆盖先写 —— 除最后一条外全部丢失。
+                                val completedNotifIds = previouslyRunning.associateWith { sessionNotificationId(it) }
                                 activeNotifSessionIds.clear()
                                 sessionStartTimes.clear()
                                 previouslyRunning.forEach { sessionId ->
                                     // 等待审批不是完成：批准后立即续跑，不发完成通知弹窗，
                                     // 常驻通知保持最后一次状态（通常是"等待用户批准"）直到恢复运行。
                                     if (runStates[sessionId] == SessionRunState.WAITING_APPROVAL) return@forEach
-                                    val notifId = sessionNotificationId(sessionId)
+                                    val notifId = completedNotifIds.getValue(sessionId)
                                     val sessionTitle = sessionDao.findById(sessionId)?.title ?: getString(R.string.taixu_agent_default_title)
                                     safeNotify(notifId, completedNotification(sessionId, sessionTitle))
                                 }
@@ -153,7 +167,7 @@ class AgentForegroundService : Service() {
         super.onDestroy()
     }
 
-    private val latestSessionStatuses = mutableMapOf<String, String>()
+    private val latestSessionStatuses: MutableMap<String, String> = ConcurrentHashMap()
 
     private fun startNotificationRefresh() {
         if (notificationRefreshJob?.isActive == true) return
@@ -205,14 +219,8 @@ class AgentForegroundService : Service() {
         processLock = null
     }
 
-    private fun sessionNotificationId(sessionId: String): Int {
-        val primary = activeNotifSessionIds.firstOrNull()
-        return if (primary == null || primary == sessionId) {
-            PRIMARY_NOTIFICATION_ID
-        } else {
-            PRIMARY_NOTIFICATION_ID + (sessionId.hashCode().absoluteValue % 9000) + 1
-        }
-    }
+    private fun sessionNotificationId(sessionId: String): Int =
+        AgentNotificationIds.forSession(sessionId, activeNotifSessionIds.firstOrNull())
 
     private fun placeholderNotification(status: String): Notification {
         val stopPending = PendingIntent.getService(
@@ -345,7 +353,7 @@ class AgentForegroundService : Service() {
         const val KEY_REPLY = "agent_reply"
         private const val CHANNEL_ID = "taixu-agent-v5"
         private const val LEGACY_CAPSULE_CHANNEL_ID = "taixu-agent-capsule-v4"
-        private const val PRIMARY_NOTIFICATION_ID = 2001
+        private const val PRIMARY_NOTIFICATION_ID = AgentNotificationIds.PRIMARY
         private const val TAG = "AgentForegroundService"
         private const val WAKE_LOCK_TAG = "taixu:agent-execution"
         private const val LOCK_TIMEOUT_MS = 4 * 60 * 60 * 1000L

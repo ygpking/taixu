@@ -117,8 +117,8 @@ class AiProfileBackupCodec @Inject constructor(
 
         // 与既有行为一致：仅当原本没有任何活跃档案时，才把第一条导入设为活跃
         if (existing.none { it.isActive } && importedIds.isNotEmpty()) {
-            aiModelDao.clearActive()
-            aiModelDao.setActive(importedIds.first())
+            // 事务内两步写：原实现中间态即"全部非活跃"，activeModel() 会返回 null
+            aiModelDao.activateOnly(importedIds.first())
         }
 
         return if (importedIds.isNotEmpty()) Result.success(importedIds.size)

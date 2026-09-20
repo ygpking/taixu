@@ -184,17 +184,31 @@ class CcSwitchViewModel @Inject constructor(
         startPolling()
     }
 
+    /**
+     * 轮询：守护进程存活状态每 [POLL_INTERVAL_MS] 探一次（这是用户要实时看到的东西），
+     * 但**局域网 IP 每 [LAN_IP_POLL_EVERY] 轮才枚举一次**。
+     *
+     * 原因：`detectLanIp()` 走 `NetworkInterface.getNetworkInterfaces()` 全量枚举
+     * （系统调用 + 逐网卡逐地址遍历），而 IP 只在切网/换 Wi-Fi 时才变，
+     * 每 3.5 秒重算一次纯属浪费；界面上离线的会话抽屉也用不到这个瞬时值。
+     * 抽稀到约 35 秒一次，探测开销降一个数量级，行为对用户无可感知差异。
+     */
     private fun startPolling() {
         viewModelScope.launch(Dispatchers.IO) {
+            var ticks = 0
             while (true) {
-                delay(3500)
+                delay(POLL_INTERVAL_MS)
                 try {
                     val running = toolManager.isGatewayRunning(toolId)
-                    val lanIp = detectLanIp()
                     val wasRunning = _isDaemonRunning.value
+                    val probeLanIp = ticks % LAN_IP_POLL_EVERY == 0
+                    val lanIp = if (probeLanIp) detectLanIp() else null
+                    ticks++
                     withContext(Dispatchers.Main.immediate) {
                         _isDaemonRunning.value = running
-                        _deviceLanIp.value = lanIp
+                        // 只在真正探测的那一轮写回 IP（可为 null，与修复前语义一致）：
+                        // 跳过的轮次不写，避免把上一轮的读数误当成"重新探测结果"。
+                        if (probeLanIp) _deviceLanIp.value = lanIp
                         if (!running && wasRunning) {
                             _daemonStatus.value = null
                         }
@@ -1047,5 +1061,13 @@ EOF
         } catch (_: Exception) {
             null
         }
+    }
+
+    private companion object {
+        /** 守护进程状态轮询间隔。 */
+        const val POLL_INTERVAL_MS = 3_500L
+
+        /** 每 N 轮探一次局域网 IP（≈ POLL_INTERVAL_MS × N）；IP 只在切网时变，无需每轮重算。 */
+        const val LAN_IP_POLL_EVERY = 10
     }
 }

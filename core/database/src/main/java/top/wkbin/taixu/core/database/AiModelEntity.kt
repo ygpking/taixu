@@ -6,6 +6,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
+import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -93,6 +94,48 @@ interface AiModelDao {
 
     @Query("UPDATE harness_models SET isActive = 1 WHERE id = :id")
     suspend fun setActive(id: String)
+
+    /**
+     * 独占激活：清空现有活跃标记后把 [id] 置为活跃。
+     *
+     * 调用方原先分两次调用 [clearActive] + [setActive]（无事务）。两步之间若进程被杀 /
+     * 协程被取消 / 另一处并发写入插入，会停在「全部非活跃」的中间态：
+     * 此后 `activeModel()` 返回 null，Harness 侧取不到默认模型
+     * （表现为"模型选择被重置 / 回退内置"），而依赖
+     * 「当前是否存在活跃档案」做分支的写入逻辑也会因此走上不同路径。
+     * 收进 @Transaction 后两步原子可见。仓库内 AgentSubagentDao.replace/syncBuiltinCatalog
+     * 已是同一模式（见 AgentSubagentEntity.kt:103/120）。
+     */
+    @Transaction
+    suspend fun activateOnly(id: String) {
+        // 目标不存在时直接返回：否则 clearActive() 会留下"全部非活跃"的终态
+        // （activeModel() == null），比中间态更糟——它不会自己恢复。
+        // 典型场景：调用方拿到的 id 刚被删除（并发删除档案 / 导入失败回滚）。
+        if (findById(id) == null) return
+        clearActive()
+        setActive(id)
+    }
+
+    /** 独占激活并同时写入档案本体（用于「切到本地模型」这类清零+upsert 的组合）。 */
+    @Transaction
+    suspend fun activateExclusively(model: AiModelEntity) {
+        clearActive()
+        upsert(model)
+    }
+
+    /**
+     * 条件式独占写：只在 [clearOthers] 为真时先清空活跃标记，再写入 [model]。
+     *
+     * 覆盖 `AiProfileWriter.upsertProfile` 的语义 —— 它只在
+     * 「当前没有任何活跃档案」或「正在编辑当前活跃档案」时才需要清空，
+     * 其余情况应保留既有活跃项。把「判断 + 清空 + 写入」三步收进同一事务，
+     * 避免判断依据（`observeAll().first()`）与写入之间被别的写入插队。
+     */
+    @Transaction
+    suspend fun upsertKeepingOrReplacingActive(model: AiModelEntity, clearOthers: Boolean) {
+        if (clearOthers) clearActive()
+        upsert(model)
+    }
 
     @Query("UPDATE harness_models SET reasoningMode = :mode, reasoningEffort = :effort WHERE id = :id")
     suspend fun updateReasoning(id: String, mode: String?, effort: String?)

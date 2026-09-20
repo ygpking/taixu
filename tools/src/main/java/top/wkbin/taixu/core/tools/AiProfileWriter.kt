@@ -83,10 +83,12 @@ class AiProfileWriter @Inject constructor(
         val secretRef = old?.secretRef?.takeIf { it.isNotBlank() } ?: "model_${modelId.replace("-", "")}"
         val submittedKeys = parseApiKeys(request.apiKey)
         val existingKeys = old?.let { providerRepository.readModelApiKeys(secretRef) }.orEmpty()
-        // 没有任何活跃档案，或正在编辑当前活跃档案时，先清空活跃标记再写入
-        if (existing.none { it.isActive } || old?.isActive == true) aiModelDao.clearActive()
-        aiModelDao.upsert(
-            AiModelEntity(
+        // 没有任何活跃档案，或正在编辑当前活跃档案时，先清空活跃标记再写入。
+        // 判断依据（existing / old）与写入之间必须原子：否则并发的另一处激活会在这道缝隙里插入，
+        // 导致"刚判断完不需要清空"的结论过期 → 出现两个活跃档案，或反过来把对方清掉。
+        val clearOthers = existing.none { it.isActive } || old?.isActive == true
+        aiModelDao.upsertKeepingOrReplacingActive(
+            model = AiModelEntity(
                 id = modelId,
                 name = request.name.trim(),
                 provider = request.provider.trim(),
@@ -116,6 +118,7 @@ class AiProfileWriter @Inject constructor(
                 apiKeyCount = submittedKeys.ifEmpty { existingKeys }.size,
                 requestsPerMinutePerKey = request.requestsPerMinutePerKey.coerceAtLeast(0),
             ),
+            clearOthers = clearOthers,
         )
         if (submittedKeys.isNotEmpty()) providerRepository.setModelApiKeys(secretRef, submittedKeys)
     }

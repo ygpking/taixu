@@ -236,8 +236,7 @@ class LocalLlmViewModel @Inject constructor(
         val distroId = linuxRuntime.activeDistroId.value
         val profileId = "local-llamacpp-$distroId"
         val existing = aiModelRepository.findById(profileId)
-        aiModelRepository.clearActive()
-        aiModelRepository.upsert(
+        aiModelRepository.activateExclusively(
             AiModelEntity(
                 id = profileId,
                 name = "本地 LLM · $fileName",
