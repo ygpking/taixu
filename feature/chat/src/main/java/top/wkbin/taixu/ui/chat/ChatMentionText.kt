@@ -15,12 +15,21 @@ internal fun buildMentionRegex(knownNames: List<String>): Regex {
     val sorted = knownNames.filter { it.isNotBlank() }.sortedByDescending { it.length }
     val escaped = sorted.map { Regex.escape(it) }
     val pattern = if (escaped.isNotEmpty()) {
-        """@(${escaped.joinToString("|")}|[^\s@,，:：\n]+)"""
+        """@(${escaped.joinToString("|")}|[^$MENTION_HARD_BOUNDARY]+)"""
     } else {
-        """@([^\s@,，:：\n]+)"""
+        """@([^$MENTION_HARD_BOUNDARY]+)"""
     }
     return Regex(pattern)
 }
+
+/**
+ * 与后端 top.wkbin.taixu.harness.MentionExtractor 保持同一套终止符口径，
+ * 避免"UI 高亮了、后端却没解析出来"的两套标准（曾因 UI 支持空格全名而后端不支持，
+ * 导致「Git 敏捷工作流」这类技能静默失效）。
+ * 注意 `[` `]` 必须转义——未转义的 `]` 会提前终结正则字符类。
+ */
+internal const val MENTION_HARD_BOUNDARY =
+    "\\s@,，:：;；!！?？。、()（）\\[\\]【】{}<>《》\"'“”‘’`|/\\\\"
 
 /** 为文本中的 @能力 实体添加自适应半透明高亮样式（支持带空格全称） */
 internal fun formatMentionText(
