@@ -100,9 +100,9 @@ interface AiModelDao {
      *
      * 调用方原先分两次调用 [clearActive] + [setActive]（无事务）。两步之间若进程被杀 /
      * 协程被取消 / 另一处并发写入插入，会停在「全部非活跃」的中间态：
-     * 此后 `activeModel()` 返回 null，`AiProfileWriter` 的
-     * `if (existing.none { it.isActive } || old?.isActive == true) clearActive()` 分支
-     * 会改写数据，而 Harness 侧拿不到默认模型（表现为"模型选择被重置/回退内置"）。
+     * 此后 `activeModel()` 返回 null，Harness 侧取不到默认模型
+     * （表现为"模型选择被重置 / 回退内置"），而依赖
+     * 「当前是否存在活跃档案」做分支的写入逻辑也会因此走上不同路径。
      * 收进 @Transaction 后两步原子可见。仓库内 AgentSubagentDao.replace/syncBuiltinCatalog
      * 已是同一模式（见 AgentSubagentEntity.kt:103/120）。
      */
