@@ -107,9 +107,6 @@ interface AgentContextDao {
     @Query("DELETE FROM agent_plans WHERE sessionId = :sessionId")
     suspend fun deletePlanBySession(sessionId: String)
 
-    @Query("DELETE FROM agent_scratchpads WHERE sessionId = :sessionId")
-    suspend fun clearScratchpads(sessionId: String)
-
     /**
      * 删除某会话产生、且**生命周期绑定该会话**的记忆。
      *
