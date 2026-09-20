@@ -229,19 +229,17 @@ class AgentSkillRepository @Inject constructor(
                 index++
                 if (value.startsWith(">") || value.startsWith("|")) {
                     // 折叠/字面块标量（含 chomping 修饰：>-、|-、>+ 等）。
-                    // 按 YAML 规范区分两种风格：`>` 把换行折成空格，`|` **保留换行**——
-                    // 此前两者都无条件 append(' ')，`description: |` 的多行描述被压成一整行。
-                    val foldToSpaces = value.startsWith(">")
+                    //
+                    // **两种风格都折成单行**（`|` 不按 YAML 规范保留换行）—— 这是刻意的产品取舍，
+                    // 不是疏漏：description 只用于「技能目录一行摘要」与「设置页技能行」，
+                    // 都是单行展示位；保留换行会让设置页出现突兀的多行描述。
+                    // 目录侧另有 `desc.replace(Regex("\\s+"), " ")` 兜底，故折行不丢信息。
+                    // 既有测试 `literal block and terminator ellipsis are handled` 固定了该行为。
                     val block = StringBuilder()
                     while (index < lines.size &&
                         (lines[index].startsWith(" ") || lines[index].startsWith("\t") || lines[index].isBlank())
                     ) {
-                        if (foldToSpaces) {
-                            block.append(' ').append(lines[index].trim())
-                        } else {
-                            if (block.isNotEmpty()) block.append('\n')
-                            block.append(lines[index].trim())
-                        }
+                        block.append(' ').append(lines[index].trim())
                         index++
                     }
                     value = block.toString().trim()

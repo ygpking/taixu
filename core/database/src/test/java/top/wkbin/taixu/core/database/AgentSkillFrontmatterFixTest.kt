@@ -7,17 +7,17 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * frontmatter 解析的两个缺陷修复的回归测试（预期值已用逻辑复算逐条核对）。
+ * frontmatter 解析的缺陷修复回归测试（预期值已用逻辑复算逐条核对）。
  *
- * 缺陷 1（引号键丢失）：旧实现 `substringBefore(':')` 不区分引号内外，且**不剥 key 上的引号**。
+ * 缺陷（引号键丢失）：旧实现 `substringBefore(':')` 不区分引号内外，且**不剥 key 上的引号**。
  *   - `"name": pdf-export` → key 变成 `"name"`（含引号），于是 `meta["name"]` 取不到 ——
  *     技能名静默回退到目录名/首行标题；
  *   - `"a:b": v` → 在引号内的冒号处断开，得到 `{"a": "b\": v"}` 这样的垃圾条目。
  *   实测（逻辑复算）：旧实现 `{'\"name\"': 'pdf-export'}` / `{'\"a': 'b\": v'}`。
  *
- * 缺陷 2（`|` 与 `>` 不分）：块标量一律按折叠块处理（空格连接），
- *   `description: |` 的多行描述被压成一整行。实测旧实现 `'第一行 第二行'`，
- *   按 YAML 规范字面块应为 `'第一行\n第二行'`。
+ * **刻意不测**「`|` 保留换行」：两种块标量都折成单行是**有意的产品取舍**
+ * （description 只用于单行展示位，目录侧另有 whitespace 折叠兜底），
+ * 既有测试 `literal block and terminator ellipsis are handled` 已固定该行为。
  */
 class AgentSkillFrontmatterFixTest {
 
@@ -68,7 +68,9 @@ class AgentSkillFrontmatterFixTest {
     }
 
     @Test
-    fun `literal block preserves newlines while folded block collapses them`() {
+    fun `both block scalar styles fold to a single line by design`() {
+        // 刻意固化：`|` 与 `>` 都折成单行（description 只用于单行展示位）。
+        // 与既有测试 `literal block and terminator ellipsis are handled` 同一口径。
         val literal = parse(
             """
             ---
@@ -80,8 +82,7 @@ class AgentSkillFrontmatterFixTest {
             body
             """,
         )
-        // `|` 是字面块：换行保留
-        assertEquals("第一行\n第二行", literal["description"])
+        assertEquals("第一行 第二行", literal["description"])
 
         val folded = parse(
             """
@@ -94,37 +95,13 @@ class AgentSkillFrontmatterFixTest {
             body
             """,
         )
-        // `>` 是折叠块：换行折成空格
         assertEquals("第一行 第二行", folded["description"])
     }
 
     @Test
-    fun `chomping modifiers keep the same block style`() {
-        val literalStrip = parse(
-            """
-            ---
-            name: x
-            description: |-
-              a
-              b
-            ---
-            body
-            """,
-        )
-        assertEquals("a\nb", literalStrip["description"])
-
-        val foldedStrip = parse(
-            """
-            ---
-            name: x
-            description: >-
-              a
-              b
-            ---
-            body
-            """,
-        )
-        assertEquals("a b", foldedStrip["description"])
+    fun `chomping modifiers keep the same single-line behaviour`() {
+        assertEquals("a b", parse("---\nname: x\ndescription: |-\n  a\n  b\n---\nbody")["description"])
+        assertEquals("a b", parse("---\nname: x\ndescription: >-\n  a\n  b\n---\nbody")["description"])
     }
 
     @Test

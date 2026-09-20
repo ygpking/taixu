@@ -52,6 +52,16 @@ class AgentSkillBuiltinReseedTest {
 
     private suspend fun byId(id: String) = dao.observeAll().first().first { it.id == id }
 
+    /**
+     * 可切换启停的内置技能。
+     *
+     * `AgentSkillDao.setEnabled` 的 SQL 带 `AND isImmutable = 0` —— 11 个内置技能里有 2 个
+     * 标了 `isImmutable = true`（`agent_context`、`mobile_project_align`），对它们调
+     * `setEnabled` 是**静默 no-op**。测试必须挑一个可变的，否则断言会在错误的地方失败
+     * （本轮就被云端 CI 抓到过一次）。
+     */
+    private fun toggleablePreset() = BuiltinSkills.presets.first { !it.isImmutable }
+
     @Test
     fun `seeds all builtin skills on first run`() = runBlocking {
         repository.ensureInitialized()
@@ -79,8 +89,9 @@ class AgentSkillBuiltinReseedTest {
     @Test
     fun `user disabled choice survives a content refresh`() = runBlocking {
         repository.ensureInitialized()
-        val target = BuiltinSkills.presets.first()
+        val target = toggleablePreset()
         dao.setEnabled(target.id, false)
+        assertEquals("前置条件：该技能确实被关掉了", false, byId(target.id).isEnabled)
         dao.upsert(byId(target.id).copy(systemPrompt = "【过期正文】"))
 
         repository.ensureInitialized()
@@ -88,6 +99,21 @@ class AgentSkillBuiltinReseedTest {
         val refreshed = byId(target.id)
         assertEquals("正文应刷新", target.systemPrompt, refreshed.systemPrompt)
         assertFalse("用户手动关掉的技能不得被升级重新打开", refreshed.isEnabled)
+    }
+
+    /**
+     * 不可变内置技能（`isImmutable = true`）的 `setEnabled` 是 no-op，
+     * 但其**正文**仍应随代码刷新 —— 重播种不得因 immutable 而漏掉这类技能。
+     */
+    @Test
+    fun `immutable builtin still gets its body refreshed`() = runBlocking {
+        repository.ensureInitialized()
+        val immutable = BuiltinSkills.presets.first { it.isImmutable }
+        dao.upsert(byId(immutable.id).copy(systemPrompt = "【过期正文】"))
+
+        repository.ensureInitialized()
+
+        assertEquals(immutable.systemPrompt, byId(immutable.id).systemPrompt)
     }
 
     @Test
