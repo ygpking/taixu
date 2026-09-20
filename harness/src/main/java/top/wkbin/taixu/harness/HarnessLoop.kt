@@ -414,6 +414,10 @@ class HarnessLoop @Inject constructor(
         // Mark tombstoned first so finishRun on the dying job cannot drain pending
         // messages and start a fresh run after we have already begun cleanup.
         tombstonedSessions.add(id)
+        // 归档目录要按 workspace 定位，而 workspace 存在会话实体里 ——
+        // 必须在 sessionDao.deleteSession(id) **之前**读取，否则永远拿不到。
+        val deletedSessionWorkspace = runCatching { sessionDao.findById(id)?.workspace.orEmpty() }
+            .getOrDefault("")
         _sessionPendingMessages[id]?.value = emptyList()
         sessionJobs[id]?.cancelAndJoin()
         _sessionPendingMessages.remove(id)
@@ -436,6 +440,15 @@ class HarnessLoop @Inject constructor(
         // global / project 记忆不在此列——它们的语义是跨会话。
         runCatching { agentContextRepository.deleteSessionContextData(id) }
             .onFailure { logger.w("清理会话上下文数据失败：$id", it) }
+        // 工作区内该会话的原文归档目录 `.taixu-context/<sessionId>/`。
+        // `trim` 只做单会话内的体积控制，**会话级目录本身从无人删** ——
+        // 会话 id 不复用，于是每删一个会话就在**用户可见的工作区**里永久留下一堆目录，
+        // 且 read/grep/ls 都会被这些无关文件干扰。
+        // 同族对照：CheckpointStore.delete 早就做了同类目录的 deleteRecursively。
+        runCatching {
+            top.wkbin.taixu.harness.compaction.ContextArchive
+                .deleteSessionArchive(deletedSessionWorkspace, id)
+        }.onFailure { logger.w("清理会话归档目录失败：$id", it) }
         if (sessionTracker.currentSessionId.value == id) {
             val remaining = sessionDao.observeAll().first()
             val nextSession = remaining.firstOrNull { it.id != id }

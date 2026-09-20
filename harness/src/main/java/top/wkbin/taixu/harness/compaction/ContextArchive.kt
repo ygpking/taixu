@@ -57,6 +57,43 @@ object ContextArchive {
      * @return 成功时返回**工作区相对路径**（如 `.taixu-context/abc/1726-1.md`），供摘要索引用；
      *   失败返回 null。
      */
+    /**
+     * 删除某会话的归档目录 `<workspace>/.taixu-context/<sessionId>/`。
+     *
+     * 为什么需要它：`trim` 只做**单会话内**的体积控制（保留最近 20 个文件），
+     * 而**会话级目录本身**从来没人删。会话 id 是 UUID 且不复用 → 每删一个会话，
+     * 它的归档目录就永久留在**用户可见的工作区**里。
+     * 累积效应比纯数据库孤儿更刺眼：用户在自己的工程目录里看到一堆
+     * `.taixu-context/<uuid>/`，且 `read`/`grep`/`ls` 都会被这些无关文件干扰。
+     *
+     * 同族对照：`CheckpointStore.delete(sessionId)` 早就做了 `File(root, sessionId).deleteRecursively()`，
+     * 归档侧缺失同一动作。
+     *
+     * 纯尽力而为：失败吞掉（与 [archive] 的容错一致），会话删除不应因清理归档失败而中断。
+     *
+     * @return 是否真的删除了目录（不存在或失败均返回 false）
+     */
+    fun deleteSessionArchive(workspacePath: String?, sessionId: String): Boolean {
+        if (workspacePath.isNullOrBlank() || sessionId.isBlank()) return false
+        return try {
+            val dir = File(File(workspacePath, DIR_NAME), safeSessionId(sessionId))
+            if (!dir.exists()) return false
+            val deleted = dir.deleteRecursively()
+            if (deleted) logger.info("已删除会话归档目录：${dir.absolutePath}")
+            deleted
+        } catch (throwable: Throwable) {
+            logger.warning("删除会话归档目录失败（不影响会话删除）：${throwable.message}")
+            false
+        }
+    }
+
+    /**
+     * 会话 id → 目录名。**必须与 [archive] 用同一套规则**：
+     * 两处若不一致，删除会指向一个不存在的目录、静默 no-op（归档越积越多却"看起来已经清了"）。
+     */
+    internal fun safeSessionId(sessionId: String): String =
+        sessionId.filter { it.isLetterOrDigit() || it == '-' || it == '_' }.ifBlank { "session" }
+
     fun archive(
         workspacePath: String?,
         sessionId: String,
@@ -66,8 +103,7 @@ object ContextArchive {
     ): String? {
         if (workspacePath.isNullOrBlank() || messages.isEmpty()) return null
         return try {
-            val safeSession = sessionId.filter { it.isLetterOrDigit() || it == '-' || it == '_' }
-                .ifBlank { "session" }
+            val safeSession = safeSessionId(sessionId)
             val dir = File(File(workspacePath, DIR_NAME), safeSession)
             if (!dir.exists() && !dir.mkdirs()) {
                 logger.warning("归档目录创建失败：${dir.absolutePath}")
