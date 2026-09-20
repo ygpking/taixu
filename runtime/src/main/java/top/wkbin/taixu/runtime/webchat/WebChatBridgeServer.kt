@@ -200,8 +200,14 @@ class WebChatBridgeServer @Inject constructor(
         override fun handle(exchange: AndroidHttpExchange) = launchRequest(exchange) {
             if (handlePreflight(exchange)) return@launchRequest
             val token = requestJson(exchange)["token"]?.jsonPrimitive?.content.orEmpty()
-            if (token != _status.value.pinCode) sendJson(exchange, 401, errorJson("配对码不正确"))
-            else sendJson(exchange, 200, buildJsonObject { put("authenticated", true) })
+            if (token != _status.value.pinCode) {
+                sendJson(exchange, 401, errorJson("配对码不正确"))
+            } else {
+                // 认证成功即种下会话 Cookie：后续 SSE 不再需要把配对码放进 URL
+                // （URL 会落进访问日志/浏览器历史，而 EventSource 又无法自定义请求头）。
+                plantSessionCookie(exchange)
+                sendJson(exchange, 200, buildJsonObject { put("authenticated", true) })
+            }
         }
     }
 
@@ -521,10 +527,27 @@ class WebChatBridgeServer @Inject constructor(
         return false
     }
 
-    private fun isAuthenticated(exchange: AndroidHttpExchange): Boolean {
-        val token = getQueryParam(exchange, "token")
-            ?: exchange.requestHeaders.getFirst("Authorization")?.removePrefix("Bearer ")
-        return token != null && token == _status.value.pinCode
+    /**
+     * 校验请求身份。凭据来源优先：`Authorization` 头 → `wc_session` Cookie → `?token=`。
+     * 解析与判定收在 [WebChatCredentialAuth]（纯函数，可被单测直接覆盖）。
+     */
+    private fun isAuthenticated(exchange: AndroidHttpExchange): Boolean =
+        WebChatCredentialAuth.isAuthenticated(
+            pin = _status.value.pinCode,
+            authorization = exchange.requestHeaders.getFirst("Authorization"),
+            cookieHeader = exchange.requestHeaders.getFirst("Cookie"),
+            queryToken = getQueryParam(exchange, "token"),
+        )
+
+    /**
+     * 认证成功时种下会话 Cookie，让 `EventSource` 免于把配对码写进 URL
+     * （EventSource 无法自定义请求头，而 URL 会落进访问日志/浏览器历史/Referer）。
+     */
+    private fun plantSessionCookie(exchange: AndroidHttpExchange) {
+        exchange.responseHeaders.add(
+            "Set-Cookie",
+            WebChatCredentialAuth.sessionCookieValue(_status.value.pinCode),
+        )
     }
 
     private fun requireAuthenticated(exchange: AndroidHttpExchange): Boolean {
@@ -665,5 +688,8 @@ class WebChatBridgeServer @Inject constructor(
         const val DEFAULT_PORT = DEFAULT_WEBCHAT_PORT
         const val NOTIFICATION_CHANNEL_ID = "taixu_webchat_bridge"
         const val NOTIFICATION_ID = 8899
+
+        /** 会话 Cookie 名（供 `EventSource` 免于把配对码写进 URL）。定义收在 [WebChatCredentialAuth]。 */
+        const val SESSION_COOKIE = WebChatCredentialAuth.SESSION_COOKIE
     }
 }
