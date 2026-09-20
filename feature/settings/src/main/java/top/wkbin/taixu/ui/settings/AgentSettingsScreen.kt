@@ -1098,8 +1098,18 @@ private fun ContextWatermarkRatioSliderRow(
     var sliderVal by remember(currentValue) { mutableFloatStateOf(currentValue.toFloat()) }
     // 预览必须基于「实际生效的输入上限」，而非窗口值——否则又会重演「设置页显示一个数、
     // 引擎按另一个数折叠」的单一真相源缺失缺陷。
-    val previewLimit = remember(sliderVal, inputLimit) {
-        ContextWindowPolicy.foldingLimitFor(inputLimit, sliderVal.toInt())
+    // 同时扣减引擎同款的 system prompt 占用：系统提示（含技能目录/规则块）同样吃预算，
+    // 不扣则设置页预览会高于真实折叠触发线。
+    val previewSystemTokens = ContextWindowPolicy.estimateReservedPromptTokens(
+        pureChat = false,
+        toolDisabled = false,
+    )
+    val previewLimit = remember(sliderVal, inputLimit, previewSystemTokens) {
+        ContextWindowPolicy.foldingLimitFor(
+            budget = inputLimit,
+            ratioPercent = sliderVal.toInt(),
+            systemTokens = previewSystemTokens,
+        ).coerceAtLeast(0)
     }
     Column(
         modifier = Modifier

@@ -95,18 +95,31 @@ interface HarnessRuntimeDao {
     )
     suspend fun aggregateUsageInRange(start: Long?, end: Long?): List<UsageAggregateRow>
 
+    /**
+     * 按本地日聚合用量。
+     *
+     * [tzOffsetMs] 是 `ZoneId` 相对 UTC 的毫秒偏移（例如 Asia/Shanghai = +28800000）。
+     * 用它替代 `CAST(createdAt / 86400000)` 的 UTC 日切，避免本地午夜附近的条目被分到前一天
+     * （与 Kotlin 侧 `atZone(zone).toLocalDate()` 的口径对齐）。
+     * Token 列与 [aggregateUsageInRange] 同一套 json_extract + json_valid，不 SELECT payloadJson。
+     */
     @Query(
         """
-        SELECT createdAt AS createdAt,
+        SELECT CAST((createdAt + :tzOffsetMs) / 86400000 AS INTEGER) AS localEpochDay,
                sessionId AS sessionId,
                customType AS customType,
-               COUNT(*) AS entryCount
+               COUNT(*) AS entryCount,
+               SUM(CASE WHEN json_valid(payloadJson) THEN COALESCE(json_extract(payloadJson, '${'$'}.promptTokens'), 0) ELSE 0 END) AS promptTokens,
+               SUM(CASE WHEN json_valid(payloadJson) THEN COALESCE(json_extract(payloadJson, '${'$'}.completionTokens'), 0) ELSE 0 END) AS completionTokens,
+               SUM(CASE WHEN json_valid(payloadJson) THEN COALESCE(json_extract(payloadJson, '${'$'}.cachedTokens'), 0) ELSE 0 END) AS cachedTokens,
+               SUM(CASE WHEN json_valid(payloadJson) THEN LENGTH(COALESCE(json_extract(payloadJson, '${'$'}.text'), '')) ELSE 0 END) AS textChars,
+               SUM(CASE WHEN json_valid(payloadJson) THEN LENGTH(COALESCE(json_extract(payloadJson, '${'$'}.reasoning'), '')) ELSE 0 END) AS reasoningChars
         FROM harness_entries
         WHERE (:start IS NULL OR createdAt >= :start) AND (:end IS NULL OR createdAt < :end)
-        GROUP BY CAST(createdAt / 86400000 AS INTEGER), sessionId, customType
+        GROUP BY CAST((createdAt + :tzOffsetMs) / 86400000 AS INTEGER), sessionId, customType
         """,
     )
-    suspend fun aggregateDailyCounts(start: Long?, end: Long?): List<DailyCountRow>
+    suspend fun aggregateDailyCounts(start: Long?, end: Long?, tzOffsetMs: Long): List<DailyCountRow>
 
     @Query("SELECT * FROM harness_entries WHERE id = :entryId LIMIT 1")
     suspend fun findEntry(entryId: String): HarnessEntryEntity?

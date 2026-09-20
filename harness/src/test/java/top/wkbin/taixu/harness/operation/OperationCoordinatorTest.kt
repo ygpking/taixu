@@ -257,13 +257,18 @@ class OperationCoordinatorTest {
                     )
                 }
 
-        override suspend fun aggregateDailyCounts(start: Long?, end: Long?): List<DailyCountRow> =
+        override suspend fun aggregateDailyCounts(start: Long?, end: Long?, tzOffsetMs: Long): List<DailyCountRow> =
             listEntriesInRange(start, end).map {
                 DailyCountRow(
-                    createdAt = it.createdAt,
+                    localEpochDay = Math.floorDiv(it.createdAt + tzOffsetMs, 86_400_000L),
                     sessionId = it.sessionId,
                     customType = it.customType,
                     entryCount = 1,
+                    promptTokens = 0L,
+                    completionTokens = 0L,
+                    cachedTokens = 0L,
+                    textChars = 0L,
+                    reasoningChars = 0L,
                 )
             }
         override suspend fun branch(sessionId: String, leafId: String?): List<HarnessEntryEntity> {

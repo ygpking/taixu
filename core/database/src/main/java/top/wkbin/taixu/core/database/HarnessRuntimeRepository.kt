@@ -19,8 +19,8 @@ interface HarnessRuntimeRepository {
      */
     suspend fun aggregateUsageInRange(start: Long?, end: Long?): List<UsageAggregateRow>
 
-    /** 用量统计用：按 (天, sessionId, customType) 聚合条目数。 */
-    suspend fun aggregateDailyCounts(start: Long?, end: Long?): List<DailyCountRow>
+    /** 用量统计用：按 (本地日, sessionId, customType) 聚合条目数与 token。 */
+    suspend fun aggregateDailyCounts(start: Long?, end: Long?, tzOffsetMs: Long): List<DailyCountRow>
     suspend fun branch(sessionId: String, leafId: String?): List<HarnessEntryEntity>
     suspend fun branchTail(sessionId: String, leafId: String?, limit: Int): List<HarnessEntryEntity> {
         require(limit > 0) { "Branch tail limit must be positive" }
@@ -104,8 +104,8 @@ class RoomHarnessRuntimeRepository @Inject constructor(
         // 该查询只返回标量聚合值，不涉及 payloadJson 实体，故不做 restoreFromStorage。
         dao.aggregateUsageInRange(start, end)
 
-    override suspend fun aggregateDailyCounts(start: Long?, end: Long?): List<DailyCountRow> =
-        dao.aggregateDailyCounts(start, end)
+    override suspend fun aggregateDailyCounts(start: Long?, end: Long?, tzOffsetMs: Long): List<DailyCountRow> =
+        dao.aggregateDailyCounts(start, end, tzOffsetMs)
 
     override suspend fun branch(sessionId: String, leafId: String?): List<HarnessEntryEntity> {
         return leafId?.let { dao.branch(sessionId, it).map(::restoreFromStorage) }.orEmpty()

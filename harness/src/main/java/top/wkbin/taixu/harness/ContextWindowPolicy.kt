@@ -75,12 +75,15 @@ object ContextWindowPolicy {
     fun foldingLimitFor(
         budget: Int,
         ratioPercent: Int = DEFAULT_FOLDING_RATIO_PERCENT,
+        systemTokens: Int = 0,
         reserveTokens: Int? = null,
     ): Int {
         if (budget <= 0) return 0
         // per-model 自定义输出预留优先（对齐 pi reserveTokens）；未提供时用内置预留（输出 + 工具 schema）。
         val reserved = (reserveTokens ?: RESERVED_OUTPUT_TOKENS) + TOOL_SCHEMA_RESERVE_TOKENS
-        val hardCeiling = budget - reserved
+        // 再减去 system prompt 自身占用：系统提示（含技能目录/规则块注入）同样吃预算，
+        // 若不计入，面板显示的折叠线会高于引擎实际可用空间，用户按面板调参会撞上上下文超限。
+        val hardCeiling = budget - reserved - systemTokens.coerceAtLeast(0)
         val safeRatio = ratioPercent.coerceIn(MIN_FOLDING_RATIO_PERCENT, MAX_FOLDING_RATIO_PERCENT)
         val scaled = (budget.toLong() * safeRatio / 100L).toInt()
         return minOf(scaled, hardCeiling).coerceAtLeast(MIN_CONTEXT_BUDGET)
@@ -474,11 +477,17 @@ object ContextWindowPolicy {
         if (budget <= 0) {
             return alignKeepFromIndex(messages, minimalKeepFromIndex(messages))
         }
-        // 折叠触发线：与 foldingLimitFor 同口径（budget × 水位，且不超过 budget − 协议预留）。
+        // 折叠触发线：与 foldingLimitFor 同口径（budget × 水位，且不超过 budget − 协议预留 − system 占用）。
         // 曾额外叠加 `budget × 0.75` 的 upstreamLimit，导致折叠线被二次折上折压到 ~0.75×budget，
         // 大窗口被架空虚置、历史过早折叠（「记不住」根因之一）。现统一口径；
         // per-model 的 reserveTokens 仍生效（并入 foldingLimitFor 的预留计算）。
-        val localLimit = foldingLimitFor(budget, foldingRatioPercent, reserveTokens) - systemTokens
+        // systemTokens 改由 foldingLimitFor 内部扣减，避免此处再减一次造成双重扣减。
+        val localLimit = foldingLimitFor(
+            budget = budget,
+            ratioPercent = foldingRatioPercent,
+            systemTokens = systemTokens,
+            reserveTokens = reserveTokens,
+        )
         val rawLimit = localLimit
         if (rawLimit <= 0) {
             return alignKeepFromIndex(messages, minimalKeepFromIndex(messages))

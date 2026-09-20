@@ -42,6 +42,9 @@ dependencies {
     testImplementation(libs.asm.util)
     testImplementation(libs.asm.tree)
     testImplementation(libs.asm.analysis)
+    // Robolectric 自带 SQLite 未编 JSON1，无法跑 Room 的 json_extract 查询；
+    // 按日聚合的 SQL 语义测试用带 JSON1 的 sqlite-jdbc 直连验证（见 HarnessDailyAggregateSqlTest）。
+    testImplementation("org.xerial:sqlite-jdbc:3.50.3.0")
 }
 
 ksp {
