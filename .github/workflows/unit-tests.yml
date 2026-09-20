@@ -45,10 +45,25 @@ jobs:
       - name: 因果链闭环审计（静态检查，无需 Gradle）
         run: |
           set -o pipefail
+          # 先自检：证明 P0 通路真的会亮、退出码契约没被改坏。
+          # 没有这一步时，"P0 = 0" 可能只是"检测器坏了"而看起来一样（静默失败）。
+          python3 scripts/causal_chain_audit.py --selftest
+          # 脚本本身以退出码表达结论：0=无 P0，1=存在 P0，2=用法错误。
+          # 直接把退出码当门禁，不再从 stdout 里 grep 严重度字符串——
+          # 旧写法 `grep -q 'P0_'` 是**永不成立**的判据（脚本从不输出 "P0_" 这个字面量，
+          # 它打印的是 `[P0] R3_combine_swallow_updates`），且被 `|| true` 兜住，
+          # 于是这道自称"必须为 0"的门禁从上线起就从未拦截过任何提交
+          # （实测：故意植入 R3 命中的探针文件，脚本 exit 1，而该步骤仍判定 success）。
           python3 scripts/causal_chain_audit.py --root . --no-tests --json audit-report.json | tee /tmp/audit.log
-          # P0 = StateFlow 误用 / combine 吞更新 等会直接导致行为缺陷的问题，必须为 0。
-          # 脚本以退出码 1 表示存在 P0；其余级别仅记录不阻断。
-          grep -q 'P0_' /tmp/audit.log && { echo "::error::存在 P0 级因果链缺陷"; exit 1; } || true
+          status=${PIPESTATUS[0]}
+          if [ "$status" -eq 1 ]; then
+            echo "::error::存在 P0 级因果链缺陷（详见 /tmp/audit.log 与 audit-report.json）"
+            exit 1
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::error::因果链审计脚本自身失败（退出码 $status），不代表「没有缺陷」"
+            exit 1
+          fi
 
       - name: Run unit tests
         run: |

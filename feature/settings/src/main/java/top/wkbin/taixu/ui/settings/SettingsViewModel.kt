@@ -1352,8 +1352,8 @@ class SettingsViewModel @Inject constructor(
 
     fun setActiveModel(id: String) {
         viewModelScope.launch {
-            aiModelDao.clearActive()
-            aiModelDao.setActive(id)
+            // 事务内清空+置活，避免"两步之间被杀 → 全部非活跃"的中间态（见 AiModelDao.activateOnly）
+            aiModelDao.activateOnly(id)
         }
     }
 

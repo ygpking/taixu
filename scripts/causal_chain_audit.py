@@ -304,12 +304,80 @@ RULES = [
 ]
 
 
+def selftest():
+    """自检：证明 P0 通路真的能亮，且退出码契约没被改坏。
+
+    加这段的直接原因（真实事故）：CI 的门禁原本写成
+        `grep -q 'P0_' /tmp/audit.log && { echo ...; exit 1; } || true`
+    而本脚本从**不**输出 "P0_" 这个字面量（它打印的是 `[P0] R3_...`），
+    于是那道自称"必须为 0"的门禁从上线起就从未拦截过任何提交。
+    现在 CI 改用退出码判定；本自检把「P0 存在 → 退出码 1」锁成断言，
+    任何人再改坏（改输出格式、改退出码、规则失效）都会被这里拦住。
+    """
+    import shutil
+    import tempfile
+
+    p0_probe = (
+        'package probe\n'
+        'class Probe {\n'
+        '    fun build(a: StateFlow<String>, b: StateFlow<Int>, c: StateFlow<Int>) =\n'
+        '        combine(a, b, c) { kept, _, _ ->\n'
+        '            kept\n'
+        '        }.distinctUntilChanged()\n'
+        '}\n'
+    )
+    clean_probe = (
+        'package probe\n'
+        'class Clean {\n'
+        '    fun plain() = listOf(1, 2, 3).sum()\n'
+        '}\n'
+    )
+
+    def scan(src):
+        d = tempfile.mkdtemp(dir=tmp)
+        with open(os.path.join(d, 'Probe.kt'), 'w', encoding='utf-8') as fh:
+            fh.write(src)
+        files = list(iter_sources(d, include_tests=False))
+        found = []
+        for rule in RULES:
+            try:
+                found.extend(rule(d, files))
+            except Exception as e:
+                print(f'!! 规则 {rule.__name__} 执行失败: {e}', file=sys.stderr)
+        return found
+
+    def exit_code(findings):
+        return 0 if not [f for f in findings if f['severity'] == 'P0'] else 1
+
+    failures = []
+    tmp = tempfile.mkdtemp(prefix='causal-selftest-')
+    try:
+        if exit_code(scan(p0_probe)) != 1:
+            failures.append('含 combine-吞更新 的样本应返回 1（存在 P0），实际不是')
+        if exit_code(scan(clean_probe)) != 0:
+            failures.append('干净样本应返回 0，实际不是')
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    if failures:
+        for msg in failures:
+            print(f'FAIL: {msg}', file=sys.stderr)
+        return 1
+    print('selftest OK：P0 通路可亮、干净输入退出码为 0')
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--root', default='.')
     ap.add_argument('--json', default='')
     ap.add_argument('--no-tests', action='store_true')
+    ap.add_argument('--selftest', action='store_true',
+                    help='自检：验证 P0 检测通路与退出码契约（忽略 --root）')
     args = ap.parse_args()
+
+    if args.selftest:
+        return selftest()
 
     root = os.path.abspath(args.root)
     files = list(iter_sources(root, include_tests=not args.no_tests))

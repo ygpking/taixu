@@ -27,8 +27,11 @@ class SessionTreeStore @Inject constructor(
 ) {
     private val laneLocks = ConcurrentHashMap<String, Mutex>()
 
+    /** 仅供测试断言"会话删除后锁缓存确实被回收"；生产代码不应读取。 */
+    internal val laneLockCountForTest: Int get() = laneLocks.size
+
     private fun laneLock(sessionId: String, laneName: String): Mutex =
-        laneLocks.getOrPut("$sessionId/$laneName") { Mutex() }
+        laneLocks.getOrPut("$sessionId$LANE_LOCK_SEPARATOR$laneName") { Mutex() }
 
     suspend fun ensureMainLane(sessionId: String) {
         repository.ensureLane(sessionId, MAIN_LANE)
@@ -82,6 +85,12 @@ class SessionTreeStore @Inject constructor(
     }
 
     suspend fun deleteSession(sessionId: String) {
+        // 会话删除必须同时清掉按 sessionId 缓存的 lane 锁：key 形如 "$sessionId/$laneName"，
+        // 每删一个会话就会永久留下它的锁对象（Mutex 本身不再被任何协程引用，却仍被 map 强引用），
+        // 而 id 是 UUID，会话永不复用 → 纯泄漏，且随会话数线性增长。
+        // HarnessLoop.deleteSession 已清理 sessionJobs / sessionMutexes / messageProjector /
+        // stateMirrors 等十余个同类容器，此处补齐漏网的这一处。
+        laneLocks.keys.removeAll { it.startsWith("$sessionId$LANE_LOCK_SEPARATOR") }
         repository.deleteSessionData(sessionId)
     }
 
@@ -172,6 +181,12 @@ class SessionTreeStore @Inject constructor(
 
     companion object {
         const val MAIN_LANE = "main"
+
+        /**
+         * lane 锁 key 的分隔符。删除会话时按 `"$sessionId$LANE_LOCK_SEPARATOR"` 前缀批量清理，
+         * 定义成常量避免「生成 key」与「清理 key」两处拼写漂移后静默漏删。
+         */
+        const val LANE_LOCK_SEPARATOR = "/"
         /** Maximum decoded messages retained per live UI/session projection. */
         const val MAX_LIVE_ENTRIES = 600
         private val SEARCH_TERM_SEPARATOR = Regex("[\\s,，;；|]+")

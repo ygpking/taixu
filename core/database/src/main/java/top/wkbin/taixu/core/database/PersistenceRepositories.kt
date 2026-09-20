@@ -18,6 +18,18 @@ interface AiModelRepository {
     suspend fun upsert(model: AiModelEntity)
     suspend fun clearActive()
     suspend fun setActive(id: String)
+
+    /** 事务内独占激活（clearActive + setActive）；防止两步之间留下"全部非活跃"中间态。 */
+    suspend fun activateOnly(id: String)
+
+    /** 事务内独占激活并写入档案本体（clearActive + upsert）。 */
+    suspend fun activateExclusively(model: AiModelEntity)
+
+    /**
+     * 事务内「按需清空 + 写入」：判断依据与写入之间不可被打断。
+     * 见 `AiModelDao.upsertKeepingOrReplacingActive` 的说明。
+     */
+    suspend fun upsertKeepingOrReplacingActive(model: AiModelEntity, clearOthers: Boolean)
     suspend fun updateReasoning(id: String, mode: String?, effort: String?)
     suspend fun delete(id: String)
 }
@@ -187,6 +199,10 @@ class RoomAiModelRepository @Inject constructor(private val dao: AiModelDao) : A
     override suspend fun upsert(model: AiModelEntity) = dao.upsert(model)
     override suspend fun clearActive() = dao.clearActive()
     override suspend fun setActive(id: String) = dao.setActive(id)
+    override suspend fun activateOnly(id: String) = dao.activateOnly(id)
+    override suspend fun activateExclusively(model: AiModelEntity) = dao.activateExclusively(model)
+    override suspend fun upsertKeepingOrReplacingActive(model: AiModelEntity, clearOthers: Boolean) =
+        dao.upsertKeepingOrReplacingActive(model, clearOthers)
     override suspend fun updateReasoning(id: String, mode: String?, effort: String?) = dao.updateReasoning(id, mode, effort)
     override suspend fun delete(id: String) = dao.delete(id)
 }

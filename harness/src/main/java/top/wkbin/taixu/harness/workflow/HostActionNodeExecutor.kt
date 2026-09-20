@@ -68,7 +68,7 @@ class DelayNodeExecutor @Inject constructor() : NodeExecutor {
         context: WorkflowRuntimeContext,
         onProgress: suspend (NodeRunStatus, String) -> Unit,
     ): NodeExecutionOutput {
-        val seconds = interpolate(node.config["seconds"] ?: node.config["delaySeconds"] ?: "1", context)
+        val seconds = interpolateRaw(node.config["seconds"] ?: node.config["delaySeconds"] ?: "1", context)
             .trim().toDoubleOrNull()?.coerceIn(0.0, 600.0) ?: 1.0
         val millis = (seconds * 1000).toLong().coerceAtLeast(0L)
         onProgress(NodeRunStatus.RUNNING, "等待 ${seconds}s…")
@@ -98,7 +98,7 @@ class SetVariableNodeExecutor @Inject constructor() : NodeExecutor {
                 val idx = line.indexOf('=')
                 require(idx > 0) { "变量赋值格式应为 KEY=value：$line" }
                 val key = line.substring(0, idx).trim()
-                val value = interpolate(line.substring(idx + 1).trim(), context)
+                val value = interpolateRaw(line.substring(idx + 1).trim(), context)
                 require(KEY.matches(key)) { "变量名不合法：$key" }
                 assignments[key] = value
             }
@@ -106,7 +106,7 @@ class SetVariableNodeExecutor @Inject constructor() : NodeExecutor {
         val singleKey = node.config["key"]?.trim().orEmpty()
         if (singleKey.isNotEmpty()) {
             require(KEY.matches(singleKey)) { "变量名不合法：$singleKey" }
-            assignments[singleKey] = interpolate(node.config["value"].orEmpty(), context)
+            assignments[singleKey] = interpolateRaw(node.config["value"].orEmpty(), context)
         }
         if (assignments.isEmpty()) {
             return NodeExecutionOutput(NodeRunStatus.FAILED, exitCode = 2, error = "未配置任何变量赋值")
@@ -167,7 +167,7 @@ class HostActionNodeExecutor @Inject constructor(
         context: WorkflowRuntimeContext,
         onProgress: suspend (NodeRunStatus, String) -> Unit,
     ): NodeExecutionOutput {
-        fun cfg(key: String): String = interpolate(node.config[key].orEmpty(), context).trim()
+        fun cfg(key: String): String = interpolateRaw(node.config[key].orEmpty(), context).trim()
         fun requireCfg(key: String): String = cfg(key).also { require(it.isNotBlank()) { "缺少参数：$key" } }
 
         return when (action) {
@@ -211,11 +211,11 @@ class HostActionNodeExecutor @Inject constructor(
             "app_force_stop" -> gui.forceStopApp(requireCfg("package")).toOutput()
             "app_clear_data" -> gui.clearAppData(requireCfg("package")).toOutput()
             "app_freeze", "package_disable" -> {
-                val user = cfg("user").ifBlank { "0" }
+                val user = requireUserId(cfg("user"))
                 privileged("/system/bin/pm disable-user --user $user ${shellQuote(requireCfg("package"))}")
             }
             "app_unfreeze", "package_enable" -> {
-                val user = cfg("user").ifBlank { "0" }
+                val user = requireUserId(cfg("user"))
                 privileged("/system/bin/pm enable --user $user ${shellQuote(requireCfg("package"))}")
             }
             "app_grant_permission" -> privileged(
@@ -355,7 +355,7 @@ class HostActionNodeExecutor @Inject constructor(
             "cmd" -> {
                 val service = requireCfg("service")
                 val args = cfg("args")
-                privileged("/system/bin/cmd $service" + if (args.isBlank()) "" else " $args")
+                privileged("/system/bin/cmd ${shellQuote(service)}" + if (args.isBlank()) "" else " $args")
             }
             else -> {
                 // Escape hatch: treat unknown action as host shell command template.
@@ -367,7 +367,7 @@ class HostActionNodeExecutor @Inject constructor(
     }
 
     private suspend fun sendBroadcast(node: WorkflowNode, context: WorkflowRuntimeContext): NodeExecutionOutput {
-        fun cfg(key: String) = interpolate(node.config[key].orEmpty(), context).trim()
+        fun cfg(key: String) = interpolateRaw(node.config[key].orEmpty(), context).trim()
         val action = cfg("intentAction").ifBlank { error("缺少 intentAction") }
         val pkg = cfg("package").ifBlank { null }
         val component = cfg("component").ifBlank { null }
@@ -388,7 +388,7 @@ class HostActionNodeExecutor @Inject constructor(
     }
 
     private suspend fun startActivity(node: WorkflowNode, context: WorkflowRuntimeContext): NodeExecutionOutput {
-        fun cfg(key: String) = interpolate(node.config[key].orEmpty(), context).trim()
+        fun cfg(key: String) = interpolateRaw(node.config[key].orEmpty(), context).trim()
         val component = cfg("component").ifBlank { null }
         val intentAction = cfg("intentAction").ifBlank { null }
         val dataUri = cfg("dataUri").ifBlank { null }
@@ -491,6 +491,22 @@ class HostActionNodeExecutor @Inject constructor(
     private fun requireInt(raw: String, name: String): Int =
         raw.toIntOrNull() ?: error("$name 必须是整数")
 
+    /**
+     * `--user <id>` 的取值校验。原先直接 `cfg("user").ifBlank { "0" }` 插进命令串，
+     * 未做引号化：值里带空格即可插入额外参数（`0 --delete-data` 之类），
+     * 而 pm 的 disable-user / enable 都接受这类附加开关。
+     * 合法用户 id 只会是「非负整数」或 Android 的 `current` / `owner` 关键字，
+     * 白名单校验比引号化更贴合语义（引号化仍允许 `--user '0 --delete-data'` 被当成单个 id 而报错，
+     * 但白名单会直接拒绝，错误更早更明确）。
+     */
+    private fun requireUserId(raw: String): String {
+        val value = raw.trim().ifBlank { "0" }
+        require(value == "current" || value == "owner" || value.toIntOrNull()?.let { it >= 0 } == true) {
+            "user 必须是 current/owner 或非负整数：$raw"
+        }
+        return value
+    }
+
     private fun parseBool(raw: String): Boolean =
         raw.equals("true", true) || raw == "1" || raw.equals("on", true) || raw.equals("yes", true)
 
@@ -527,7 +543,17 @@ class HostActionNodeExecutor @Inject constructor(
     private fun posixQuote(value: String): String = "'" + value.replace("'", "'\"'\"'") + "'"
 }
 
-internal fun interpolate(template: String, context: WorkflowRuntimeContext): String =
+/**
+ * `${VAR}` 变量替换 —— **原样替换，不做任何 shell 引号化**。
+ *
+ * ⚠️ 与 `BuiltinNodeExecutors` 里的私有 `interpolate`（同名同签名，但会 `posixQuote` 结果）
+ * **语义相反**。历史上两处同名方法已造成过误用风险（复制粘贴时带上错误的那一版语义）。
+ * 因此本函数刻意保留 `Raw` 后缀：**任何把它插进 shell 命令串的地方，都必须自己包引号**
+ * （`shellQuote(key)` / `posixQuote(value)`），否则外部可控的变量值可注入额外命令参数。
+ * 受影响的具体位置见 `HostActionNodeExecutor` 中 `dispatch`/`sendBroadcast`/`startActivity`
+ * 内的 `cfg()`；这些地方的 `shell`/`cmd`/`--user` 路径已分别做引号化或白名单校验。
+ */
+internal fun interpolateRaw(template: String, context: WorkflowRuntimeContext): String =
     HOST_VARIABLE.replace(template) { match ->
         val key = match.groupValues[1]
         when {

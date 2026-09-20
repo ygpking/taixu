@@ -425,6 +425,7 @@ class HarnessLoop @Inject constructor(
         agentTaskStateMachine.deleteForSession(id)
         sessionDao.deleteSession(id)
         rewindController.dropSession(id)
+        branchSummarizer.dropSession(id)
         sessionLoopDetectors.remove(id)
         sessionCancelEpochs.remove(id)
         cancellingSessions.remove(id)

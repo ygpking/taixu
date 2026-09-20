@@ -122,6 +122,21 @@ class BranchSummarizer @Inject constructor(
     private fun markSummarized(sessionId: String, fromLeafId: String): Boolean =
         summarizedFromLeafs.getOrPut(sessionId) { ConcurrentHashMap.newKeySet() }.add(fromLeafId)
 
+    /**
+     * 会话删除时清理去重登记。
+     *
+     * `summarizedFromLeafs` 以 sessionId 为键、以 (sessionId → leafId 集合) 为值，
+     * 会话 id 是 UUID 且不复用 → 不清理就是随会话数单调增长的内存泄漏；
+     * 单个长会话反复切换分支时，内层 leafId 集合也会持续增长。
+     * 由 `HarnessLoop.deleteSession` 调用，与 SessionTreeStore/CheckpointStore 的清理保持同一处。
+     */
+    fun dropSession(sessionId: String) {
+        summarizedFromLeafs.remove(sessionId)
+    }
+
+    /** 仅供测试断言"会话删除后去重登记确实被回收"；生产代码不应读取。 */
+    internal fun summarizedSessionCountForTest(): Int = summarizedFromLeafs.size
+
     private companion object {
         const val MIN_MESSAGES = 4
     }
