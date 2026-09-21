@@ -199,18 +199,22 @@ class McpStdioTransport @Inject constructor(
         }
 
         suspend fun <T> withInitialized(block: suspend Connection.() -> T): T = mutex.withLock {
-            markActive()
-            if (!initialized) {
-                val params = json.encodeToJsonElement(McpInitializeParams.serializer(), McpInitializeParams())
-                val response = requestUnlocked("initialize", params)
-                val result = response.result?.let {
-                    json.decodeFromJsonElement(McpInitializeResult.serializer(), it)
-                } ?: error("MCP initialize did not return a result")
-                require(result.protocolVersion.isNotBlank())
-                notifyUnlocked("notifications/initialized")
-                initialized = true
+            // 整个初始化/请求-响应往返标记为沙箱瞬态活动：常驻协议连接本身不计忙，
+            // 只有请求真的在飞时才让沙箱计入忙碌并持锁，回来即撤销（见 McpStdioChannel.withSandboxActivity）。
+            channel.withSandboxActivity {
+                markActive()
+                if (!initialized) {
+                    val params = json.encodeToJsonElement(McpInitializeParams.serializer(), McpInitializeParams())
+                    val response = requestUnlocked("initialize", params)
+                    val result = response.result?.let {
+                        json.decodeFromJsonElement(McpInitializeResult.serializer(), it)
+                    } ?: error("MCP initialize did not return a result")
+                    require(result.protocolVersion.isNotBlank())
+                    notifyUnlocked("notifications/initialized")
+                    initialized = true
+                }
+                block()
             }
-            block()
         }
 
         suspend fun request(method: String, params: kotlinx.serialization.json.JsonElement) =
