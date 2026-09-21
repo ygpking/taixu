@@ -20,6 +20,7 @@ import top.wkbin.taixu.R
 import top.wkbin.taixu.core.database.HarnessSessionRepository
 import top.wkbin.taixu.core.model.SessionRunState
 import top.wkbin.taixu.harness.HarnessLoop
+import dagger.Lazy
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import java.util.concurrent.ConcurrentHashMap
@@ -33,6 +34,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
@@ -44,10 +46,36 @@ import kotlin.time.Duration.Companion.milliseconds
 @AndroidEntryPoint
 class AgentForegroundService : Service() {
 
-    @Inject lateinit var harnessLoop: HarnessLoop
-    @Inject lateinit var sessionDao: HarnessSessionRepository
+    /**
+     * 两个重依赖都必须走 dagger.Lazy。
+     *
+     * Hilt 注入 `Lazy<T>` 只给一个包装器，不在 Service 创建期构造 T；而 [HarnessLoop]
+     * 是多依赖的 @Singleton 重图（Room / DataStore / ProviderClient / ToolExecutor /
+     * MCP / 子智能体等 —— 见 [top.wkbin.taixu.TaiXuApplication] 里对同一问题的注释）。
+     * 若是 eager 注入，这张图就得在**主线程**上构造完成才能进入 onCreate：Hilt 生成类
+     * 必须先把 @Inject 字段填好，用户代码的 onCreate 才可能安全访问它们，而这一切都发生在
+     * 服务能上报前台态之前。主线程被构造占用多久，上报就被推迟多久；系统留给
+     * startForegroundService() 的窗口很短，一旦超期即抛 ForegroundServiceDidNotStartInTimeException
+     * 并杀掉进程 —— 崩溃点落在 ActivityThread 的消息循环里，本类一行日志都留不下。
+     * 这与现场吻合：三个版本、三个日期、三次同一异常，而本类没有任何日志输出。
+     */
+    @Inject lateinit var harnessLoopLazy: Lazy<HarnessLoop>
+    @Inject lateinit var sessionDaoLazy: Lazy<HarnessSessionRepository>
+
+    /**
+     * Room 会话仓储的惰性取用。首次调用时 [HarnessLoop] 通常已把整图构造完毕，
+     * 此处近乎零成本；保留 getter 是为了让三处调用点（运行中刷新 / 完成通知 / 收集回调）
+     * 不必各自关心构造时机。
+     */
+    private val sessionDao: HarnessSessionRepository get() = sessionDaoLazy.get()
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    /**
+     * 服务生命周期之外的清理作用域：用于「停止 Agent」这类必须跑完的收尾动作。
+     * 独立于 [serviceScope]，服务销毁时不被取消 —— 与 RuntimeForegroundService 同口径。
+     */
+    private val processScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var collecting = false
     private var processLock: PowerManager.WakeLock? = null
     /**
@@ -71,6 +99,29 @@ class AgentForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        // 渠道必须先于 startForeground 建好：targetSdk 26+ 上若渠道不存在，
+        // 前台通知会被系统直接丢弃（服务看似已进前台，通知栏却是空的）。
+        // 渠道创建是本地 binder 调用（毫秒级），不构成超时风险。
+        ensureNotificationChannel()
+        // 前台态必须在这里就占住，不能等到 onStartCommand。
+        // 系统给 startForegroundService() 留的上报窗口很短，期间任何一次主线程排队
+        // （冷启动、Hilt 注入、内存压力下的 GC）都可能把上报推到窗口之外，
+        // 超时即抛 ForegroundServiceDidNotStartInTimeException 杀进程。此处先用占位通知占位，
+        // 真正的会话通知由 onStartCommand 的收集回调按实际状态覆盖。
+        // 上报失败时立即停服收口：这种失败多半是通知渠道/图标之类的确定性错误，
+        // 停服不能让系统撤回已经启动的计时器（该超时仍可能发生），
+        // 但可以避免服务带着"从未进入前台"的幽灵状态继续空转，并把失败原因留在日志里。
+        if (!safeStartForeground(
+                PRIMARY_NOTIFICATION_ID,
+                placeholderNotification(getString(R.string.taixu_agent_ready)),
+            )
+        ) {
+            Log.w(TAG, "进入前台态失败，停止服务以避免状态不一致")
+            stopSelf()
+        }
+    }
+
+    private fun ensureNotificationChannel() {
         runCatching {
             val manager = getSystemService(NotificationManager::class.java)
             val channel = NotificationChannel(
@@ -90,25 +141,64 @@ class AgentForegroundService : Service() {
         }.onFailure { Log.w(TAG, "创建通知渠道失败", it) }
     }
 
+    /**
+     * Android 14+（API 34）起前台服务需声明类型，且部分类型有运行时长上限，
+     * 超时由系统回调本方法；若不在时限内退出前台，系统会抛
+     * ForegroundServiceDidNotStopInTimeException 杀进程（与本类修的那个崩溃同源不同型）。
+     *
+     * 这里的选择：超时即主动退出前台并停服，把"该会话是否仍在跑"交给 HarnessLoop 自身
+     * 的中断恢复机制去处理，避免整个进程被杀。不用重新 startForeground 来续命 ——
+     * 系统对同一次启动的 startForeground 次数有限制，超限后会被拒绝。
+     * 具体时长上限以系统实现为准，此处不做硬编码断言。
+     */
+    override fun onTimeout(startId: Int) {
+        Log.w(TAG, "前台服务到达类型化时长上限，退出前台并停止服务 startId=$startId")
+        stopForegroundSafely(STOP_FOREGROUND_REMOVE)
+        stopSelfResult(startId)
+    }
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        onTimeout(startId)
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val targetSessionId = intent?.getStringExtra(EXTRA_SESSION_ID)
         when (intent?.action) {
             ACTION_STOP -> {
-                runCatching {
-                    if (!targetSessionId.isNullOrBlank()) {
-                        harnessLoop.cancel(targetSessionId)
-                    } else {
-                        harnessLoop.cancel()
-                    }
-                }.onFailure { Log.w(TAG, "取消 Agent 失败", it) }
+                // 不可在主线程懒取 HarnessLoop：首次 get() 会构造整张重图。
+                processScope.launch {
+                    runCatching {
+                        val loop = harnessLoopLazy.get()
+                        if (!targetSessionId.isNullOrBlank()) loop.cancel(targetSessionId) else loop.cancel()
+                    }.onFailure { Log.w(TAG, "取消 Agent 失败", it) }
+                }
+                // 若本服务并非由运行中的会话维持（collecting=false，例如仅由通知按钮把服务拉起来），
+                // 后续没有状态流可以收口 —— 直接退出前台并停服，避免 onCreate 占住的前台态滞留成幽灵通知。
+                if (!collecting) {
+                    stopForegroundSafely(STOP_FOREGROUND_REMOVE)
+                    stopSelfResult(startId)
+                }
                 return START_NOT_STICKY
             }
             else -> {
-                safeStartForeground(PRIMARY_NOTIFICATION_ID, placeholderNotification(getString(R.string.taixu_agent_ready)))
+                // 前台态已在 onCreate 占住，这里只补同步持锁 + 状态收集。
                 acquireProcessLock()
                 if (!collecting) {
                     collecting = true
+                    // 关键：只把「取依赖」这一步挪到 IO，收集本身仍留在 Main（与改动前一致），
+                    // 避免顺带改变通知/持锁等回调的线程语义。
+                    // 首次 get() 会构造整张重图，放 Main 上正是本次崩溃的成因；
+                    // withContext 是挂起切换，主线程在此期间不会被阻塞。
                     serviceScope.launch {
+                        val harnessLoop = runCatching {
+                            withContext(Dispatchers.IO) { harnessLoopLazy.get() }
+                        }.getOrElse { error ->
+                            // 构造失败就把标志复位：否则收集协程已死、标志却还是 true，
+                            // 后续再来的 start 请求会以为有人在收集而直接跳过，服务永远收不到状态。
+                            Log.w(TAG, "构造 HarnessLoop 失败，放弃本次状态收集", error)
+                            collecting = false
+                            return@launch
+                        }
                         combine(
                             harnessLoop.sessionRunStates,
                             harnessLoop.sessionStatuses,
@@ -177,6 +267,8 @@ class AgentForegroundService : Service() {
         stopProcessLockRefresh()
         releaseProcessLock()
         serviceScope.cancel()
+        // processScope 不随服务销毁取消：ACTION_STOP 的取消动作与收尾必须在服务死后跑完，
+        // 否则用户点了【停止】只是通知消失、Agent 仍在后台空转。
         super.onDestroy()
     }
 
@@ -370,10 +462,17 @@ class AgentForegroundService : Service() {
         else -> "${seconds / 3600}小时${(seconds % 3600) / 60}分"
     }
 
-    private fun safeStartForeground(id: Int, notification: Notification) {
+    /**
+     * 前台态上报。返回是否成功 —— 调用方据此决定是否停服收口。
+     *
+     * 原先这里用 `runCatching` 静默吞掉异常：服务会带着"从未进入前台"的状态继续跑，
+     * 通知栏却是空的，而且日志里没有任何线索 —— 本次崩溃排查时，
+     * 现场恰恰缺少这条最关键的证据。改为返回布尔值把失败暴露给调用方。
+     */
+    private fun safeStartForeground(id: Int, notification: Notification): Boolean =
         runCatching { startForeground(id, notification) }
             .onFailure { Log.w(TAG, "startForeground 失败", it) }
-    }
+            .isSuccess
 
     private fun stopForegroundSafely(flag: Int) {
         runCatching { stopForeground(flag) }
