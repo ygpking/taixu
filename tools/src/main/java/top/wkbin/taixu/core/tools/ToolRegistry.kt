@@ -346,7 +346,17 @@ class ToolRegistry @Inject constructor(
         }.let { runCatching { ToolManifestValidator.validateAll(it) }.getOrDefault(emptyList()) }
     }
 
-    /** 版本目录名的自然比较："1.10" > "1.9"。此前字典序 maxByOrNull 会选中旧版本。 */
+    /**
+     * 版本目录名的自然比较："1.10" > "1.9"。此前字典序 maxByOrNull 会选中旧版本。
+     *
+     * 必须构成**全序**（自反、反对称、传递）：`maxWithOrNull` 是线性扫描，
+     * 比较器不传递时结果会随 `listFiles()` 的顺序漂移——同一份本地目录，
+     * 这次加载 1.10 的 manifest、下次加载 1.9 的。
+     *
+     * 旧实现的环："1x" < "2"（字典序）且 "2" < "10"（数值）且 "10" < "1x"（字典序）。
+     * 修法是把「数字段 vs 非数字段」的先后固定下来（数字段一律更小），
+     * 再在各自内部用确定的规则比较——两个全序的字典序组合仍是全序。
+     */
     private fun compareVersionNames(a: String, b: String): Int {
         val sa = a.split('.')
         val sb = b.split('.')
@@ -354,11 +364,19 @@ class ToolRegistry @Inject constructor(
             val va = sa.getOrNull(i)
             val vb = sb.getOrNull(i)
             if (va == vb) continue
+            // 段数少者更小（"1.0" < "1.0.1"）：对缺失段的固定裁决，天然传递。
             if (va == null) return -1
             if (vb == null) return 1
             val na = va.toLongOrNull()
             val nb = vb.toLongOrNull()
-            if (na != null && nb != null && na != nb) return na.compareTo(nb)
+            if (na != null && nb != null) {
+                // 两段都是数字：按数值比（"10" > "9"）
+                if (na != nb) return na.compareTo(nb)
+                continue
+            }
+            if (na != null) return -1
+            if (nb != null) return 1
+            // 两段都非数字：字典序（同类内部的全序）
             val c = va.compareTo(vb)
             if (c != 0) return c
         }

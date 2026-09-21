@@ -125,6 +125,10 @@ class SessionModelSwitcher @Inject constructor(
                     model = targetModelConfig,
                     archiveEnabled = archiveEnabled,
                     workspacePath = session.workspace.takeIf { it.isNotBlank() },
+                    // 压缩期间用户可能已删除该会话（deleteSession 只 join runLoop，
+                    // 不 join 本协程）：LLM 返回后、归档落盘前复核一次存在性，
+                    // 否则会把刚清掉的 `.taixu-context/<id>/` 又建回来。
+                    sessionStillExists = { sessionDao.findById(sessionId) != null },
                 )
                 compacted = true
                 folded = keepFrom
@@ -133,6 +137,11 @@ class SessionModelSwitcher @Inject constructor(
             }
         }
 
+        // 同上：压缩跑完（数秒）后会话可能已不在。此时再 append ModelSwitchEvent
+        // 会往已删除的会话写一条孤儿 entry 并重新登记 lane。
+        if (sessionDao.findById(sessionId) == null) {
+            return Result(switched = false, compactionPending = pending)
+        }
         messagePort.append(
             sessionId,
             ModelSwitchEvent(

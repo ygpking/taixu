@@ -558,6 +558,9 @@ class HarnessLoop @Inject constructor(
     suspend fun activateBranch(leafId: String?, targetSessionId: String? = null): Boolean {
         val sessId = targetSessionId?.ifBlank { null } ?: sessionTracker.currentSessionId.value
         if (sessId.isBlank() || isSessionBusy(sessId)) return false
+        // 删除进行中（tombstone 已打）时不得再动分支：moveLane 与分支摘要都会往
+        // 已删除的会话重新写 lane 行与去重登记，让 deleteSession 的清理白做。
+        if (tombstonedSessions.contains(sessId)) return false
         val oldLeafId = messageStore.laneLeafId(sessId)
         messageStore.moveTo(sessId, leafId)
         // 分支摘要（对齐 pi /tree）：切换后把被放弃分支生成摘要注入新位置，

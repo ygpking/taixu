@@ -92,7 +92,12 @@ object ContextWindowPolicy {
         //  · 若把 systemTokens 并进 hardCeiling 一起夹下限，MIN_CONTEXT_BUDGET 会把结果抬回 4_000，
         //    「预算耗尽」反而保留全部历史——ContextWindowPolicyTest / SessionModelSwitcherTest 会挂。
         val limited = minOf(scaled, hardCeiling).coerceAtLeast(MIN_CONTEXT_BUDGET)
-        return limited - systemTokens.coerceAtLeast(0)
+        // 末尾夹 0 下限：systemTokens 是在「夹过 MIN_CONTEXT_BUDGET 之后」单独扣的
+        // （上面的注释解释了为什么不能提前夹），小窗口模型下 limited − systemTokens
+        // 可能为负。负值对引擎无害（computeKeepFromIndex 的 rawLimit <= 0 分支按
+        // 「预算耗尽、只保留最小最近轮」处理），但会直接泄漏到 UI：设置页曾渲染出
+        // 「每轮请求约在 -2K token 处自动压缩」。这里统一夹成 0，语义不变、显示正确。
+        return (limited - systemTokens.coerceAtLeast(0)).coerceAtLeast(0)
     }
 
     /**

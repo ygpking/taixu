@@ -1,5 +1,7 @@
 package top.wkbin.taixu.runtime.webchat
 
+import java.security.MessageDigest
+
 /**
  * Web 协作台请求的凭据提取与校验（纯逻辑，不依赖 Android HTTP 栈）。
  *
@@ -34,8 +36,26 @@ internal object WebChatCredentialAuth {
         queryToken: String?,
     ): Boolean {
         if (pin.isBlank()) return false
-        return candidates(authorization, cookieHeader, queryToken).any { it == pin }
+        return candidates(authorization, cookieHeader, queryToken).any { matches(it, pin) }
     }
+
+    /**
+     * 常时比较候选凭据与配对码，与 `bridge.HostBridgeAuth` 同一口径。
+     *
+     * `String.equals` 在首个不等字符处即返回，比较耗时可测；配合无退避的枚举，
+     * 攻击者能把「正确前缀长度」当作反馈信号逐位收敛。先按 UTF-8 求 SHA-256 再
+     * 比较摘要，长度恒定（32 字节），既不泄露长度也不泄露前缀匹配进度。
+     *
+     * 注意：常时比较只消除**时序**信道，不降低配对码空间的重要性 ——
+     * 猜测成本由 `WebChatAuthThrottle` 的失败退避负责，两者必须同时在场。
+     */
+    fun matches(candidate: String?, expected: String?): Boolean {
+        if (candidate.isNullOrEmpty() || expected.isNullOrEmpty()) return false
+        return MessageDigest.isEqual(sha256(candidate), sha256(expected))
+    }
+
+    private fun sha256(value: String): ByteArray =
+        MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
 
     /** 按优先级列出各来源非空的凭据值，供校验与测试断言。 */
     internal fun candidates(

@@ -78,6 +78,11 @@ class WebChatBridgeServer @Inject constructor(
     private val sseEmitters = ConcurrentHashMap.newKeySet<AndroidHttpExchange>()
     private val taskSessions = ConcurrentHashMap<String, String>()
     private val sessionObservers = ConcurrentHashMap<String, Job>()
+    /**
+     * 配对码失败退避：服务监听 0.0.0.0、配对码 6 位、CORS 通配，
+     * 没有退避就等于把宿主级凭据敞开给局域网枚举（详见 [WebChatAuthThrottle] KDoc）。
+     */
+    private val authThrottle = WebChatAuthThrottle()
     private var heartbeatJob: Job? = null
     private var wakeLock: android.os.PowerManager.WakeLock? = null
     private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
@@ -86,6 +91,8 @@ class WebChatBridgeServer @Inject constructor(
         if (_status.value.isRunning) return true
         return try {
             val generatedPin = pin ?: generatePin()
+            // 新服务配新配对码：上一轮的失败退避状态不该继续连坐正常用户。
+            authThrottle.reset()
             // 工作线程池由 AndroidHttpServer 自己持有：stop() 时随服务一起回收，
             // 不再让本类持有一个永不 shutdown 的 fixedThreadPool。
             val server = AndroidHttpServer.create(InetSocketAddress(port), 0)
@@ -133,6 +140,7 @@ class WebChatBridgeServer @Inject constructor(
             sseEmitters.clear()
             httpServer?.stop(0)
             httpServer = null
+            authThrottle.reset()
             _status.value = _status.value.copy(isRunning = false, activeConnections = 0)
         }.onFailure { logger.e("太墟智枢 Web 协作服务停止异常", it) }
     }
@@ -173,7 +181,9 @@ class WebChatBridgeServer @Inject constructor(
             } catch (throwable: Throwable) {
                 logger.e("太墟智枢 Web 请求处理失败：${exchange.requestURI.path}", throwable)
                 if (!exchange.isResponseStarted) {
-                    runCatching { sendJson(exchange, 500, errorJson(throwable.message ?: "请求处理失败")) }
+                    // 不回显 throwable.message：异常文案可能带宿主绝对路径、SQL 片段或上游
+                    // 服务地址，对局域网调用方属于信息泄露。细节只进 AppLogger。
+                    runCatching { sendJson(exchange, 500, errorJson("服务端内部错误")) }
                 }
             } finally {
                 runCatching { exchange.close() }
@@ -199,14 +209,17 @@ class WebChatBridgeServer @Inject constructor(
     private inner class SessionBootstrapHandler : AndroidHttpHandler {
         override fun handle(exchange: AndroidHttpExchange) = launchRequest(exchange) {
             if (handlePreflight(exchange)) return@launchRequest
+            val source = exchange.remoteAddress
+            if (rejectWhileLocked(exchange, source)) return@launchRequest
             val token = requestJson(exchange)["token"]?.jsonPrimitive?.content.orEmpty()
-            if (token != _status.value.pinCode) {
-                sendJson(exchange, 401, errorJson("配对码不正确"))
-            } else {
+            if (WebChatCredentialAuth.matches(token, _status.value.pinCode)) {
+                authThrottle.recordSuccess(source)
                 // 认证成功即种下会话 Cookie：后续 SSE 不再需要把配对码放进 URL
                 // （URL 会落进访问日志/浏览器历史，而 EventSource 又无法自定义请求头）。
                 plantSessionCookie(exchange)
                 sendJson(exchange, 200, buildJsonObject { put("authenticated", true) })
+            } else {
+                rejectFailedAuth(exchange, source)
             }
         }
     }
@@ -390,8 +403,17 @@ class WebChatBridgeServer @Inject constructor(
     private inner class SseEventsHandler : AndroidHttpHandler {
         override fun handle(exchange: AndroidHttpExchange) {
             if (handlePreflight(exchange)) return
+            val source = exchange.remoteAddress
+            if (rejectWhileLocked(exchange, source)) return
             if (!isAuthenticated(exchange)) {
-                sendJson(exchange, 401, errorJson("请先配对"))
+                rejectFailedAuth(exchange, source)
+                return
+            }
+            authThrottle.recordSuccess(source)
+            // SSE 长连接每个占一个 fd 和一个工作槽：不设上限时，持凭据者可无限开连接
+            // 把服务（乃至进程）的 fd 耗尽，属于可远程触发的资源耗尽。
+            if (sseEmitters.size >= MAX_SSE_CONNECTIONS) {
+                sendJson(exchange, 503, errorJson("连接数已达上限，请关闭多余的网页后重试"))
                 return
             }
             exchange.responseHeaders.add("Content-Type", "text/event-stream")
@@ -419,7 +441,9 @@ class WebChatBridgeServer @Inject constructor(
                     else -> sendText(exchange, 404, "工作区接口不存在")
                 }
             } catch (throwable: Throwable) {
-                sendJson(exchange, 400, errorJson(throwable.message ?: "工作区操作失败"))
+                // 同上：内部异常文案（可能含宿主路径）不回显给调用方，只进日志。
+                logger.w("工作区操作失败：${exchange.requestURI.path}", throwable)
+                sendJson(exchange, 400, errorJson("工作区操作失败"))
             }
         }
     }
@@ -551,9 +575,29 @@ class WebChatBridgeServer @Inject constructor(
     }
 
     private fun requireAuthenticated(exchange: AndroidHttpExchange): Boolean {
-        if (isAuthenticated(exchange)) return true
-        sendJson(exchange, 401, errorJson("请先使用配对码连接"))
+        val source = exchange.remoteAddress
+        if (rejectWhileLocked(exchange, source)) return false
+        if (isAuthenticated(exchange)) {
+            authThrottle.recordSuccess(source)
+            return true
+        }
+        rejectFailedAuth(exchange, source)
         return false
+    }
+
+    /** 锁定期内直接 429 + `Retry-After`，不再比对凭据（比对本身也要花时间）。 */
+    private fun rejectWhileLocked(exchange: AndroidHttpExchange, source: String?): Boolean {
+        if (!authThrottle.isLocked(source)) return false
+        val retryAfter = authThrottle.retryAfterSeconds(source).coerceAtLeast(1)
+        exchange.responseHeaders.add("Retry-After", retryAfter.toString())
+        sendJson(exchange, 429, errorJson("尝试过于频繁，请 ${retryAfter} 秒后重试"))
+        return true
+    }
+
+    /** 认证失败：登记退避后回 401。文案与 bootstrap 保持同一口径。 */
+    private fun rejectFailedAuth(exchange: AndroidHttpExchange, source: String?) {
+        authThrottle.recordFailure(source)
+        sendJson(exchange, 401, errorJson("请先使用配对码连接"))
     }
 
     private fun parseWorkspacePath(path: String): Pair<String, String> {
@@ -600,7 +644,9 @@ class WebChatBridgeServer @Inject constructor(
     private fun getQueryParam(exchange: AndroidHttpExchange, key: String): String? {
         val raw = exchange.requestURI.query.orEmpty().split('&').firstOrNull { it.substringBefore('=') == key }
             ?.substringAfter('=', "") ?: return null
-        return URLDecoder.decode(raw, Charsets.UTF_8.name())
+        // 畸形百分号编码（如 "%zz"）会让 URLDecoder 抛 IllegalArgumentException，
+        // 原本会一路冒到 launchRequest 的兜底变成 500；查询参数解析失败按"未提供"处理。
+        return runCatching { URLDecoder.decode(raw, Charsets.UTF_8.name()) }.getOrNull()
     }
 
     private suspend fun <T> kotlinx.coroutines.flow.Flow<T>.firstValue(): T = first()
@@ -644,6 +690,8 @@ class WebChatBridgeServer @Inject constructor(
                 .setContentText("$url（配对码：$pin）")
                 .setOngoing(true)
                 .setPriority(androidx.core.app.NotificationCompat.PRIORITY_LOW)
+                // 配对码是宿主级凭据：锁屏/投屏/截屏都不该看见它。
+                .setVisibility(androidx.core.app.NotificationCompat.VISIBILITY_SECRET)
                 .build(),
         )
     }
@@ -663,7 +711,12 @@ class WebChatBridgeServer @Inject constructor(
     }
 
     private fun hasFileExtension(path: String): Boolean = path.substringAfterLast('/', "").contains('.')
-    private fun generatePin(): String = (100000..999999).random().toString()
+    private fun generatePin(): String {
+        // SecureRandom 而非 kotlin.random.Random：后者在本机是线性同余，可被观察到的
+        // 输出序列预测后续取值；配对码是宿主级凭据，生成源必须不可预测。
+        val random = java.security.SecureRandom()
+        return (100000 + random.nextInt(900000)).toString()
+    }
 
     private fun resolveLocalIp(): String = runCatching {
         var fallback = "127.0.0.1"
@@ -688,6 +741,12 @@ class WebChatBridgeServer @Inject constructor(
         const val DEFAULT_PORT = DEFAULT_WEBCHAT_PORT
         const val NOTIFICATION_CHANNEL_ID = "taixu_webchat_bridge"
         const val NOTIFICATION_ID = 8899
+
+        /**
+         * SSE 长连接上限。每个连接占一个 fd 与一个 worker 槽位，
+         * 不设上限时持凭据者可远程耗尽 fd（见 `SseEventsHandler`）。
+         */
+        const val MAX_SSE_CONNECTIONS = 16
 
         /** 会话 Cookie 名（供 `EventSource` 免于把配对码写进 URL）。定义收在 [WebChatCredentialAuth]。 */
         const val SESSION_COOKIE = WebChatCredentialAuth.SESSION_COOKIE

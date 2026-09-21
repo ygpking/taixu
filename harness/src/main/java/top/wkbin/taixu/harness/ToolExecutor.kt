@@ -243,6 +243,11 @@ class ToolExecutor @Inject constructor(
                 val skills = skillRepository?.activeSkills?.first().orEmpty()
                 if (skills.isEmpty()) {
                     false to "当前没有已启用的技能。请提示用户到「设置 → 智能体」启用技能后重试。"
+                } else if (query.isEmpty()) {
+                    // 空 query 会让下面的候选集恒含 ""（triggerCommand 为 null 时
+                    // orEmpty() 的产物），于是"精确匹配"命中全部技能、模糊匹配也全中：
+                    // 要么报"匹配到多个技能"，要么在只有一个启用技能时静默加载它。
+                    false to "缺少技能名参数。请从系统提示的技能目录里选一个名称，或先 @ 该技能。"
                 } else {
                     val queryLower = query.lowercase()
                     // 精确匹配（name / id / 去斜杠 triggerCommand）：大小写无关。

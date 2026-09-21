@@ -112,4 +112,47 @@ class MentionExtractorTest {
             MentionExtractor.parse("@git-workflow 提交", listOf("/git-workflow")),
         )
     }
+
+    // ---- 以下为「两轮口径不一致 / 域名误判 / 总量无上限」的回归用例 ----
+
+    @Test
+    fun `unknown mention after a CJK character is still collected`() {
+        // 回归点：通用轮原先按 Char.isLetterOrDigit()（Unicode）判定"@ 前是词字符"，
+        // 而第一轮的正则 lookbehind 只认 ASCII \w —— 同一个「请用@未知技能」，
+        // 第一轮能命中已知名、第二轮却因前一字是中文被静默丢弃，两轮结论相反。
+        assertEquals(
+            setOf("未知技能"),
+            MentionExtractor.parse("请用@未知技能 处理", emptyList()),
+        )
+        // ASCII 词字符前的 @ 仍然按邮箱/标识符保护丢弃
+        assertTrue(MentionExtractor.parse("用户abc@host").isEmpty())
+    }
+
+    @Test
+    fun `domain shaped token after at is not a mention`() {
+        // 「用户@host.com」：@ 前是中文（非 ASCII 词字符）放行，但 host.com 是域名形状，
+        // 不该被当成"未登记实体"收进来再报"技能名拼错了"。
+        assertTrue(MentionExtractor.parse("联系 用户@host.com 反馈").isEmpty())
+        assertTrue(MentionExtractor.parse("参考@sub.example.co 的文档").isEmpty())
+        // 普通未知名（不含点）不受影响
+        assertEquals(setOf("some_service"), MentionExtractor.parse("@some_service 试试", emptyList()))
+    }
+
+    @Test
+    fun `known name containing a dot still matches via round one`() {
+        // 域名形状过滤只作用于通用轮；已登记名字（如 "node.js"）仍走第一轮，不受影响。
+        assertEquals(
+            setOf("node.js"),
+            MentionExtractor.parse("@node.js 装依赖", listOf("node.js")),
+        )
+    }
+
+    @Test
+    fun `mention count is capped per message`() {
+        // 粘贴含成百上千个 @token 的日志：结果集必须有上限，
+        // 否则未匹配段会全额渲染进系统提示、把预算顶爆。
+        val spam = (1..500).joinToString(" ") { "@tok$it" }
+        val names = MentionExtractor.parse(spam, emptyList())
+        assertTrue("提及数应被截断，实际 ${names.size}", names.size <= 64)
+    }
 }

@@ -621,6 +621,23 @@ class ContextWindowPolicyTest {
         )
     }
 
+    @Test
+    fun `small window model never yields a negative folding line`() {
+        // 小窗口本地模型（8K）：预算被 MIN_CONTEXT_BUDGET 抬到 4000 后，
+        // systemTokens 仍可能超过它。负值对引擎无害（computeKeepFromIndex 的
+        // rawLimit <= 0 分支），但会直接显示成「每轮请求约在 -2K token 处自动压缩」。
+        val systemTokens = ContextWindowPolicy.estimateReservedPromptTokens(
+            pureChat = false,
+            toolDisabled = false,
+        )
+        val line = ContextWindowPolicy.foldingLimitFor(
+            budget = 8_000,
+            ratioPercent = 100,
+            systemTokens = systemTokens,
+        )
+        assertTrue("折叠触发线不得为负（小窗口 + 大 system 占用），实际 $line", line >= 0)
+    }
+
     // ------------------------------------------------------------------
     // 单一真相源回归：用量面板「已用量」必须基于引擎同口径投影（含老工具结果截断）
     // ------------------------------------------------------------------

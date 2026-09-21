@@ -93,7 +93,11 @@ class SessionForkConversationRewinderTest {
         override suspend fun aggregateDailyCounts(start: Long?, end: Long?, tzOffsetMs: Long): List<DailyCountRow> =
             listEntriesInRange(start, end).map {
                 DailyCountRow(
-                    localEpochDay = Math.floorDiv(it.createdAt + tzOffsetMs, 86_400_000L),
+                    // 必须与 SQL 同口径：`CAST((createdAt + :tzOffsetMs) / 86400000 AS INTEGER)`
+                    // 是 SQLite 整数除法，向零截断；而 Math.floorDiv 向 −∞ 取整。
+                    // 两者只在负数日号处分叉——Fake 若用 floorDiv，将来按日聚合的测试
+                    // 会拿到一个和生产不一致的 oracle。
+                    localEpochDay = (it.createdAt + tzOffsetMs) / 86_400_000L,
                     sessionId = it.sessionId,
                     customType = it.customType,
                     entryCount = 1,

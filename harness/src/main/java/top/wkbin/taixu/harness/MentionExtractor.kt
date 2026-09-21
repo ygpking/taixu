@@ -74,22 +74,61 @@ object MentionExtractor {
 
         // 第二轮：通用兜底（覆盖未登记的实体），此时剩余的 @xxx 都不会再被误拆。
         for (match in GENERIC_REGEX.findAll(buffer.toString())) {
-            // 邮箱/标识符保护：@ 前一个字符是词字符时不视为提及（如 user@host.com）。
+            // 邮箱/标识符保护：@ 前一个字符是**ASCII 词字符**时不视为提及
+            //（如 user@host.com）。
+            //
+            // 判定必须与第一轮的 lookbehind `(?<![\w.+-])` 同一口径（\w 仅 ASCII）。
+            // 这里原先是 `Char.isLetterOrDigit()`（Unicode）：同一个「请用@未知技能」，
+            // 第一轮能命中已知名、第二轮却因前一字是中文而静默丢弃——同一输入两轮结论相反。
             val atIndex = match.range.first
-            if (atIndex > 0 && isWordChar(buffer[atIndex - 1])) continue
+            if (atIndex > 0 && isAsciiWordChar(buffer[atIndex - 1])) continue
             val name = match.groupValues[1].trim()
-            if (name.isNotEmpty()) result += name.lowercase()
+            if (name.isEmpty()) continue
+            // 域名/邮箱尾保护：「用户@host.com」里 @ 前是中文（非 ASCII 词字符），
+            // 前面的守卫放它过去，于是 host.com 会被当成未登记实体收进来，
+            // 再被系统提示的「未匹配 @提及」段告知模型"这个技能名拼错了"。
+            // 纯主机名形状（字母数字- 加点分段）一律不当提及。
+            if (isDomainShaped(name)) continue
+            result += name.lowercase()
         }
-        return result
+        // 单条消息总量上限：per-candidate 的 guard 只防"一个名字重复一万次"的病态输入，
+        // 不防"粘贴一段含成百上千个 @token 的日志"——那种输入会让 result 无界增长，
+        // 并全额渲染进系统提示的未匹配段（fitSystemPrompt 只能从尾部整段砍）。
+        val capped = if (result.size > MAX_MENTIONS_PER_MESSAGE) {
+            result.take(MAX_MENTIONS_PER_MESSAGE)
+        } else {
+            result
+        }
+        return capped.toCollection(linkedSetOf())
     }
 
-    /** 判断是否词字符（字母/数字/下划线/点/加号/减号）；用于邮箱与标识符保护。 */
-    private fun isWordChar(c: Char): Boolean =
-        c.isLetterOrDigit() || c == '_' || c == '.' || c == '+' || c == '-'
+    /** 与第一轮正则 lookbehind `[\w.+-]` 同口径的 ASCII 词字符判定。 */
+    private fun isAsciiWordChar(c: Char): Boolean =
+        (c in 'a'..'z') || (c in 'A'..'Z') || (c in '0'..'9') || c == '_' || c == '.' || c == '+' || c == '-'
+
+    /**
+     * 是否「域名形状」：如 `host.com`、`sub.example.co`。
+     *
+     * 这类 token 出现在 @ 后几乎总是邮箱/URL 的残余，不是用户想提及的能力名。
+     * 已知名不受影响——它们走第一轮，没有这道过滤。
+     */
+    private fun isDomainShaped(name: String): Boolean {
+        if (!name.contains('.')) return false
+        val labels = name.split('.')
+        if (labels.size < 2) return false
+        return labels.all { label ->
+            label.isNotEmpty() && label.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' || it == '-' }
+        }
+    }
 
     /** NFKC 归一：全角字符折半角，兼容全角 ＠ 与全角字母数字。 */
     private fun normalize(raw: String): String = Normalizer.normalize(raw, Normalizer.Form.NFKC)
 
-    /** 单条消息的最大提及数，防病态输入导致 O(n·m) 退化。 */
+    /**
+     * 单条消息的最大提及数。
+     *
+     * 两层用途：第一轮的 per-candidate guard 防"同一个名字重复一万次"的 O(n·m) 退化；
+     * 收尾处的总量截断防"粘贴含成百上千个 @token 的日志"把结果集与系统提示顶爆。
+     */
     private const val MAX_MENTIONS_PER_MESSAGE = 64
 }

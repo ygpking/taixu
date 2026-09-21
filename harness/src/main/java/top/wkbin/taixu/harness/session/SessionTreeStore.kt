@@ -31,7 +31,10 @@ class SessionTreeStore @Inject constructor(
     internal val laneLockCountForTest: Int get() = laneLocks.size
 
     private fun laneLock(sessionId: String, laneName: String): Mutex =
-        laneLocks.getOrPut("$sessionId$LANE_LOCK_SEPARATOR$laneName") { Mutex() }
+        // computeIfAbsent 而非 getOrPut：stdlib 的 getOrPut 是 get→null→invoke→put
+        // 四步（无 putIfAbsent/computeIfAbsent 语义），两个并发首访者会各建一把 Mutex，
+        // map 只留后一把——互斥当场失效，moveLane 与 appendToLane 可互相覆盖分支游标。
+        laneLocks.computeIfAbsent("$sessionId$LANE_LOCK_SEPARATOR$laneName") { Mutex() }
 
     suspend fun ensureMainLane(sessionId: String) {
         repository.ensureLane(sessionId, MAIN_LANE)
