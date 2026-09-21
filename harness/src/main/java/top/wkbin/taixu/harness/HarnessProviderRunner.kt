@@ -53,7 +53,13 @@ class HarnessProviderRunner @Inject constructor(
         } else {
             model
         }
-        capabilityWriter.writeIfMentioned(sessId, latestUserMessage?.id.orEmpty(), mentionedNames, effectiveModel)
+        capabilityWriter.writeIfMentioned(
+            sessId,
+            latestUserMessage?.id.orEmpty(),
+            mentionedNames,
+            effectiveModel,
+            latestUserText,
+        )
         return effectiveModel
     }
 
