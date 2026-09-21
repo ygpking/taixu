@@ -62,8 +62,12 @@ class AgentForegroundService : Service() {
     private val activeNotifSessionIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
     /** 记录每个会话开始运行的时间戳，用于通知中显示已运行时长。 */
     private val sessionStartTimes: MutableMap<String, Long> = ConcurrentHashMap()
-    /** 定时刷新通知的 Job，运行期间每 2 秒更新一次，降低被系统判定为闲置服务的概率。 */
+    /** 定时刷新通知的 Job，运行期间周期性更新一次，降低被系统判定为闲置服务的概率。 */
     private var notificationRefreshJob: Job? = null
+    /** 唤醒锁续期 Job：长任务期间周期重置锁超时，避免中途掉落。 */
+    private var lockRefreshJob: Job? = null
+    /** 上次成功发布的常驻通知内容指纹，用于跳过内容未变化的重复 notify。 */
+    private val lastNotifKeys: MutableMap<String, String> = ConcurrentHashMap()
 
     override fun onCreate() {
         super.onCreate()
@@ -114,6 +118,7 @@ class AgentForegroundService : Service() {
                             val runningEntries = runStates.filter { it.value == SessionRunState.RUNNING }
                             if (runningEntries.isNotEmpty()) {
                                 acquireProcessLock()
+                                startProcessLockRefresh()
                                 val now = System.currentTimeMillis()
                                 runningEntries.forEach { (sessionId, _) ->
                                     activeNotifSessionIds.add(sessionId)
@@ -124,12 +129,19 @@ class AgentForegroundService : Service() {
                                     latestSessionStatuses[sessionId] = statusText
                                     val startTime = sessionStartTimes[sessionId] ?: now
                                     val elapsedSeconds = (now - startTime) / 1000L
-                                    val notif = sessionNotification(sessionId, sessionTitle, statusText, elapsedSeconds)
-                                    safeNotify(notifId, notif)
+                                    // 与刷新循环共用内容指纹：状态文本未变时不重复 notify，
+                                    // 避免处理器的每个中间状态都触发一次通知栏重绘。
+                                    val key = "$sessionTitle|$statusText|${elapsedSeconds / 60}"
+                                    if (lastNotifKeys[sessionId] != key) {
+                                        lastNotifKeys[sessionId] = key
+                                        val notif = sessionNotification(sessionId, sessionTitle, statusText, elapsedSeconds)
+                                        safeNotify(notifId, notif)
+                                    }
                                 }
                                 startNotificationRefresh()
                             } else {
                                 stopNotificationRefresh()
+                                stopProcessLockRefresh()
                                 val previouslyRunning = activeNotifSessionIds.toList()
                                 // 通知 id 依赖 activeNotifSessionIds 的成员（primary 会话特判为
                                 // PRIMARY_NOTIFICATION_ID）。必须在 clear() **之前**算好：
@@ -162,6 +174,7 @@ class AgentForegroundService : Service() {
 
     override fun onDestroy() {
         stopNotificationRefresh()
+        stopProcessLockRefresh()
         releaseProcessLock()
         serviceScope.cancel()
         super.onDestroy()
@@ -184,6 +197,11 @@ class AgentForegroundService : Service() {
                     val sessionTitle = runCatching { sessionDao.findById(sessionId)?.title }
                         .getOrNull() ?: getString(R.string.taixu_agent_default_title)
                     val currentStatus = latestSessionStatuses[sessionId] ?: getString(R.string.taixu_agent_thinking)
+                    // 内容指纹：标题 + 状态 + 分钟级时长。秒级数字抖动不触发重发，
+                    // 避免"看起来在跑"的通知每几十秒无意义地重绘一次系统通知栏。
+                    val key = "$sessionTitle|$currentStatus|${elapsedSeconds / 60}"
+                    if (lastNotifKeys[sessionId] == key) return@forEach
+                    lastNotifKeys[sessionId] = key
                     val notif = sessionNotification(
                         sessionId = sessionId,
                         title = sessionTitle,
@@ -200,6 +218,7 @@ class AgentForegroundService : Service() {
         notificationRefreshJob?.cancel()
         notificationRefreshJob = null
         latestSessionStatuses.clear()
+        lastNotifKeys.clear()
     }
 
     private fun acquireProcessLock() {
@@ -210,6 +229,27 @@ class AgentForegroundService : Service() {
                 .also { it.acquire(LOCK_TIMEOUT_MS) }
             Log.i(TAG, "Acquired partial wake lock for agent execution")
         }.onFailure { Log.w(TAG, "获取进程锁失败", it) }
+    }
+
+    /**
+     * 长任务续期：Hold 期间周期性重新计时，避免超过 [LOCK_TIMEOUT_MS] 后锁自动掉落，
+     * 导致长时间运行的 Agent 在息屏中途被 CPU 休眠冻结。
+     */
+    private fun startProcessLockRefresh() {
+        if (lockRefreshJob?.isActive == true) return
+        lockRefreshJob = serviceScope.launch(Dispatchers.IO) {
+            while (isActive) {
+                delay(LOCK_REFRESH_INTERVAL_MS)
+                // 先释放再获取以重置超时计时；释放/获取之间有极短空窗，可忽略。
+                releaseProcessLock()
+                acquireProcessLock()
+            }
+        }
+    }
+
+    private fun stopProcessLockRefresh() {
+        lockRefreshJob?.cancel()
+        lockRefreshJob = null
     }
 
     private fun releaseProcessLock() {
@@ -357,8 +397,11 @@ class AgentForegroundService : Service() {
         private const val TAG = "AgentForegroundService"
         private const val WAKE_LOCK_TAG = "taixu:agent-execution"
         private const val LOCK_TIMEOUT_MS = 4 * 60 * 60 * 1000L
-        /** 运行期间通知刷新间隔：2 秒，平滑更新状态与运行时长。 */
-        private const val NOTIFICATION_REFRESH_INTERVAL_MS = 2_000L
+        /** 锁续期间隔：略小于单次超时，保证超长任务（>4h）全程持锁不中断。 */
+        private const val LOCK_REFRESH_INTERVAL_MS = 3 * 60 * 60 * 1000L
+        /** 运行期间通知刷新间隔：15 秒。状态与运行时长展示本就到分钟级即可，
+         *  配合内容指纹去重，可避免 2 秒一次的高频重绘持续唤醒 SystemUI。 */
+        private const val NOTIFICATION_REFRESH_INTERVAL_MS = 15_000L
 
         fun start(context: Context, sessionId: String? = null) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&

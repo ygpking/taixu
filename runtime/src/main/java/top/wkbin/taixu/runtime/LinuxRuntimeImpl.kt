@@ -34,8 +34,14 @@ import javax.inject.Singleton
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -70,6 +76,52 @@ class LinuxRuntimeImpl @Inject constructor(
     private val initializeMutex = Mutex()
     private val storageActivities = StorageActivityGate()
     private val interactiveSessions = ConcurrentHashMap<LinuxSession, String>()
+
+    /**
+     * 每个活跃会话是否计入"沙箱忙碌"。
+     * 交互式终端/工具会话为 true（会话在=用户在用）；MCP STDIO 等长连接协议会话为 false，
+     * 其真实忙碌由 [_transientActivityCount] 在请求-响应窗口内显式上报。
+     */
+    private val sessionCountsAsBusy = ConcurrentHashMap<LinuxSession, Boolean>()
+
+    /** 计忙会话数量信号：trackInteractiveSession/close 时更新，用于合成 sandboxBusy。 */
+    private val _interactiveSessionCount = MutableStateFlow(0)
+
+    /**
+     * 瞬态活动计数（MCP 请求-响应窗口等）：>0 即视为沙箱忙碌。
+     * 常驻协议长连接本身不计忙，只有请求真的在飞时才通过 [withSandboxActivity] 抬高该计数。
+     */
+    private val _transientActivityCount = MutableStateFlow(0)
+    private val sandboxScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /**
+     * 沙箱是否有任务在跑：命令/构建（storageActivities）、后台服务进程（processRegistry）、
+     * 计忙的交互式会话（_interactiveSessionCount）、瞬态请求活动（_transientActivityCount）、
+     * 系统安装/初始化（RuntimeState.Initializing）任一成立即为 true。
+     * 前台保活服务据此按需持锁，空闲时释放 CPU 唤醒锁以省电。
+     */
+    override val sandboxBusy: StateFlow<Boolean> = combine(
+        storageActivities.activeCount,
+        processRegistry.activeCount,
+        _interactiveSessionCount,
+        _transientActivityCount,
+        _state,
+    ) { activities, processes, sessions, transient, state ->
+        activities > 0 || processes > 0 || sessions > 0 || transient > 0 || state is RuntimeState.Initializing
+    }.stateIn(sandboxScope, SharingStarted.Eagerly, false)
+
+    override suspend fun <T> withSandboxActivity(block: suspend () -> T): T {
+        _transientActivityCount.update { it + 1 }
+        try {
+            return block()
+        } finally {
+            _transientActivityCount.update { it - 1 }
+        }
+    }
+
+    private fun refreshInteractiveSessionCount() {
+        _interactiveSessionCount.value = sessionCountsAsBusy.values.count { it }
+    }
 
     override fun refreshInstalledDistros() {
         // 兑现“刷新”语义：结构性变更后由各调用方走到这里，统一失效路径管理器缓存
@@ -582,7 +634,7 @@ class LinuxRuntimeImpl @Inject constructor(
                     cleanup = { prepared.markerFile.delete() },
                 )
             }
-            trackInteractiveSession(session, prepared.distroId)
+            trackInteractiveSession(session, prepared.distroId, prepared.effectiveConfig.countsAsSandboxBusy)
         } catch (throwable: Throwable) {
             prepared.markerFile.delete()
             throw throwable
@@ -792,7 +844,11 @@ class LinuxRuntimeImpl @Inject constructor(
         }
     }
 
-    private fun trackInteractiveSession(session: LinuxSession, distroId: String): LinuxSession {
+    private fun trackInteractiveSession(
+        session: LinuxSession,
+        distroId: String,
+        countsAsSandboxBusy: Boolean = true,
+    ): LinuxSession {
         val tracked = object : LinuxSession {
             override val pid: Long? get() = session.pid
             override val isAlive: Boolean get() = session.isAlive
@@ -807,10 +863,14 @@ class LinuxRuntimeImpl @Inject constructor(
                     session.close()
                 } finally {
                     interactiveSessions.remove(this)
+                    sessionCountsAsBusy.remove(this)
+                    refreshInteractiveSessionCount()
                 }
             }
         }
         interactiveSessions[tracked] = distroId
+        sessionCountsAsBusy[tracked] = countsAsSandboxBusy
+        refreshInteractiveSessionCount()
         return tracked
     }
 

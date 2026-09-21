@@ -33,9 +33,12 @@ class LinuxMcpStdioChannelFactory @Inject constructor(
                 environment = server.env,
                 commandLine = commandBuilder.commandLine(server),
                 allowSttyResize = false,
+                // 协议长连接不按"会话存活"计忙：仅请求在飞时经 withSandboxActivity 上报忙碌，
+                // 否则常驻 MCP 连接会把沙箱唤醒锁永久钉住（详见 SessionConfig.countsAsSandboxBusy）。
+                countsAsSandboxBusy = false,
             ),
         )
-        return LinuxMcpStdioChannel(server.id, session)
+        return LinuxMcpStdioChannel(server.id, session, runtime = linuxRuntime)
     }
 }
 
@@ -45,7 +48,11 @@ class LinuxMcpStdioChannel(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     private val maxFrameChars: Int = McpStdioTransport.MAX_FRAME_CHARS,
     private val bufferCapacity: Int = McpStdioTransport.MAX_BUFFERED_LINES,
+    /** 用于上报请求-响应窗口的沙箱瞬态活动；内存替身可为 null（此时不改变忙碌信号）。 */
+    private val runtime: LinuxRuntime? = null,
 ) : McpStdioChannel {
+    override suspend fun <T> withSandboxActivity(block: suspend () -> T): T =
+        runtime?.withSandboxActivity(block) ?: block()
     // 必须无界：两次请求之间没有消费者，有界通道一旦被服务端自发输出
     // （进度通知/日志误写 stdout/banner 重放）填满，send 挂起 → 无人再读 PTY →
     // 子进程写 stdout 阻塞、整个 server 冻结，下一次请求只能等 600s 超时。

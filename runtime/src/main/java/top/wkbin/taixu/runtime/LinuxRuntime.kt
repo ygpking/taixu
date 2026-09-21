@@ -11,12 +11,30 @@ import top.wkbin.taixu.runtime.shell.ProcessType
 import top.wkbin.taixu.runtime.shell.SessionConfig
 import top.wkbin.taixu.runtime.shell.ShellCommand
 import java.io.File
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
 interface LinuxRuntime {
     val state: StateFlow<RuntimeState>
     val activeDistroId: StateFlow<String>
     val installedDistros: StateFlow<List<InstalledDistro>>
+
+    /**
+     * 沙箱当前是否正有任务在跑（命令执行、构建、会诊会话、后台服务均在统计内）。
+     * 前台保活服务据此按需持有 CPU 唤醒锁：有任务才持锁，空闲即释放，
+     * 避免息屏后 CPU 被长期钉住无法进入低功耗。
+     * 默认实现恒为 false，测试替身无需感知。
+     */
+    val sandboxBusy: StateFlow<Boolean> get() = ALWAYS_IDLE
+
+    /**
+     * 上报一段"瞬态沙箱活动"（典型场景：MCP 请求-响应窗口）。
+     * 活动期间 [sandboxBusy] 为 true，前台保活服务据此重新持锁；block 结束即撤销。
+     * 用于补齐"长连接协议会话不计常驻忙碌、但处理请求时确实要占用沙箱"的中间态：
+     * 会话本身挂着不算忙，只有请求真的在飞时才算忙。
+     * 默认实现直接执行 block，测试替身无需感知。
+     */
+    suspend fun <T> withSandboxActivity(block: suspend () -> T): T = block()
 
     suspend fun initialize(request: RuntimeInstallRequest = RuntimeInstallRequest("ubuntu")): AppResult<Unit>
     suspend fun restoreInstalledState(): Boolean
@@ -72,3 +90,6 @@ interface LinuxRuntime {
     fun rootfsVersion(distroId: String? = null): String? = null
     fun workspacePath(): File
 }
+
+/** 默认空闲信号：测试替身等实现无需感知，恒为 false。 */
+private val ALWAYS_IDLE: StateFlow<Boolean> = MutableStateFlow(false)
