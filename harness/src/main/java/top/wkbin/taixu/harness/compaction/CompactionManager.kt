@@ -76,6 +76,15 @@ class CompactionManager @Inject constructor(
         model: ModelConfig? = null,
         archiveEnabled: Boolean = false,
         workspacePath: String? = null,
+        /**
+         * 归档前的会话存在性复核。压缩的主干是一次 LLM 调用（数秒），
+         * 期间用户可能已经删掉这个会话——[HarnessLoop.deleteSession] 只 join
+         * 自己启动的 runLoop，viewModelScope 里的切换压缩不在其中。
+         * 不复核的后果：归档目录在删除清理**之后**又被建回来（会话 id 不复用，
+         * 于是永久残留），并往已删除的会话写孤儿 lane 行。
+         * 调用方不传时退化为 `{ true }`，行为与从前一致。
+         */
+        sessionStillExists: suspend () -> Boolean = { true },
     ): CompactedContext {
         require(keepFromIndex in 1..context.messages.size) { "Compaction must remove at least one message" }
         val lane = repository.ensureLane(sessionId, laneName)
@@ -120,7 +129,7 @@ class CompactionManager @Inject constructor(
         // 并在摘要末尾附「原文索引」，让 agent 事后能用 read/grep 回捞精确细节。
         // 归档失败返回 null，不影响压缩主流程（见 ContextArchive 的容错设计）。
         val archiveId = ContextArchive.archiveId(now, collapsed.size)
-        val archivedRelativePath = if (archiveEnabled) {
+        val archivedRelativePath = if (archiveEnabled && sessionStillExists()) {
             ContextArchive.archive(
                 workspacePath = workspacePath,
                 sessionId = sessionId,

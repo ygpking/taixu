@@ -217,16 +217,20 @@ class McpHttpTransport @Inject constructor(
 
     /** B10: 禁用/删除 server 时关闭其会话（含 legacy SSE 长连接）并清冷却记录 */
     suspend fun closeSession(serverId: String) {
-        sessionMutexes.getOrPut(serverId) { Mutex() }.withLock {
+        // 先把锁取出来再进临界区：移除动作必须在锁内完成，否则
+        // 「sessions 已清、锁还在 map 外」的窗口里，并发的 ensureSession 会 getOrPut 出
+        // 第二把锁，同一 server 并行建会话，sessions[serverId] 被覆盖、旧 SSE 连接泄漏。
+        val mutex = sessionMutexes.getOrPut(serverId) { Mutex() }
+        mutex.withLock {
             downUntil.remove(serverId)
             sessions.remove(serverId)?.legacy?.close()
+            // 会话互斥锁也要随 server 关闭回收：`sessionMutexes` 以 serverId（含用户自建
+            // server 的 UUID）为键，只删 sessions 不删锁的话，每删除一个 MCP server 就永久
+            // 留下一个 Mutex —— 与 SessionTreeStore.laneLocks 同一类泄漏。
+            // remove(key, value) 精确删除：仅当 map 里仍是本次持有的这把锁时才摘，
+            // 不会误摘并发方刚建好的新锁。
+            sessionMutexes.remove(serverId, mutex)
         }
-        // 会话互斥锁也要随 server 关闭回收：`sessionMutexes` 以 serverId（含用户自建 server 的 UUID）为键，
-        // 只删 sessions 不删锁的话，每删除一个 MCP server 就永久留下一个 Mutex ——
-        // 与 SessionTreeStore.laneLocks 同一类泄漏。
-        // 放在锁外移除：持有中的锁若从 map 摘掉，并发的 getOrPut 会造出第二把锁，
-        // 让"同一 server 串行化"的保证当场失效。
-        sessionMutexes.remove(serverId)
     }
 
     private fun dropSession(serverId: String, session: HttpSession) {

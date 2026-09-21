@@ -297,6 +297,12 @@ internal class AndroidHttpExchange(
     private val output = BufferedOutputStream(socket.getOutputStream())
     val responseBody: OutputStream = output
 
+    /**
+     * 对端地址（认证退避按来源计次需要）。accept 得到的 socket 必有远端地址；
+     * 取不到时返回 null，调用方按「未知来源」归一处理。
+     */
+    val remoteAddress: String? = runCatching { socket.inetAddress?.hostAddress }.getOrNull()
+
     @Volatile
     private var responseStarted = false
     private val closed = AtomicBoolean(false)

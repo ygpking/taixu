@@ -84,7 +84,17 @@ class SystemPromptBuilder @Inject constructor(
             mentionedNames + MentionExtractor.parse(latestUserMessage, knownSkillNames)
         }
         val selectedSkills = selectSkills(allSkills, effectiveMentions)
-        val missedMentions = selectUnmatchedMentions(allSkills, effectiveMentions)
+        // 「未匹配提及」的已知名单必须覆盖全部可 @ 实体，而不只是技能：
+        // MCP 服务与子智能体同样是 @提及的一等公民（HarnessProviderRunner 用同一份
+        // mentionedNames 挂载 MCP 工具）。只比对技能时，`@浏览器` 这类合法 MCP 提及
+        // 每轮都会被判成"未匹配到任何已启用技能"注入系统提示——既噪声，
+        // 还会诱导模型反过来要求用户"修正拼写"。
+        val otherKnownNames = runCatching {
+            val mcpNames = mcpServerRepository.servers.first().flatMap { listOf(it.id, it.name) }
+            val subagentNames = subagentRepository.enabledProfiles().flatMap { listOf(it.id, it.name) }
+            (mcpNames + subagentNames).filter { it.isNotBlank() }
+        }.getOrDefault(emptyList())
+        val missedMentions = selectUnmatchedMentions(allSkills, effectiveMentions, otherKnownNames)
         val skippedSkills = mutableListOf<String>()
 
         val skillSection = buildString {
@@ -120,7 +130,13 @@ class SystemPromptBuilder @Inject constructor(
                 if (isNotEmpty()) append("\n\n")
                 append("## 未匹配的 @提及\n")
                 append("以下提及未匹配到任何已启用技能，请确认技能名是否正确（拼写/大小写/全角）：")
-                append(missedMentions.joinToString("、") { "`$it`" })
+                // 渲染上限：粘贴进来的日志/差异里可能带成百上千个 @token，
+                // 全额罗列会把系统提示顶爆（fitSystemPrompt 只能从尾部整段砍）。
+                val shown = missedMentions.take(MAX_MISSED_MENTIONS_RENDERED)
+                append(shown.joinToString("、") { "`$it`" })
+                if (missedMentions.size > shown.size) {
+                    append("（等 ${missedMentions.size} 项）")
+                }
             }
             // 借鉴 OpenMinis 的技能模型：元数据（名称+一句话描述）常驻上下文供模型
             // 自主匹配，正文经 load_skill 工具按需加载——不再要求用户必须 @提及。
@@ -435,26 +451,6 @@ class SystemPromptBuilder @Inject constructor(
         }
     }
 
-    /** 提及了但没有任何已启用技能匹配的名称集合（用于显式提示，避免静默失效）。 */
-    internal fun selectUnmatchedMentions(
-        allSkills: List<AgentSkill>,
-        mentionedNames: Set<String>,
-    ): List<String> {
-        if (mentionedNames.isEmpty()) return emptyList()
-        val known = allSkills
-            .filter { it.isEnabled }
-            .flatMap { listOf(it.name, it.id, it.triggerCommand?.removePrefix("/").orEmpty()) }
-            .filter { it.isNotBlank() }
-            .mapTo(mutableSetOf()) { normalizeMentionKey(it) }
-        return mentionedNames
-            .filter { normalizeMentionKey(it) !in known }
-            .sorted()
-    }
-
-    /** 技能匹配键归一：去首尾空白 + NFKC 折半角 + lowercase，消除全角/大小写导致的静默失配。 */
-    private fun normalizeMentionKey(raw: String): String =
-        java.text.Normalizer.normalize(raw.trim(), java.text.Normalizer.Form.NFKC).lowercase()
-
     private suspend fun buildSubagentGuidance(toolCallMode: ToolCallMode): String {
         if (toolCallMode == ToolCallMode.DISABLED) return ""
         val departmentCounts = runCatching {
@@ -604,6 +600,39 @@ class SystemPromptBuilder @Inject constructor(
 
 
 /**
+ * 提及了但没有任何已启用技能匹配的名称集合（用于显式提示，避免静默失效）。
+ *
+ * 已知名单 = 已启用技能 + [otherKnownNames]（MCP 服务名/id、子智能体名/id）。
+ * **为什么必须把 MCP 与子智能体算进来**：`@` 提及在本项目是一等公民，
+ * `HarnessProviderRunner` 用同一份 `mentionedNames` 决定当轮挂载哪些 MCP 工具。
+ * 只比对技能时，`@浏览器` 这类合法 MCP 提及每轮都会被判成"未匹配到任何已启用技能"
+ * 注入系统提示——既产生噪声，还会诱导模型反过来要求用户"修正拼写"。
+ *
+ * 做成顶层函数（与 [renderSkillCatalog] 同一手法）：纯逻辑才能被 JVM 单测
+ * 直接覆盖，不必为了一个判定去实例化带 10 个依赖的 [SystemPromptBuilder]。
+ */
+internal fun selectUnmatchedMentions(
+    allSkills: List<AgentSkill>,
+    mentionedNames: Set<String>,
+    otherKnownNames: Collection<String> = emptyList(),
+): List<String> {
+    if (mentionedNames.isEmpty()) return emptyList()
+    val known = allSkills
+        .filter { it.isEnabled }
+        .flatMap { listOf(it.name, it.id, it.triggerCommand?.removePrefix("/").orEmpty()) }
+        .plus(otherKnownNames)
+        .filter { it.isNotBlank() }
+        .mapTo(mutableSetOf()) { normalizeMentionKey(it) }
+    return mentionedNames
+        .filter { normalizeMentionKey(it) !in known }
+        .sorted()
+}
+
+/** 技能匹配键归一：去首尾空白 + NFKC 折半角 + lowercase，消除全角/大小写导致的静默失配。 */
+internal fun normalizeMentionKey(raw: String): String =
+    java.text.Normalizer.normalize(raw.trim(), java.text.Normalizer.Form.NFKC).lowercase()
+
+/**
  * 可用技能目录（借鉴 OpenMinis 的技能模型）：
  * 启用技能的「名称 + 一句话描述」以极低成本常驻系统提示，模型自主判断当前请求
  * 是否命中某个技能，命中后调用 load_skill 拉取完整指导规则——正文不再要求
@@ -648,6 +677,14 @@ private const val MAX_SKILL_BODY_CHARS = 8_000
 
 /** 所有 @提及 技能正文的累计上限（字符）：防止多技能 @ 撑爆系统提示预算。 */
 private const val MAX_SKILL_BODY_TOTAL_CHARS = 24_000
+
+/**
+ * 「未匹配的 @提及」段最多罗列几项。
+ *
+ * 用户粘贴的日志/差异里可能带成百上千个 @token（如 `@a @b @c …`），
+ * 全额罗列会把系统提示顶爆；超出部分折叠成"等 N 项"。
+ */
+private const val MAX_MISSED_MENTIONS_RENDERED = 8
 
 /**
  * 决定技能目录段（skillSection）是否需要作为兜底补注入。

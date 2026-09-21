@@ -18,12 +18,17 @@ internal fun buildMentionRegex(knownNames: List<String>): Regex {
     // 与 MentionExtractor 同一套：已知名单最长优先 + 邮箱/词边界保护 + 硬终止符。
     // 终止符直接复用后端常量，不再各写一份——两处不一致时会出现
     // 「UI 高亮了、后端没解析」的静默漂移。
+    //
+    // 尾部边界断言同样必须与后端第一轮一致：少了它，已知名 "Git" 会吞掉 "@GitHub"
+    // 的前缀（UI 高亮成 Git 提及），而后端因尾部不是终止符不匹配、改按通用轮解析成
+    // "github"——用户看到的高亮与实际生效的技能不是同一个。
+    // 对通用分支无害：`[^boundary]+` 本来就只能停在边界或行尾，断言恒真。
     val body = if (escaped.isNotEmpty()) {
         """${escaped.joinToString("|")}|$generic"""
     } else {
         generic
     }
-    return Regex("""(?<![\w.+-])@($body)""")
+    return Regex("""(?<![\w.+-])@($body)(?=$|[${MentionExtractor.MENTION_HARD_BOUNDARY}])""")
 }
 
 /** 为文本中的 @能力 实体添加自适应半透明高亮样式（支持带空格全称） */

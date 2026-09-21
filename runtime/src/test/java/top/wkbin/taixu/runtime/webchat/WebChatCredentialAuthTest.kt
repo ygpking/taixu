@@ -110,4 +110,25 @@ class WebChatCredentialAuthTest {
         assertEquals(WebChatCredentialAuth.SESSION_COOKIE, WebChatBridgeServer.SESSION_COOKIE)
         assertNull(WebChatCredentialAuth.bearerOf(null))
     }
+
+    @Test
+    fun `matches is constant time in shape and rejects empty on both sides`() {
+        // 常时比较走 sha256 + MessageDigest.isEqual：正确码必须命中，错误码必须拒绝，
+        // 且任一侧为空都不得放行（不存在"空对空"降级路径）。
+        assertTrue(WebChatCredentialAuth.matches(pin, pin))
+        assertFalse(WebChatCredentialAuth.matches("000000", pin))
+        assertFalse(WebChatCredentialAuth.matches(null, pin))
+        assertFalse(WebChatCredentialAuth.matches(pin, null))
+        assertFalse(WebChatCredentialAuth.matches("", ""))
+        // 与 HostBridgeAuth 同一口径：不同长度的候选也不得因长度泄露而放行
+        assertFalse(WebChatCredentialAuth.matches("1234567", pin))
+        assertFalse(WebChatCredentialAuth.matches("12345", pin))
+    }
+
+    @Test
+    fun `authentication goes through the constant time matcher`() {
+        // isAuthenticated 必须复用 matches（而不是回到 String.equals 的早退比较）
+        assertTrue(auth(authorization = "Bearer $pin"))
+        assertFalse(auth(authorization = "Bearer 12345"))
+    }
 }

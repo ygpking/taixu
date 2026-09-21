@@ -74,8 +74,44 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   return payload as T;
 }
 
-export function workspaceDownloadUrl(path: string): string {
-  return `${API_ROOT}/workspaces/download?path=${encodeURIComponent(path)}&token=${encodeURIComponent(authToken)}`;
+/**
+ * 下载工作区文件。
+ *
+ * 曾经这里是 `workspaceDownloadUrl()`：把配对码拼进 `?token=` 再交给 `<a href>`，
+ * 于是配对码会落进浏览器历史、Referer 与下载记录 —— 与「URL 不再出现配对码」
+ * 的迁移目标自相矛盾。改为带 `Authorization` 头的 fetch + Blob 落地：
+ * 凭据只走请求头，不出现在任何 URL 里。
+ */
+export async function downloadWorkspaceFile(path: string): Promise<Blob> {
+  const url = new URL(`${API_ROOT}/workspaces/download`, window.location.origin);
+  url.searchParams.set("path", path);
+  const response = await fetch(url, {
+    method: "GET",
+    credentials: "same-origin",
+    headers: {
+      Accept: "*/*",
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+    },
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(text || `下载失败 (${response.status})`);
+  }
+  return response.blob();
+}
+
+/** 把 Blob 落成本地文件（不经过任何服务端跳转）。 */
+export function saveBlobAs(blob: Blob, filename: string): void {
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = filename || "download";
+  anchor.rel = "noopener";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  // 立刻回收：延迟回收会让 Blob 在部分浏览器里无法释放。
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
 }
 
 export function eventsUrl(): string {

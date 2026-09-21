@@ -48,16 +48,6 @@ object ContextArchive {
     private const val MAX_MESSAGE_CHARS = 20_000
 
     /**
-     * 把 [messages] 原文写入 `<workspace>/.taixu-context/<sessionId>/<时间戳>-<序号>-<随机>.md`。
-     *
-     * @param workspacePath 工作区绝对路径；为空/不存在时**不落盘**，返回 null（不报错）。
-     * @param sessionId 会话 id，用作子目录名（同时便于归属排查）。
-     * @param messages 被折叠/截断掉的原始消息（按时间顺序）。
-     * @param reason 触发归档的原因文案（写进文件头，便于人工排查）。
-     * @return 成功时返回**工作区相对路径**（如 `.taixu-context/abc/1726-1.md`），供摘要索引用；
-     *   失败返回 null。
-     */
-    /**
      * 删除某会话的归档目录 `<workspace>/.taixu-context/<sessionId>/`。
      *
      * 为什么需要它：`trim` 只做**单会话内**的体积控制（保留最近 20 个文件），
@@ -76,10 +66,19 @@ object ContextArchive {
     fun deleteSessionArchive(workspacePath: String?, sessionId: String): Boolean {
         if (workspacePath.isNullOrBlank() || sessionId.isBlank()) return false
         return try {
-            val dir = File(File(workspacePath, DIR_NAME), safeSessionId(sessionId))
+            val root = File(workspacePath, DIR_NAME)
+            val dir = File(root, safeSessionId(sessionId))
             if (!dir.exists()) return false
             val deleted = dir.deleteRecursively()
-            if (deleted) logger.info("已删除会话归档目录：${dir.absolutePath}")
+            if (deleted) {
+                logger.info("已删除会话归档目录：${dir.absolutePath}")
+                // 只剩空根目录时一并删掉：`.taixu-context/` 本身对用户没有信息量，
+                // 留着只是工作区里的一个空壳。确认 listFiles() 为空才删，
+                // 绝不碰还有其他会话在用的根目录。
+                if (root.listFiles().isNullOrEmpty()) {
+                    root.delete()
+                }
+            }
             deleted
         } catch (throwable: Throwable) {
             logger.warning("删除会话归档目录失败（不影响会话删除）：${throwable.message}")
@@ -94,6 +93,16 @@ object ContextArchive {
     internal fun safeSessionId(sessionId: String): String =
         sessionId.filter { it.isLetterOrDigit() || it == '-' || it == '_' }.ifBlank { "session" }
 
+    /**
+     * 把 [messages] 原文写入 `<workspace>/.taixu-context/<sessionId>/<时间戳>-<序号>-<随机>.md`。
+     *
+     * @param workspacePath 工作区绝对路径；为空/不存在时**不落盘**，返回 null（不报错）。
+     * @param sessionId 会话 id，用作子目录名（同时便于归属排查）。
+     * @param messages 被折叠/截断掉的原始消息（按时间顺序）。
+     * @param reason 触发归档的原因文案（写进文件头，便于人工排查）。
+     * @return 成功时返回**工作区相对路径**（如 `.taixu-context/abc/1726-1.md`），供摘要索引用；
+     *   失败返回 null。
+     */
     fun archive(
         workspacePath: String?,
         sessionId: String,

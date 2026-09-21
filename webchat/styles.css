@@ -1808,6 +1808,29 @@ button.conversation-section-header:hover {
   color: var(--accent);
 }
 
+/* 下载从 <a href> 改为 <button>（凭据走 Authorization 头，不再进 URL），
+   需要显式抹掉 button 的默认边框/背景，才能复用 .quiet-link 的视觉。 */
+button.quiet-link {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+button.quiet-link:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.workspace-download-error {
+  color: var(--danger, #d64545);
+  font-size: 10px;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .primary-small-button {
   border: 0;
   background: var(--accent);

@@ -1,4 +1,5 @@
-import { workspaceDownloadUrl } from "../api";
+import { useState } from "react";
+import { downloadWorkspaceFile, saveBlobAs } from "../api";
 import { formatBytes } from "../format";
 import type { WorkspaceItem } from "../types";
 import { Icon } from "./Icon";
@@ -30,6 +31,23 @@ export function ContextPane({
   onWorkspaceContent,
   onWorkspaceSave,
 }: ContextPaneProps) {
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState("");
+
+  const handleDownload = async () => {
+    if (!workspaceFilePath || downloading) return;
+    setDownloading(true);
+    setDownloadError("");
+    try {
+      const blob = await downloadWorkspaceFile(workspaceFilePath);
+      saveBlobAs(blob, workspaceFilePath.split("/").pop() || "workspace-file");
+    } catch (error) {
+      setDownloadError(error instanceof Error ? error.message : "下载失败");
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   return (
     <aside className="context-pane">
       <div className="mobile-context-header">
@@ -50,10 +68,17 @@ export function ContextPane({
           </div>
           <div className="header-actions">
             {workspaceFilePath && (
-              <a className="quiet-link" href={workspaceDownloadUrl(workspaceFilePath)} title="下载文件">
-                <Icon name="download" size={15} /><span>下载</span>
-              </a>
+              <button
+                className="quiet-link"
+                type="button"
+                title="下载文件"
+                disabled={downloading}
+                onClick={handleDownload}
+              >
+                <Icon name="download" size={15} /><span>{downloading ? "下载中…" : "下载"}</span>
+              </button>
             )}
+            {downloadError && <span className="workspace-download-error">{downloadError}</span>}
             <button className="quiet-button" type="button" onClick={onWorkspaceRefresh}>
               <Icon name="refresh" size={14} /><span>刷新</span>
             </button>
