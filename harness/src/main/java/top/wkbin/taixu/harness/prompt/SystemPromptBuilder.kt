@@ -22,6 +22,7 @@ import top.wkbin.taixu.harness.SubagentDepartmentIndexRenderer
 import top.wkbin.taixu.harness.ToolCallMode
 import top.wkbin.taixu.harness.WorkspaceFileAccess
 import top.wkbin.taixu.harness.mcp.McpToolApiName
+import top.wkbin.taixu.harness.skill.SkillMatcher
 
 /**
  * Agent 系统提示词的统一构建器。
@@ -97,11 +98,25 @@ class SystemPromptBuilder @Inject constructor(
         val missedMentions = selectUnmatchedMentions(allSkills, effectiveMentions, otherKnownNames)
         val skippedSkills = mutableListOf<String>()
 
+        // 机械预匹配（治本核心）：不再指望模型"自觉扫目录"，而由系统按任务文本做确定性判定，
+        // 命中即**直接注入技能正文**（与 @提及 走同一条注入通道）。
+        // 这样"按需加载"这一步不再依赖模型主动发起 load_skill 工具调用——彻底消除
+        // "提示里写着要扫、模型读过即忘、且遗漏无声无息" 的缺陷。
+        // 未 @提及 且正文已注入的技能从目录中排除，避免目录里出现"已生效却仍让模型再加载"的重复。
+        val autoMatchedSkills = selectAutoMatchedSkills(
+            allSkills = allSkills,
+            latestUserMessage = latestUserMessage,
+            toolCallMode = toolCallMode,
+            excludedIds = selectedSkills.mapTo(mutableSetOf()) { it.id },
+        )
+        val autoMatchedIds = autoMatchedSkills.mapTo(mutableSetOf()) { it.id }
+        val injectedSkills = selectedSkills + autoMatchedSkills
+
         val skillSection = buildString {
-            if (selectedSkills.isNotEmpty()) {
+            if (injectedSkills.isNotEmpty()) {
                 append("## 当前生效的专精技能指导规则 (Active Skills)\n\n")
                 var used = 0
-                val rendered = selectedSkills.mapNotNull { skill ->
+                val rendered = injectedSkills.mapNotNull { skill ->
                     val body = skill.systemPrompt.trim()
                     // 正文护栏：单技能超限则截断并标注；累计超预算则跳过并登记，避免少数巨型技能
                     // 把系统提示顶到 60% 上限后从尾部砍掉 recall/workspace 等必备段落。
@@ -116,11 +131,20 @@ class SystemPromptBuilder @Inject constructor(
                         body
                     }
                     used += clipped.length
-                    "### [专精技能] " + skill.name + " (" + skill.category + ")\n" + clipped
+                    val tag = if (skill.id in autoMatchedIds) "[专精技能·系统自动匹配]" else "[专精技能]"
+                    "### $tag " + skill.name + " (" + skill.category + ")\n" + clipped
                 }
                 append(rendered.joinToString("\n\n"))
+                // 甲方案的关键一步：让模型知道这些规则是**系统直接注入**的，而不是"目录里的待加载项"。
+                // 不说明的话，模型可能又去调用 load_skill 重复加载一遍（浪费一轮工具调用）。
+                if (autoMatchedSkills.isNotEmpty()) {
+                    append(
+                        "\n\n（标注「系统自动匹配」的技能，是系统按本轮任务机械判定后**已直接注入**的指导规则；" +
+                            "直接按它执行即可，无需再调用 load_skill 重复加载。若判定明显不符当前任务，忽略其规则。）",
+                    )
+                }
                 if (skippedSkills.isNotEmpty()) {
-                    append("\n\n（因上下文预算，以下被 @提及 的技能正文未注入：" +
+                    append("\n\n（因上下文预算，以下技能正文未注入：" +
                         skippedSkills.joinToString("、") +
                         "；如需请单独 @ 或调用 load_skill）")
                 }
@@ -141,7 +165,10 @@ class SystemPromptBuilder @Inject constructor(
             // 借鉴 OpenMinis 的技能模型：元数据（名称+一句话描述）常驻上下文供模型
             // 自主匹配，正文经 load_skill 工具按需加载——不再要求用户必须 @提及。
             if (toolCallMode != ToolCallMode.DISABLED) {
-                val catalog = renderSkillCatalog(allSkills, excludeIds = selectedSkills.mapTo(mutableSetOf()) { it.id })
+                val catalog = renderSkillCatalog(
+                    allSkills,
+                    excludeIds = injectedSkills.mapTo(mutableSetOf()) { it.id },
+                )
                 if (catalog.isNotEmpty()) {
                     if (isNotEmpty()) append("\n\n")
                     append(catalog)
@@ -706,4 +733,28 @@ internal fun resolveSkillCatalogFallback(
     if (!customPromptEnabled || customPrompt.isBlank()) return ""
     if (customPrompt.contains("{{ACTIVE_SKILLS}}")) return ""
     return skillSection
+}
+
+/**
+ * 系统自动化技能匹配（治本核心，纯决策，独立成顶层函数以便单测）。
+ * 按任务文本机械判定命中的技能，作为**直接注入候选**返回。
+ *
+ * 与 `load_skill` 的"模型主动加载"相比，这条路径不依赖模型自觉：
+ * 判定与注入都由系统完成，模型只需按已注入的规则执行。
+ *
+ * 三重门禁与全链路口径一致：
+ * - `toolCallMode == DISABLED`（纯聊天）时系统提示不注入任何技能，此处同步短路；
+ * - 任务文本为空时不判定（无依据的匹配只会产生噪声）；
+ * - [excludedIds] 排除已 @提及 的技能，避免同一技能正文注入两次。
+ */
+internal fun selectAutoMatchedSkills(
+    allSkills: List<AgentSkill>,
+    latestUserMessage: String,
+    toolCallMode: ToolCallMode,
+    excludedIds: Set<String>,
+): List<AgentSkill> {
+    if (toolCallMode == ToolCallMode.DISABLED || latestUserMessage.isBlank()) return emptyList()
+    return SkillMatcher.match(latestUserMessage, allSkills)
+        .map { it.skill }
+        .filter { it.id !in excludedIds }
 }
