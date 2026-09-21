@@ -12,15 +12,22 @@ import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import top.wkbin.taixu.R
-import top.wkbin.taixu.runtime.shell.ProcessRegistry
-import top.wkbin.taixu.runtime.SshServiceManager
+import top.wkbin.taixu.runtime.LinuxRuntime
 import top.wkbin.taixu.runtime.FtpServiceManager
+import top.wkbin.taixu.runtime.FtpServiceState
+import top.wkbin.taixu.runtime.SshServiceManager
+import top.wkbin.taixu.runtime.SshServiceState
+import top.wkbin.taixu.runtime.shell.ProcessRegistry
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 @AndroidEntryPoint
@@ -29,6 +36,7 @@ class RuntimeForegroundService : Service() {
     @Inject lateinit var localServiceLauncher: LocalServiceLauncher
     @Inject lateinit var sshServiceManager: SshServiceManager
     @Inject lateinit var ftpServiceManager: FtpServiceManager
+    @Inject lateinit var linuxRuntime: LinuxRuntime
     /** 停止后的沙箱进程清理作用域：独立于服务生命周期，服务销毁后也要跑完。 */
     private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -36,6 +44,11 @@ class RuntimeForegroundService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     /** Wi-Fi 锁：息屏后防止 Wi-Fi 无线电源进入省电模式导致沙箱内网络断连。 */
     private var wifiLock: WifiManager.WifiLock? = null
+
+    /** 按需持锁的调度作用域：跟随沙箱忙碌状态决定是否持锁。 */
+    private val lockGateScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /** 按需持锁的调度 Job。 */
+    private var lockGateJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -75,7 +88,10 @@ class RuntimeForegroundService : Service() {
             return START_NOT_STICKY
         }
         startForeground(NOTIFICATION_ID, notification())
-        acquireLocks()
+        // 不再无条件持锁：交由 lockGate 按沙箱实际忙碌状态决定持有/释放。
+        // 有任务（命令/构建/安装/后台服务/终端会话）→ 持锁；空闲约 1 分钟 → 释放，
+        // 让 CPU 能正常进入低功耗，避免息屏后长期被唤醒锁钉住而耗电发热。
+        startLockGate()
         return START_STICKY
     }
 
@@ -93,6 +109,7 @@ class RuntimeForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        stopLockGate()
         releaseLocks()
         cleanupScope.launch {
             runCatching { ftpServiceManager.stop() }
@@ -119,6 +136,51 @@ class RuntimeForegroundService : Service() {
                 Log.i(TAG, "Acquired Wi-Fi lock for runtime service")
             }.onFailure { Log.w(TAG, "获取 Wi-Fi 锁失败", it) }
         }
+    }
+
+    /**
+     * 启动按需持锁调度：忙碌时持锁并周期续期，空闲满 [IDLE_RELEASE_GRACE_MS] 后释放。
+     * 服务本身保持前台存活，仅释放 CPU/Wi-Fi 锁；空闲时沙箱本就无事可做，不会中断任务。
+     */
+    private fun startLockGate() {
+        if (lockGateJob?.isActive == true) return
+        // 依赖字段由 Hilt 在 onCreate 注入，故此处在函数内构造信号流，避免属性初始化早于注入。
+        val busySignal: Flow<Boolean> = combine(
+            linuxRuntime.sandboxBusy,
+            sshServiceManager.state,
+            ftpServiceManager.state,
+        ) { sandbox, ssh, ftp ->
+            // 显式开启的常驻服务（SSH/FTP）必须持锁，否则息屏后服务被冻结、无法连接。
+            sandbox || ssh is SshServiceState.Running || ftp is FtpServiceState.Running
+        }
+        lockGateJob = lockGateScope.launch {
+            busySignal.collectLatest { busy ->
+                if (busy) {
+                    acquireLocks()
+                    // 长任务（构建/安装可能远超锁超时）期间周期续期，避免锁到期自动掉落。
+                    while (true) {
+                        delay(LOCK_REFRESH_INTERVAL_MS)
+                        refreshLocks()
+                    }
+                } else {
+                    // 收到空闲信号后先等宽限期：任务间隙（如多条命令连续执行）避免反复启停锁。
+                    delay(IDLE_RELEASE_GRACE_MS)
+                    releaseLocks()
+                    Log.i(TAG, "Idle for ${IDLE_RELEASE_GRACE_MS / 1000}s, released runtime locks")
+                }
+            }
+        }
+    }
+
+    /** 续期：先释放再重新获取，避免 WakeLock 引用计数累加泄漏。 */
+    private fun refreshLocks() {
+        releaseLocks()
+        acquireLocks()
+    }
+
+    private fun stopLockGate() {
+        lockGateJob?.cancel()
+        lockGateJob = null
     }
 
     private fun releaseLocks() {
@@ -167,7 +229,11 @@ class RuntimeForegroundService : Service() {
         private const val TAG = "RuntimeForegroundService"
         private const val WAKE_LOCK_TAG = "taixu:runtime-service"
         private const val WIFI_LOCK_TAG = "taixu:runtime-wifi"
-        /** 唤醒锁超时：8 小时兜底，避免异常情况下永久持有。 */
-        private const val LOCK_TIMEOUT_MS = 8 * 60 * 60 * 1000L
+        /** 唤醒锁单次超时：30 分钟兜底；长任务期间由 refreshLocks() 周期续期。 */
+        private const val LOCK_TIMEOUT_MS = 30 * 60 * 1000L
+        /** 续期间隔：略小于单次超时，保证长任务全程持锁不中断。 */
+        private const val LOCK_REFRESH_INTERVAL_MS = 25 * 60 * 1000L
+        /** 空闲宽限期：沙箱无任务满该时长后释放锁，避免任务间隙反复启停。 */
+        private const val IDLE_RELEASE_GRACE_MS = 60 * 1000L
     }
 }

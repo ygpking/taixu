@@ -11,12 +11,21 @@ import top.wkbin.taixu.runtime.shell.ProcessType
 import top.wkbin.taixu.runtime.shell.SessionConfig
 import top.wkbin.taixu.runtime.shell.ShellCommand
 import java.io.File
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
 interface LinuxRuntime {
     val state: StateFlow<RuntimeState>
     val activeDistroId: StateFlow<String>
     val installedDistros: StateFlow<List<InstalledDistro>>
+
+    /**
+     * 沙箱当前是否正有任务在跑（命令执行、构建、会诊会话、后台服务均在统计内）。
+     * 前台保活服务据此按需持有 CPU 唤醒锁：有任务才持锁，空闲即释放，
+     * 避免息屏后 CPU 被长期钉住无法进入低功耗。
+     * 默认实现恒为 false，测试替身无需感知。
+     */
+    val sandboxBusy: StateFlow<Boolean> get() = ALWAYS_IDLE
 
     suspend fun initialize(request: RuntimeInstallRequest = RuntimeInstallRequest("ubuntu")): AppResult<Unit>
     suspend fun restoreInstalledState(): Boolean
@@ -72,3 +81,6 @@ interface LinuxRuntime {
     fun rootfsVersion(distroId: String? = null): String? = null
     fun workspacePath(): File
 }
+
+/** 默认空闲信号：测试替身等实现无需感知，恒为 false。 */
+private val ALWAYS_IDLE: StateFlow<Boolean> = MutableStateFlow(false)

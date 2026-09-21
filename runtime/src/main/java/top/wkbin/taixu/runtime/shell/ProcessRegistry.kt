@@ -10,8 +10,11 @@ import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -46,11 +49,21 @@ interface ProcessRegistry {
     suspend fun stop(id: String): Boolean
     suspend fun stopAll()
     suspend fun cleanupDeadProcesses(): Int
+
+    /**
+     * 当前在册（运行中）的后台进程数量。前台保活服务据此判断沙箱是否有后台任务
+     * 在跑，从而按需持有 CPU 唤醒锁。接口提供恒为 0 的默认实现，测试替身无需实现。
+     */
+    val activeCount: StateFlow<Int> get() = EMPTY_ACTIVE_COUNT
+
     fun list(): List<ManagedProcess>
     fun observeLogs(idOrToolId: String): Flow<List<String>>
     fun getLogs(idOrToolId: String): List<String>
     fun clearLogs(idOrToolId: String)
 }
+
+/** 默认空信号：接口的测试替身与旧实现无需感知，恒为 0。 */
+private val EMPTY_ACTIVE_COUNT: StateFlow<Int> = MutableStateFlow(0)
 
 @Singleton
 class ProcessRegistryImpl @Inject constructor(
@@ -64,6 +77,25 @@ class ProcessRegistryImpl @Inject constructor(
     private val processes = ConcurrentHashMap<String, ManagedProcess>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val logsMap = ConcurrentHashMap<String, MutableStateFlow<List<String>>>()
+
+    private val _activeCount = MutableStateFlow(0)
+    override val activeCount: StateFlow<Int> = _activeCount.asStateFlow()
+
+    init {
+        // 进程自然退出（短命令跑完/被系统杀死）不会走 stop()/cleanupDeadProcesses()，
+        // 上面几处 syncActiveCount() 都触发不到，活跃数会虚高，导致前台服务一直持锁不放。
+        // 这里按固定周期校准计数；仅在确实有在册进程时才做，空表时开销可忽略。
+        scope.launch {
+            while (isActive) {
+                delay(ACTIVE_COUNT_POLL_MS)
+                if (processes.isNotEmpty()) syncActiveCount()
+            }
+        }
+    }
+
+    private fun syncActiveCount() {
+        _activeCount.value = processes.values.count { it.session.isAlive }
+    }
 
     private fun getOrCreateLogFlow(key: String): MutableStateFlow<List<String>> =
         logsMap.computeIfAbsent(key) { MutableStateFlow(emptyList()) }
@@ -140,23 +172,29 @@ class ProcessRegistryImpl @Inject constructor(
             toolId = toolId,
             pid = session.pid,
             type = type,
-        ).also { processes[id] = it }
+        ).also {
+            processes[id] = it
+            syncActiveCount()
+        }
     }
 
     override suspend fun stop(id: String): Boolean = mutex.withLock {
         val process = processes.remove(id) ?: return@withLock false
         process.session.close()
+        syncActiveCount()
         true
     }
 
     override suspend fun stopAll() = mutex.withLock {
         processes.values.forEach { it.session.close() }
         processes.clear()
+        syncActiveCount()
     }
 
     override suspend fun cleanupDeadProcesses(): Int = mutex.withLock {
         val dead = processes.values.filter { !it.session.isAlive }
         dead.forEach { processes.remove(it.id) }
+        syncActiveCount()
         dead.size
     }
 
@@ -173,5 +211,10 @@ class ProcessRegistryImpl @Inject constructor(
 
     override fun clearLogs(idOrToolId: String) {
         getOrCreateLogFlow(idOrToolId).value = emptyList()
+    }
+
+    private companion object {
+        /** 活跃进程数校准周期：捕捉自然退出的进程，避免活跃数虚高导致锁不释放。 */
+        const val ACTIVE_COUNT_POLL_MS = 5_000L
     }
 }

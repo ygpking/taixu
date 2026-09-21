@@ -34,8 +34,13 @@ import javax.inject.Singleton
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -70,6 +75,28 @@ class LinuxRuntimeImpl @Inject constructor(
     private val initializeMutex = Mutex()
     private val storageActivities = StorageActivityGate()
     private val interactiveSessions = ConcurrentHashMap<LinuxSession, String>()
+
+    /** 交互式会话数量信号：trackInteractiveSession/close 时更新，用于合成 sandboxBusy。 */
+    private val _interactiveSessionCount = MutableStateFlow(0)
+    private val sandboxScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /**
+     * 沙箱是否有任务在跑：命令/构建（storageActivities）、后台服务进程（processRegistry）、
+     * 交互式终端会话（interactiveSessions）、系统安装/初始化（RuntimeState.Initializing）
+     * 任一成立即为 true。前台保活服务据此按需持锁，空闲时释放 CPU 唤醒锁以省电。
+     */
+    override val sandboxBusy: StateFlow<Boolean> = combine(
+        storageActivities.activeCount,
+        processRegistry.activeCount,
+        _interactiveSessionCount,
+        _state,
+    ) { activities, processes, sessions, state ->
+        activities > 0 || processes > 0 || sessions > 0 || state is RuntimeState.Initializing
+    }.stateIn(sandboxScope, SharingStarted.Eagerly, false)
+
+    private fun refreshInteractiveSessionCount() {
+        _interactiveSessionCount.value = interactiveSessions.size
+    }
 
     override fun refreshInstalledDistros() {
         // 兑现“刷新”语义：结构性变更后由各调用方走到这里，统一失效路径管理器缓存
@@ -807,10 +834,12 @@ class LinuxRuntimeImpl @Inject constructor(
                     session.close()
                 } finally {
                     interactiveSessions.remove(this)
+                    refreshInteractiveSessionCount()
                 }
             }
         }
         interactiveSessions[tracked] = distroId
+        refreshInteractiveSessionCount()
         return tracked
     }
 
