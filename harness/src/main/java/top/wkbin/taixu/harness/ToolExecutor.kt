@@ -3,6 +3,7 @@ package top.wkbin.taixu.harness
 import top.wkbin.taixu.core.common.result.AppResult
 import top.wkbin.taixu.core.database.HarnessSessionRepository
 import top.wkbin.taixu.harness.session.SessionTreeStore
+import top.wkbin.taixu.harness.prompt.MAX_SKILL_BODY_CHARS
 import top.wkbin.taixu.core.security.SecretRedactor
 import top.wkbin.taixu.core.datastore.AgentPreferences
 import top.wkbin.taixu.core.datastore.SettingsDataStore
@@ -278,7 +279,7 @@ class ToolExecutor @Inject constructor(
                         else -> {
                             val matched = pool.first()
                             true to "【技能已加载：${matched.name}】(category=${matched.category})\n" +
-                                matched.systemPrompt.trim()
+                                clipSkillBody(matched.systemPrompt.trim())
                         }
                     }
                 }
@@ -1083,4 +1084,20 @@ internal fun capHostOutput(output: String): String =
             "\n[host 输出超限已截断：原文 ${output.length} 字符，仅保留前 ${ToolExecutor.MAX_HOST_OUTPUT_CHARS}。" +
             "需要完整内容请缩小范围重取：logcat 用更精确的 tag/keyword 与更少 tail_lines，" +
             "dumpsys 指定子服务（如 dumpsys activity），避免全量输出]"
+    }
+
+/**
+ * 按需加载侧与注入侧共用的一把尺（见 [MAX_SKILL_BODY_CHARS]）。
+ *
+ * 目录扫描注册的 SKILL.md 可整篇入库（实测有 10 万字符级），原样返回会把工具结果顶到
+ * 输入上限的数倍——而当前轮结果受 `truncateStaleToolResults` 整轮保护、
+ * `minimalKeepFromIndex` 至少保住最后一条 user 起的轮次，连 413 触发的强制折叠都砍不掉它，
+ * 小窗口模型上这一轮请求必败。
+ */
+internal fun clipSkillBody(body: String): String =
+    if (body.length <= MAX_SKILL_BODY_CHARS) {
+        body
+    } else {
+        body.take(MAX_SKILL_BODY_CHARS) +
+            "\n…（正文已按上下文预算截断；完整内容见该技能资源目录下的文件，可分片阅读）"
     }

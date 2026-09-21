@@ -164,6 +164,27 @@ class SkillMatcherTest {
         assertTrue("已 @提及 的技能不得重复注入：$result", result.isEmpty())
     }
 
+    /**
+     * 回归（P1）：排除必须发生在 take 之前。全名 @提及 的技能 NAME_SCORE=6 必然登顶，
+     * 若先 take(1) 再排除，混合轮（既 @ 了 A 又该命中 B）唯一的自动注入名额就被 A 吃掉，
+     * B 静默不注入——正是这套机制承诺消灭的"无声遗漏"。
+     */
+    @Test
+    fun `mixed round still auto injects the other skill when one is already mentioned`() {
+        val mentioned = gitSkill.copy(id = "mentioned_skill", name = "移动端项目兼容对齐")
+        val result = selectAutoMatchedSkills(
+            allSkills = listOf(mentioned, gitSkill),
+            latestUserMessage = "@移动端项目兼容对齐 帮我处理 git 分支合并冲突诊断",
+            toolCallMode = ToolCallMode.NATIVE,
+            excludedIds = setOf(mentioned.id),
+        )
+        assertEquals(
+            "混合轮应改注入未被提及的 git_workflow：$result",
+            listOf("git_workflow"),
+            result.map { it.id },
+        )
+    }
+
     @Test
     fun `auto injection works for native tool mode`() {
         val result = selectAutoMatchedSkills(

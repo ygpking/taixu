@@ -30,10 +30,13 @@ import top.wkbin.taixu.core.database.McpServerRepository
 import top.wkbin.taixu.core.database.RoomAgentContextRepository
 import top.wkbin.taixu.core.database.RoomHarnessRuntimeRepository
 import top.wkbin.taixu.core.security.SecretManager
+import top.wkbin.taixu.harness.ApiMessage
 import top.wkbin.taixu.harness.AssistantText
+import top.wkbin.taixu.harness.sanitizeApiTranscript
 import top.wkbin.taixu.harness.CapabilityEvent
 import top.wkbin.taixu.harness.HarnessTool
 import top.wkbin.taixu.harness.ModelConfig
+import top.wkbin.taixu.harness.SkillSuggestion
 import top.wkbin.taixu.harness.ToolCall
 import top.wkbin.taixu.harness.ToolCallMode
 import top.wkbin.taixu.harness.ToolResult
@@ -252,6 +255,76 @@ class ApiContextAssemblerTest {
         )
         val out = assembler.assemble("s-cap", nativeModel(), "")
         assertFalse(out.any { it.content?.contains("详情") == true })
+    }
+
+    /**
+     * 回归（P1）：SkillSuggestion 的契约是「绝不发给模型」，但组装器的跳过清单原先只有
+     * CapabilityEvent / ModelSwitchEvent，它经 HarnessApiMapper 被映射成
+     * `role=system, content=null` 的畸形消息；OpenAI 兼容路径序列化时连 content 键都不写，
+     * 严格端点直接 400，且该消息留在转写里污染后续每一轮。
+     */
+    @Test
+    fun `skill suggestions never reach the provider payload in native mode`() = runBlocking {
+        push(
+            "s-suggest-native",
+            UserMessage("u1", 1L, "帮我整理周报"),
+            AssistantText("a1", 2L, "好的"),
+            SkillSuggestion(
+                id = "sg1",
+                createdAt = 3L,
+                action = "create",
+                skillName = "周报整理",
+                description = "整理零散记录为周报",
+                systemPrompt = "你是周报助手",
+                reason = "工作流可复用",
+            ),
+        )
+        val out = assembler.assemble("s-suggest-native", nativeModel(), workspacePath = "")
+        assertTrue(
+            "不得出现无 content 的 system 消息：${out.map { it.role to it.content }}",
+            out.none { it.role == "system" && it.content.isNullOrBlank() },
+        )
+        assertFalse(out.any { it.content?.contains("周报整理") == true })
+    }
+
+    @Test
+    fun `skill suggestions never reach the provider payload in json text mode`() = runBlocking {
+        push(
+            "s-suggest-text",
+            UserMessage("u1", 1L, "帮我整理周报"),
+            SkillSuggestion(
+                id = "sg2",
+                createdAt = 2L,
+                action = "create",
+                skillName = "周报整理",
+                description = "整理零散记录为周报",
+                systemPrompt = "你是周报助手",
+                reason = "工作流可复用",
+            ),
+        )
+        val out = assembler.assemble("s-suggest-text", jsonTextModel(), workspacePath = "")
+        assertTrue(
+            "不得出现无 content 的 system 消息：${out.map { it.role to it.content }}",
+            out.none { it.role == "system" && it.content.isNullOrBlank() },
+        )
+        assertFalse(out.any { it.content?.contains("周报整理") == true })
+    }
+
+    /**
+     * 纵深防御回归：即使将来又有新的 UI-only 消息类型漏登记跳过谓词，
+     * sanitizeApiTranscript 也必须把无 content 的 system 消息挡在请求体之外。
+     */
+    @Test
+    fun `sanitizeApiTranscript drops content-less system messages`() {
+        val withHole = listOf(
+            ApiMessage(role = "system", content = "正常系统提示"),
+            ApiMessage(role = "user", content = "问题"),
+            ApiMessage(role = "system", content = null),
+            ApiMessage(role = "system", content = "   "),
+        )
+        val sanitized = sanitizeApiTranscript(withHole)
+        assertEquals(2, sanitized.size)
+        assertTrue(sanitized.none { it.role == "system" && it.content.isNullOrBlank() })
     }
 
     // ---------- 压缩摘要 ----------

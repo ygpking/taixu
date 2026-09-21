@@ -126,7 +126,7 @@ class SystemPromptBuilder @Inject constructor(
                     }
                     val budget = minOf(MAX_SKILL_BODY_CHARS, MAX_SKILL_BODY_TOTAL_CHARS - used)
                     val clipped = if (body.length > budget) {
-                        body.take(budget) + "\n…（该技能正文较长已截断，如需完整内容请调用 load_skill）"
+                        body.take(budget) + "\n…（该技能正文较长已按上下文预算截断；完整内容见该技能资源目录下的文件，可分片阅读）"
                     } else {
                         body
                     }
@@ -699,8 +699,12 @@ internal fun renderSkillCatalog(
 private const val MAX_CATALOG_ENTRIES = 24
 private const val CATALOG_DESCRIPTION_CHARS = 100
 
-/** 单个技能正文注入上限（字符）：约 8K 字符 ≈ 3K tokens，足够覆盖绝大多数技能。 */
-private const val MAX_SKILL_BODY_CHARS = 8_000
+/**
+ * 单个技能正文上限（字符）。注入侧与 `load_skill` 返回侧共用同一常量——
+ * 两侧各写一个值就会漂移，而"注入侧截断 + 按需加载侧无帽"曾让截断提示
+ * 把模型导向一条完全无护栏的路径，小窗口模型上直接请求超限。
+ */
+internal const val MAX_SKILL_BODY_CHARS = 8_000
 
 /** 所有 @提及 技能正文的累计上限（字符）：防止多技能 @ 撑爆系统提示预算。 */
 private const val MAX_SKILL_BODY_TOTAL_CHARS = 24_000
@@ -746,6 +750,11 @@ internal fun resolveSkillCatalogFallback(
  * - `toolCallMode == DISABLED`（纯聊天）时系统提示不注入任何技能，此处同步短路；
  * - 任务文本为空时不判定（无依据的匹配只会产生噪声）；
  * - [excludedIds] 排除已 @提及 的技能，避免同一技能正文注入两次。
+ *
+ * **排除必须发生在 take 之前**：[SkillMatcher.match] 默认只取前 [SkillMatcher.AUTO_INJECT_MAX]
+ * 条，而全名 @提及 的技能必然拿到最高的 NAME_SCORE 登顶。若先 take 再排除，混合轮
+ * （既 @ 了技能又该命中另一个）唯一的注入名额就被已提及技能吃掉，另一个静默不注入——
+ * 正是这套机制承诺消灭的"无声遗漏"。
  */
 internal fun selectAutoMatchedSkills(
     allSkills: List<AgentSkill>,
@@ -754,7 +763,11 @@ internal fun selectAutoMatchedSkills(
     excludedIds: Set<String>,
 ): List<AgentSkill> {
     if (toolCallMode == ToolCallMode.DISABLED || latestUserMessage.isBlank()) return emptyList()
-    return SkillMatcher.match(latestUserMessage, allSkills)
-        .map { it.skill }
-        .filter { it.id !in excludedIds }
+    if (allSkills.isEmpty()) return emptyList()
+    val candidates = if (excludedIds.isEmpty()) {
+        allSkills
+    } else {
+        allSkills.filter { it.id !in excludedIds }
+    }
+    return SkillMatcher.match(latestUserMessage, candidates).map { it.skill }
 }

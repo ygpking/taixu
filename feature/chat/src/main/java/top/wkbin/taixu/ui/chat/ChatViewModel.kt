@@ -1079,18 +1079,22 @@ class ChatViewModel @Inject constructor(
             val result = runCatching {
                 val target = allSkills.value.firstOrNull { it.id == suggestion.targetSkillId }
                 if (suggestion.action == "update" && target != null && !target.isBuiltin && !asNew) {
+                    // 进化不改名：name 一律取目标技能原名。LLM 提案名若被采用，用户熟悉的技能
+                    // 会被静默改名，历史会话里按名字 @提及/触发的引用全部失配。
                     agentSkillRepository.addCustom(
                         target.copy(
                             systemPrompt = suggestion.systemPrompt,
-                            name = suggestion.skillName,
+                            name = target.name,
                             description = suggestion.description,
                             triggerCommand = suggestion.triggerCommand ?: target.triggerCommand,
                         ),
                     )
                 } else {
                     // 另存为新技能时按名称去重：同名会让 load_skill 命中哪条变得不确定，
-                    // 且「另存」与原名同名在语义上也自相矛盾。冲突时追加序号后缀。
-                    val finalName = uniqueSkillName(suggestion.skillName)
+                    // 且「另存」与原名同名在语义上也自相矛盾。冲突时追加序号后缀——
+                    // 但"同名行正是本建议上次落地的产物"不是冲突：进程重启后内存态幂等闸门
+                    // 已丢、卡片复活再次点击，此时追加 -2 会把自己上次创建的技能改改名。
+                    val finalName = uniqueSkillName(suggestion.skillName, suggestion.suggestionIdSeed())
                     agentSkillRepository.addCustom(suggestion.toAgentSkill(finalName))
                 }
             }
@@ -1106,12 +1110,19 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    /** 生成不与现有技能重名的名称：冲突时追加 -2、-3 … */
-    private fun uniqueSkillName(base: String): String {
-        val existing = allSkills.value.map { it.name.lowercase() }.toSet()
-        if (base.lowercase() !in existing) return base
+    /**
+     * 生成不与现有技能重名的名称：冲突时追加 -2、-3 …
+     *
+     * @param ownSeedId 本次建议派生的技能 id 种子。同名行若正是 `custom_<ownSeedId>`，
+     *   说明这是同一建议的重复落地（重启后内存态幂等闸门已丢），返回原名而不是追加序号。
+     */
+    private fun uniqueSkillName(base: String, ownSeedId: String? = null): String {
+        val existing = allSkills.value
+        val clash = existing.firstOrNull { it.name.equals(base, ignoreCase = true) } ?: return base
+        if (ownSeedId != null && clash.id == "custom_$ownSeedId") return base
+        val taken = existing.map { it.name.lowercase() }.toSet()
         var index = 2
-        while ("${base}-$index".lowercase() in existing) index++
+        while ("${base}-$index".lowercase() in taken) index++
         return "$base-$index"
     }
 

@@ -10,6 +10,7 @@ import top.wkbin.taixu.harness.HarnessApiMapper
 import top.wkbin.taixu.harness.ModelConfig
 import top.wkbin.taixu.harness.ModelSwitchEvent
 import top.wkbin.taixu.harness.ProviderClient
+import top.wkbin.taixu.harness.SkillSuggestion
 import top.wkbin.taixu.harness.ToolCall
 import top.wkbin.taixu.harness.ToolCallMode
 import top.wkbin.taixu.harness.ToolResult
@@ -171,7 +172,11 @@ class ApiContextAssembler @Inject constructor(
             )
             while (i < msgs.size) {
                 val message = msgs[i]
-                if (message is CapabilityEvent || message is ModelSwitchEvent) {
+                // UI-only 消息（能力事件卡片 / 模型切换事件 / 技能进化建议）绝不进 provider 请求。
+                // SkillSuggestion 的契约见 HarnessMessage KDoc「绝不发给模型」；漏登记会让它经
+                // HarnessApiMapper 映射成 role=system、content=null 的畸形消息，OpenAI 兼容路径
+                // 连 content 键都不写，严格端点直接 400，且该消息留在转写里污染后续每一轮。
+                if (message is CapabilityEvent || message is ModelSwitchEvent || message is SkillSuggestion) {
                     i++
                     continue
                 }

@@ -1,5 +1,6 @@
 package top.wkbin.taixu.harness
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -27,5 +28,23 @@ class LoadSkillToolContractTest {
         assertTrue("描述应要求开工前先扫技能目录：$desc", desc.contains("开工前"))
         assertTrue("描述应指向系统提示末尾的技能目录：$desc", desc.contains("可用技能"))
         assertTrue("描述应给出加载动作：$desc", desc.contains("load_skill") || desc.contains("本工具"))
+    }
+
+    /**
+     * 回归（P1）：`load_skill` 原样返回整篇 systemPrompt。目录扫描注册的 SKILL.md 无体积上限
+     * （实测 10 万字符级），而当前轮工具结果受整轮保护、连 413 强制折叠都砍不掉，
+     * 小窗口模型上单轮请求必超限。注入侧与按需加载侧现在共用同一把尺。
+     */
+    @Test
+    fun `load_skill body is clipped to the same budget as injection`() {
+        val huge = "x".repeat(108_000)
+        val clipped = clipSkillBody(huge)
+        assertTrue("超长正文必须被截断：${clipped.length}", clipped.length < huge.length)
+        assertTrue("截断后不得超出单技能正文上限", clipped.length <= 8_000 + 120)
+        assertTrue("截断应带可见标注与指引", clipped.contains("已按上下文预算截断"))
+        assertTrue(clipped.contains("资源目录"))
+
+        val small = "y".repeat(100)
+        assertEquals("未超限的正文必须原样返回", small, clipSkillBody(small))
     }
 }

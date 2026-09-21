@@ -132,6 +132,54 @@ class AgentContextTest {
         assertTrue(getAfterAdvOk)
     }
 
+    /**
+     * 回归（P1）：`agent_plans` 以 sessionId 为主键、savePlan 是 REPLACE——旧计划被静默覆盖且
+     * 无历史无备份。技能自动匹配一旦误报（把上下文工程类技能注入到无关任务），模型会按技能
+     * 正文指令"第一时间 replace_active"，用户真实计划就此永久丢失。
+     * 现在：同目标改写步骤放行；换目标必须显式 confirm_replace=true。
+     */
+    @Test
+    fun `plan replace active requires confirmation for a different goal`() = runBlocking {
+        val createArgs = buildJsonObject {
+            put("action", "replace_active")
+            put("goal", "重构网络层")
+            put("steps", json.parseToJsonElement("""[{"id":"1","title":"梳理接口","status":"in_progress"}]"""))
+        }
+        assertTrue(executor.executePlan(createArgs, "session-plan").first)
+
+        // 换目标但不确认：必须被挡下，且原计划原样保留
+        val hijackArgs = buildJsonObject {
+            put("action", "replace_active")
+            put("goal", "完全不同的目标")
+            put("steps", json.parseToJsonElement("""[{"id":"1","title":"别的事","status":"pending"}]"""))
+        }
+        val (blockedOk, blockedMsg) = executor.executePlan(hijackArgs, "session-plan")
+        assertFalse("换目标不得静默覆盖既有计划", blockedOk)
+        assertTrue(blockedMsg.contains("重构网络层"))
+        assertTrue(blockedMsg.contains("confirm_replace=true"))
+
+        val getArgs = buildJsonObject { put("action", "get_active") }
+        val (_, getMsg) = executor.executePlan(getArgs, "session-plan")
+        assertTrue("原计划必须完好无损", getMsg.contains("重构网络层"))
+        assertTrue(getMsg.contains("梳理接口"))
+
+        // 显式确认后放行
+        val confirmed = buildJsonObject {
+            put("action", "replace_active")
+            put("goal", "完全不同的目标")
+            put("confirm_replace", "true")
+        }
+        assertTrue(executor.executePlan(confirmed, "session-plan").first)
+
+        // 同一目标改写步骤是正常用法，不需要确认
+        val refineArgs = buildJsonObject {
+            put("action", "replace_active")
+            put("goal", "完全不同的目标")
+            put("steps", json.parseToJsonElement("""[{"id":"1","title":"细分一步","status":"pending"}]"""))
+        }
+        assertTrue(executor.executePlan(refineArgs, "session-plan").first)
+    }
+
     @Test
     fun `plan advance with stepId only updates that step and keeps the rest`() = runBlocking {
         val createArgs = buildJsonObject {

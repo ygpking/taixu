@@ -71,6 +71,9 @@ class CapabilityEventWriter @Inject constructor(
         val skills = runCatching { skillRepository.activeSkills.first() }.getOrDefault(emptyList())
         if (skills.isEmpty()) return
         // 已被 @提及 的技能走 writeSkillEvents 事件，不重复记为"自动匹配"。
+        // 排除必须发生在 match 之前：match 默认只取 AUTO_INJECT_MAX 条，而全名 @提及的技能
+        // NAME_SCORE 最高必然登顶；先 take 再排除会让混合轮唯一的自动注入名额被已提及技能吃掉
+        // （与 SystemPromptBuilder.selectAutoMatchedSkills 同一口径，两处必须同步改）。
         val mentionedIds = skills.filter { skill ->
             val names = setOf(
                 skill.name.lowercase(),
@@ -79,16 +82,19 @@ class CapabilityEventWriter @Inject constructor(
             )
             names.any { it.isNotBlank() && it in mentionedNames }
         }.mapTo(mutableSetOf()) { it.id }
-        SkillMatcher.match(latestUserMessage, skills)
-            .map { it.skill }
-            .filter { it.id !in mentionedIds }
-            .forEach { skill ->
+        val candidates = if (mentionedIds.isEmpty()) {
+            skills
+        } else {
+            skills.filter { it.id !in mentionedIds }
+        }
+        SkillMatcher.match(latestUserMessage, candidates)
+            .forEach { hit ->
                 appendEventOnce(
                     existing,
                     sessionId,
-                    id = "auto:$userMessageId:${skill.id}",
+                    id = "auto:$userMessageId:${hit.skill.id}",
                     kind = CapabilityEvent.Kind.SKILL,
-                    name = skill.name,
+                    name = hit.skill.name,
                     description = "系统自动匹配命中，指导规则已直接注入",
                 )
             }

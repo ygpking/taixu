@@ -86,4 +86,63 @@ class SkillEvolutionAdvisorTest {
         assertTrue(digest.length < 9000)
         assertNull(SkillEvolutionAdvisor.buildConversationDigest(listOf(AssistantText(id = "a", createdAt = 0, text = "hi"))))
     }
+
+    // ---------- 归一化护栏（第一波回归） ----------
+
+    /**
+     * 回归（P2）：update 落库曾以 LLM 自由填写的提案名覆盖目标技能名——用户熟悉的技能被
+     * 静默改名，历史会话里按名字 @提及/触发的引用全部失配，而卡片没显示过真实目标。
+     */
+    @Test
+    fun `update proposal keeps the target skill name`() {
+        val target = AgentSkill(id = "custom_1", name = "周报整理", description = "", systemPrompt = "x", isBuiltin = false)
+        val proposal = SkillEvolutionAdvisor.parseAdvisorResponse(
+            "{\"action\":\"update\",\"name\":\"完全不同的新名字\",\"system_prompt\":\"y\",\"target_skill_id\":\"custom_1\"}",
+        )!!
+        val normalized = SkillEvolutionAdvisor.normalizeProposal(proposal, listOf(target))!!
+        assertEquals("update", normalized.action)
+        assertEquals("进化只改内容不改名", "周报整理", normalized.name)
+    }
+
+    @Test
+    fun `update degraded to create still dedupes against existing names`() {
+        val builtin = AgentSkill(id = "builtin_1", name = "内置技能", description = "", systemPrompt = "x", isBuiltin = true)
+        // 目标失效、按名也找不到非内置同名 → 降级 create；若降级后又与既有内置技能同名，必须被去重挡掉。
+        val proposal = SkillEvolutionAdvisor.parseAdvisorResponse(
+            "{\"action\":\"update\",\"name\":\"内置技能\",\"system_prompt\":\"y\",\"target_skill_id\":\"gone\"}",
+        )!!
+        assertNull(
+            "降级 create 必须重新过重名去重，否则会建议一个与既有内置技能同名的『新技能』",
+            SkillEvolutionAdvisor.normalizeProposal(proposal, listOf(builtin)),
+        )
+    }
+
+    @Test
+    fun `builtin downgrade name stays within the 20 char cap`() {
+        val builtin = AgentSkill(id = "builtin_1", name = "内置技能甲乙丙丁戊己庚辛壬癸", description = "", systemPrompt = "x", isBuiltin = true)
+        val proposal = SkillEvolutionAdvisor.parseAdvisorResponse(
+            "{\"action\":\"update\",\"name\":\"内置技能甲乙丙丁戊己庚辛壬癸\",\"system_prompt\":\"y\",\"target_skill_id\":\"builtin_1\"}",
+        )!!
+        val normalized = SkillEvolutionAdvisor.normalizeProposal(proposal, listOf(builtin))!!
+        assertTrue("改名后不得突破 20 字上限：${normalized.name.length}", normalized.name.length <= 20)
+        assertTrue(normalized.name.endsWith("-进化"))
+    }
+
+    /**
+     * 回归（P2）：trigger 只补 "/" 前缀不做校验——含空格/中文/标点的触发命令会原样落库，
+     * 用户在输入框永远敲不出这条命令（命令以空格分词），同时污染 SkillMatcher 的显著词表。
+     */
+    @Test
+    fun `trigger is sanitized into a typeable slash command`() {
+        assertEquals("weekly", SkillEvolutionAdvisor.sanitizeTrigger("Weekly"))
+        assertEquals("weekly-report", SkillEvolutionAdvisor.sanitizeTrigger("Weekly Report"))
+        assertEquals("weekly-report", SkillEvolutionAdvisor.sanitizeTrigger("/Weekly Report"))
+        assertEquals("weekly", SkillEvolutionAdvisor.sanitizeTrigger("周报 Weekly"))
+        // 纯非 ASCII（或纯标点）清洗后为空：该技能不提供斜杠触发，置 null
+        assertNull(SkillEvolutionAdvisor.sanitizeTrigger("写周报 一键!"))
+        assertNull(SkillEvolutionAdvisor.sanitizeTrigger("？？"))
+        assertNull(SkillEvolutionAdvisor.sanitizeTrigger(null))
+        assertNull(SkillEvolutionAdvisor.sanitizeTrigger("   "))
+        assertEquals(20, SkillEvolutionAdvisor.sanitizeTrigger("a".repeat(50))!!.length)
+    }
 }

@@ -130,7 +130,10 @@ class SkillEvolutionAdvisor @Inject constructor(
         skillName = name,
         description = description,
         systemPrompt = systemPrompt,
-        triggerCommand = trigger?.takeIf { it.isNotBlank() }?.let { if (it.startsWith("/")) it else "/$it" },
+        // trigger 是斜杠命令：提示词承诺"仅小写字母数字连字符、≤20 字符"，但原先只补 "/" 前缀
+        // 不做校验——LLM 给出"周报 助手!"也会原样落库，用户在输入框永远敲不出这条命令
+        // （命令以空格分词），同时污染 SkillMatcher 的显著词表。不合规一律置 null。
+        triggerCommand = sanitizeTrigger(trigger),
         targetSkillId = target_skill_id?.takeIf { action == "update" },
         reason = reason,
     )
@@ -140,6 +143,28 @@ class SkillEvolutionAdvisor @Inject constructor(
         private const val MIN_TOOL_CALLS = 3
         private const val DEFAULT_MAX_TOKENS = 2000
         private const val MAX_DIGEST_CHARS = 9000
+
+        /** 技能名上限（提示词承诺 ≤20 字，解析层 take(20) 强制）。 */
+        private const val MAX_SKILL_NAME_CHARS = 20
+
+        /** 内置技能降级新建时的后缀 "-进化" 长度，用于把总长控制在 [MAX_SKILL_NAME_CHARS] 内。 */
+        private const val SUFFIX_LEN = 3
+
+        /** 触发命令上限。 */
+        private const val MAX_TRIGGER_CHARS = 20
+
+        /**
+         * 规范化为可键入的斜杠命令：去斜杠、转小写，仅保留 `[a-z0-9-]`，超长截断；
+         * 清洗后为空则返回 null（该技能不提供斜杠触发，仍可靠 @提及 与 load_skill 使用）。
+         */
+        internal fun sanitizeTrigger(raw: String?): String? {
+            val cleaned = raw?.trim()?.removePrefix("/")?.lowercase()
+                ?.replace(Regex("[^a-z0-9-]"), "-")
+                ?.trim('-')
+                ?.take(MAX_TRIGGER_CHARS)
+                ?: return null
+            return cleaned.takeIf { it.isNotBlank() }
+        }
 
         /** 统计最近一轮（自最后一条用户消息起）的工具调用次数，用于技能进化门槛判定。 */
         internal fun countRecentToolCalls(messages: List<HarnessMessage>): Int {
@@ -228,7 +253,7 @@ class SkillEvolutionAdvisor @Inject constructor(
             }.getOrNull()?.let { proposal ->
                 // 内容上限护栏：异常模型输出不至于撑爆转写与上下文
                 proposal.copy(
-                    name = proposal.name.take(20),
+                    name = proposal.name.take(MAX_SKILL_NAME_CHARS),
                     description = proposal.description.take(80),
                     trigger = proposal.trigger?.take(20),
                     system_prompt = proposal.systemPrompt.take(8000),
@@ -241,6 +266,11 @@ class SkillEvolutionAdvisor @Inject constructor(
          * 依据现有技能归一化提案：update 目标必须真实存在且非内置（内置技能由
          * 代码定义，upsert 覆盖会在下次 seed 时被抹平）；目标失效时降级为 create，
          * 与既有技能同名的 create 视为重复并放弃（返回 null）。
+         *
+         * update 分支强制 `name = target.name`：LLM 自由填写的提案名曾被原样落库，
+         * 用户熟悉的技能被静默改名（历史会话里按名字 @提及/触发的引用全部失配），
+         * 而操作卡片从头到尾没显示过真实目标。进化只应改内容，不改名字。
+         * 两条降级路径都重新过一遍 create 的去重，否则会建议一个与既有内置技能同名的"新技能"。
          */
         internal fun normalizeProposal(
             proposal: SkillSuggestionDbo,
@@ -254,13 +284,22 @@ class SkillEvolutionAdvisor @Inject constructor(
                         target == null -> {
                             val byName = skills.firstOrNull { it.name.equals(proposal.name, ignoreCase = true) }
                             if (byName != null && !byName.isBuiltin) {
-                                proposal.copy(target_skill_id = byName.id)
+                                proposal.copy(target_skill_id = byName.id, name = byName.name)
                             } else {
-                                proposal.copy(action = "create", target_skill_id = null)
+                                normalizeProposal(proposal.copy(action = "create", target_skill_id = null), skills)
                             }
                         }
-                        target.isBuiltin -> proposal.copy(action = "create", target_skill_id = null, name = "${proposal.name}-进化")
-                        else -> proposal
+                        // 内置技能不可被 update 覆盖，降级成"改名新建"；名字要先按上限截断再拼后缀，
+                        // 否则 20 字名 + "-进化" = 23 字，突破提示词与解析层共同承诺的 ≤20 字。
+                        target.isBuiltin -> normalizeProposal(
+                            proposal.copy(
+                                action = "create",
+                                target_skill_id = null,
+                                name = "${proposal.name.take(MAX_SKILL_NAME_CHARS - SUFFIX_LEN)}-进化",
+                            ),
+                            skills,
+                        )
+                        else -> proposal.copy(name = target.name)
                     }
                 }
                 "create" -> {

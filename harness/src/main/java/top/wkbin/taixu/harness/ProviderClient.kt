@@ -684,6 +684,11 @@ internal fun sanitizeApiTranscript(messages: List<ApiMessage>): List<ApiMessage>
                     )
                 }
             }
+            // 纵深防御：无 content 的 system 消息在任何提供商都没有意义（UI-only 消息被误映射时
+            // 会变成这种形态）。ChatApi 序列化时连 content 键都不写，OpenAI 兼容端点严格校验下
+            // 直接 400。这里统一丢弃，避免"某个新消息类型漏登记跳过谓词"再次演变成请求级故障。
+            message.role == "system" && message.content.isNullOrBlank() &&
+                message.tool_calls.isNullOrEmpty() -> Unit
             else -> {
                 if (awaitingResultIds.isNotEmpty()) flushMissingResults()
                 out.add(message)

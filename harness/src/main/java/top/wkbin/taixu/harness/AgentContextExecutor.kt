@@ -232,6 +232,22 @@ class AgentContextExecutor @Inject constructor(
                     ?: return false to "plan replace_active 必须提供 goal 目标描述"
                 val stepsElement = args["steps"]
                 val stepsJson = stepsElement?.toString() ?: "[]"
+                // agent_plans 以 sessionId 为主键，savePlan 是 REPLACE：旧计划被静默覆盖且无历史、
+                // 无备份。技能自动匹配一旦误报（把「上下文工程」类技能注入到无关任务），模型会按
+                // 技能正文指令"第一时间 replace_active"，用户真实计划就此永久丢失。
+                // 同目标改写步骤是正常用法，直接放行；换目标必须先显式确认，把不可逆操作变可见。
+                val existing = agentContextDao.getActivePlan(sessionId)
+                val confirmed = args["confirm_replace"]?.jsonPrimitive?.contentOrNull
+                    ?.trim()?.equals("true", ignoreCase = true) == true
+                if (existing != null && existing.goal.trim() != goal && !confirmed) {
+                    return false to buildString {
+                        append("已存在活跃计划，目标：").append(existing.goal).append('\n')
+                        append("replace_active 会整体覆盖它且无法恢复。请先确认：\n")
+                        append("· 若确需换成新目标，加 confirm_replace=true 重新调用；\n")
+                        append("· 若只是调整步骤，用同一个 goal 调用即可保留原目标；\n")
+                        append("· 若旧计划已结束，先调用 clear_active。")
+                    }
+                }
                 agentContextDao.savePlan(
                     AgentPlanEntity(
                         sessionId = sessionId,
