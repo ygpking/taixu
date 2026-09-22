@@ -584,6 +584,9 @@ fun ChatScreen(
                     hiddenSkillSuggestions = hiddenSkillSuggestions,
                     onApplySkillSuggestion = viewModel::applySkillSuggestion,
                     onDismissSkillSuggestion = viewModel::dismissSkillSuggestion,
+                    resolveTargetSkillName = { targetId ->
+                        allSkills.firstOrNull { it.id == targetId }?.name
+                    },
                 )
             }
 
@@ -1111,6 +1114,7 @@ private fun ChatPaneContent(
     hiddenSkillSuggestions: Set<String> = emptySet(),
     onApplySkillSuggestion: (SkillSuggestion, Boolean) -> Unit = { _, _ -> },
     onDismissSkillSuggestion: (String) -> Unit = {},
+    resolveTargetSkillName: (String?) -> String? = { null },
 ) {
     Column(modifier = modifier) {
         ChatMessageList(
@@ -1150,6 +1154,7 @@ private fun ChatPaneContent(
             hiddenSkillSuggestions = hiddenSkillSuggestions,
             onApplySkillSuggestion = onApplySkillSuggestion,
             onDismissSkillSuggestion = onDismissSkillSuggestion,
+            resolveTargetSkillName = resolveTargetSkillName,
         )
 
         activePlan?.let { plan ->
