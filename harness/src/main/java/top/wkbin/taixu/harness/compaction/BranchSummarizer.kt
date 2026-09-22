@@ -44,9 +44,12 @@ class BranchSummarizer @Inject constructor(
         model: ModelConfig? = null,
     ): Boolean {
         if (oldLeafId == newLeafId) return false
-        if (!markSummarized(sessionId, oldLeafId)) return false
         val abandoned = abandonedMessages(sessionId, oldLeafId, newLeafId)
         if (abandoned.size < MIN_MESSAGES) return false
+        // 登记必须放在长度校验**之后**：原先先登记再校验，「先短后长」的被放弃分支
+        // （放弃时不足 MIN_MESSAGES、后来又长起来再被放弃）会因为登记已存在而永不摘要，
+        // 关键结论就此静默丢失。
+        if (!markSummarized(sessionId, oldLeafId)) return false
 
         val summaryText = generateSummaryText(abandoned, model)
         if (summaryText.isBlank()) return false

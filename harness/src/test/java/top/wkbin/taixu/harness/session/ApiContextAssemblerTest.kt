@@ -255,6 +255,11 @@ class ApiContextAssemblerTest {
         )
         val out = assembler.assemble("s-cap", nativeModel(), "")
         assertFalse(out.any { it.content?.contains("详情") == true })
+        // 判别力补强：原断言是「content 不含某文本」，而 UI-only 消息被误映射成
+        // role=system、content=null 时该断言恒真（null?.contains(...) == false）。
+        // 改为同时钉住消息条数与角色序列——任何"多出来一条"都会被抓到。
+        assertEquals("system + user 两条，不应多出能力事件", 2, out.size)
+        assertEquals(listOf("system", "user"), out.map { it.role })
     }
 
     /**

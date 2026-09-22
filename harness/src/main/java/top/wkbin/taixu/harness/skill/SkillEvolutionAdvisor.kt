@@ -21,7 +21,6 @@ import top.wkbin.taixu.harness.ToolCallMode
 import top.wkbin.taixu.harness.ApiMessage
 import top.wkbin.taixu.harness.AssistantText
 import top.wkbin.taixu.harness.HarnessMessage
-import top.wkbin.taixu.harness.ProviderClient
 import top.wkbin.taixu.harness.SkillSuggestion
 import top.wkbin.taixu.harness.ToolCall
 import top.wkbin.taixu.harness.ToolResult
@@ -42,7 +41,7 @@ import top.wkbin.taixu.harness.projection.SessionMessageProjector
  */
 @Singleton
 class SkillEvolutionAdvisor @Inject constructor(
-    private val providerClient: ProviderClient,
+    private val providerClient: AdvisorModelClient,
     private val skillRepository: AgentSkillRepository,
     private val settingsDataStore: AgentPreferences,
     private val sessionDao: HarnessSessionRepository,
@@ -80,10 +79,9 @@ class SkillEvolutionAdvisor @Inject constructor(
         if (countRecentToolCalls(messages) < MIN_TOOL_CALLS) return
 
         val now = System.currentTimeMillis()
-        // 冷却判定与写入必须在同一临界区内。**不能**直接 `synchronized(lastSuggestionAt)`：
-        // 本轮修复给 pruneIfStale 换成了 `entries.removeIf`（ConcurrentModificationException 修复），
-        // 而锁对象若与被修改的容器是同一个，就要求"所有对该 map 的访问都持锁"——
-        // 这条不变式靠注释是守不住的。用独立的锁对象，把"保护范围"与"被保护数据"解耦。
+        // 冷却判定与写入必须在同一临界区内。用**独立的锁对象**而不是 `synchronized(lastSuggestionAt)`：
+        // 锁对象若与被保护容器是同一个，就要求"所有对该 map 的访问都持锁"，这条不变式靠注释
+        // 守不住；解耦之后，忘记持锁的访问至少不会被同一把锁挡住从而死锁，也更容易在测试里发现。
         synchronized(lastSuggestionAtLock) {
             val last = lastSuggestionAt[sessId] ?: 0L
             if (now - last < COOLDOWN_MS) return
@@ -186,7 +184,8 @@ class SkillEvolutionAdvisor @Inject constructor(
             }
         }
 
-        internal fun buildConversationDigest(messages: List<HarnessMessage>): String? {            val lastUserIndex = messages.indexOfLast { it is UserMessage }
+        internal fun buildConversationDigest(messages: List<HarnessMessage>): String? {
+            val lastUserIndex = messages.indexOfLast { it is UserMessage }
             if (lastUserIndex < 0) return null
             val sb = StringBuilder()
             messages.drop(lastUserIndex).forEach { msg ->
