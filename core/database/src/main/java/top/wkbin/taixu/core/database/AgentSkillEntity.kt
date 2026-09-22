@@ -2,6 +2,7 @@ package top.wkbin.taixu.core.database
 
 import androidx.room.Dao
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
@@ -17,7 +18,35 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
-@Entity(tableName = "agent_skills")
+/**
+ * 目录扫描但 frontmatter 无 description 时的占位描述。
+ *
+ * 它是"给人看的说明"，却被 SkillMatcher 无差别当作匹配语料：多个无描述技能共享同一句话，
+ * 产出「目录/发现/自定/定义」四个高频 2-gram，任务里共现两个即可把技能推过注入阈值。
+ * 匹配侧因此要把它识别出来并排除（见 SkillMatcher）。
+ */
+const val PLACEHOLDER_SKILL_DESCRIPTION = "从目录自动发现的 Skill"
+
+/**
+ * Skill 表。
+ *
+ * `indices` 里的 `name` 唯一索引是**唯一真相源**，两端都要有：
+ * - 迁移侧：`MIGRATION_49_50` 用 `CREATE UNIQUE INDEX index_agent_skills_name` 给**已有库**补上；
+ * - 声明侧：这里的 `indices` 让 Room 为**全新安装的库**建出同一个索引。
+ *
+ * 漏掉声明侧的后果被验证路径的差异掩盖：`RoomOpenHelper` 的结构校验只发生在**打开已存在的库**
+ * 时（`onUpgrade` 之后），通过 `onCreate` 新建的库只按实体声明建表、**不做校验**。
+ * 于是老用户（升级）手里有索引，新用户（全新安装）手里没有 —— 同一版本号两条结构分叉，
+ * 而开发机上（库已存在）永远看不出来。危害不是清库，而是 PR#27 承诺的
+ * 「重名写入被 DB 挡下」对新用户完全不生效，且分叉会随版本累积。
+ *
+ * 全仓其余 24 个由迁移创建的索引均遵循「迁移建索引 + 实体声明」成对出现，本表曾是唯一例外。
+ * 回归测试见 `SkillNameUniqueIndexMigrationTest` 与 `AgentSkillEntitySchemaParityTest`。
+ */
+@Entity(
+    tableName = "agent_skills",
+    indices = [Index(value = ["name"], unique = true)],
+)
 data class AgentSkillEntity(
     @androidx.room.PrimaryKey val id: String,
     val name: String,
@@ -30,6 +59,14 @@ data class AgentSkillEntity(
     val isImmutable: Boolean,
     val category: String,
     val resourcePath: String?,
+    /**
+     * 是否允许机械预匹配自动注入（默认 true）。
+     *
+     * 独立成列而不是从正文猜：会不会写持久状态是技能的**属性**，不该由正则扫描
+     * systemPrompt 决定（那既是过拟合也难维护）。加列可回填默认值，迁移风险远低于
+     * 第三波的唯一索引。
+     */
+    val autoMatchEligible: Boolean = true,
 )
 
 @Dao
@@ -161,7 +198,10 @@ class AgentSkillRepository @Inject constructor(
                 ?: markdown.lineSequence().firstOrNull { it.startsWith("# ") }?.removePrefix("# ")?.trim()
                 ?: dir.name,
             description = metadata["description"]?.takeIf { it.isNotBlank() }
-                ?.take(MAX_DESCRIPTION_CHARS) ?: "从目录自动发现的 Skill",
+                ?.take(MAX_DESCRIPTION_CHARS) ?: PLACEHOLDER_SKILL_DESCRIPTION,
+            // frontmatter 可声明 `auto_match: false`：该 Skill 的正文会写持久状态时，
+            // 作者可自行退出自动匹配（仍可靠 @提及 / load_skill 激活）。
+            autoMatchEligible = metadata["auto_match"]?.trim()?.lowercase() != "false",
             systemPrompt = markdown + "\n\n【Skill 资源目录】$guestPath\n如需执行该 Skill 附带的脚本，请先检查脚本内容与参数，再从此目录调用。",
             isBuiltin = false,
             category = "自定义",
@@ -294,7 +334,8 @@ private fun AgentSkillEntity.contentEqualsIgnoringEnabled(other: AgentSkillEntit
         isBuiltin == other.isBuiltin &&
         isImmutable == other.isImmutable &&
         category == other.category &&
-        resourcePath == other.resourcePath
+        resourcePath == other.resourcePath &&
+        autoMatchEligible == other.autoMatchEligible
 
 private fun AgentSkillEntity.toModel() = AgentSkill(
     id = id,
@@ -308,6 +349,7 @@ private fun AgentSkillEntity.toModel() = AgentSkill(
     isImmutable = isImmutable,
     category = category,
     resourcePath = resourcePath,
+    autoMatchEligible = autoMatchEligible,
 )
 
 private fun AgentSkill.toEntity() = AgentSkillEntity(
@@ -322,4 +364,5 @@ private fun AgentSkill.toEntity() = AgentSkillEntity(
     isImmutable = isImmutable,
     category = category,
     resourcePath = resourcePath,
+    autoMatchEligible = autoMatchEligible,
 )

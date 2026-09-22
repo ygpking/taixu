@@ -12,7 +12,9 @@ import top.wkbin.taixu.harness.ToolCallMode
 import top.wkbin.taixu.harness.projection.LiveMessagePort
 
 import top.wkbin.taixu.harness.mcp.McpManager
-import top.wkbin.taixu.harness.skill.SkillMatcher
+import top.wkbin.taixu.harness.skill.SkillDecisionResolver
+import top.wkbin.taixu.harness.skill.TurnSkillDecision
+import top.wkbin.taixu.harness.skill.SkillInjectionMemory
 
 /**
  * @提及 能力事件写入器：当用户消息提及技能或 MCP 服务时，
@@ -46,17 +48,31 @@ class CapabilityEventWriter @Inject constructor(
         if (!hasMentions && !wantsAutoMatch) return
 
         val existing = port.snapshot(sessionId)
-        if (hasMentions) {
-            writeSkillEvents(existing, sessionId, userMessageId, mentionedNames)
-            writeMcpEvents(existing, sessionId, userMessageId, mentionedNames, model)
+        // 与系统提示注入侧**同一个 resolver、同一份输入**：此前两侧各算一遍且归一口径不同
+        // （这边裸 lowercase、那边 NFKC；这边不过滤 isEnabled、那边过滤），于是一个 @提及
+        // 会同时得到"正文已注入"和"未匹配请确认拼写"两段互相矛盾的系统提示，
+        // 禁用技能更会被写成"已生效"卡片。
+        val skills = runCatching { skillRepository.allSkills.first() }.getOrDefault(emptyList())
+        val decision = SkillDecisionResolver.resolveFromMentions(
+            rawMentions = mentionedNames,
+            latestUserMessage = latestUserMessage,
+            allSkills = skills,
+            toolCallMode = if (toolDisabled) ToolCallMode.DISABLED else model.toolCallMode,
+            stickyIds = SkillInjectionMemory.stickyIds(sessionId),
+        )
+        // MCP 事件按 mentionedNames 走（与技能解析无关：@一个 MCP 服务/工具时技能侧可能为空），
+        // 技能事件按 decision.mentionedIds 走（已过 isEnabled / 空正文门禁）。
+        if (mentionedNames.isNotEmpty()) {
+            if (decision.mentionedIds.isNotEmpty()) {
+                writeSkillEvents(existing, sessionId, userMessageId, decision)
+            }
+            writeMcpEvents(existing, sessionId, userMessageId, decision.rawMentions, model)
         }
         // 自动匹配是「无声遗漏」的另一面：系统代替模型做了技能加载决策，
         // 若不在会话里留下可见痕迹，用户与开发者都无从判断"到底用了没用"。
-        // 这里与系统提示的注入同源同算法（同一个 SkillMatcher），保证「事件卡片」与
-        // 「实际注入内容」一致，不会出现卡片说有、提示里却没有的偏差。
         // pureChatMode（工具禁用）下系统提示不注入技能正文，此处同步跳过，保持两侧一致。
         if (wantsAutoMatch) {
-            writeAutoMatchedSkillEvents(existing, sessionId, userMessageId, latestUserMessage, mentionedNames)
+            writeAutoMatchedSkillEvents(existing, sessionId, userMessageId, decision)
         }
     }
 
@@ -64,65 +80,41 @@ class CapabilityEventWriter @Inject constructor(
         existing: List<HarnessMessage>,
         sessionId: String,
         userMessageId: String,
-        latestUserMessage: String,
-        mentionedNames: Set<String>,
+        decision: TurnSkillDecision,
     ) {
-        if (latestUserMessage.isBlank()) return
-        val skills = runCatching { skillRepository.activeSkills.first() }.getOrDefault(emptyList())
-        if (skills.isEmpty()) return
-        // 已被 @提及 的技能走 writeSkillEvents 事件，不重复记为"自动匹配"。
-        // 排除必须发生在 match 之前：match 默认只取 AUTO_INJECT_MAX 条，而全名 @提及的技能
-        // NAME_SCORE 最高必然登顶；先 take 再排除会让混合轮唯一的自动注入名额被已提及技能吃掉
-        // （与 SystemPromptBuilder.selectAutoMatchedSkills 同一口径，两处必须同步改）。
-        val mentionedIds = skills.filter { skill ->
-            val names = setOf(
-                skill.name.lowercase(),
-                skill.id.lowercase(),
-                skill.triggerCommand?.removePrefix("/")?.lowercase().orEmpty(),
+        decision.autoMatchedIds.forEach { skillId ->
+            val skill = decisionSkillName(decision, skillId) ?: return@forEach
+            appendEventOnce(
+                existing,
+                sessionId,
+                id = "auto:$userMessageId:$skillId",
+                kind = CapabilityEvent.Kind.SKILL,
+                name = skill,
+                // 不能说"已直接注入"：注入侧还有一层累计字符预算（24K），超限的技能会被跳过。
+                // 卡片无法在那个时刻知道结果，措辞必须对两种情况都成立。
+                description = "系统自动匹配命中，指导规则按上下文预算注入",
             )
-            names.any { it.isNotBlank() && it in mentionedNames }
-        }.mapTo(mutableSetOf()) { it.id }
-        val candidates = if (mentionedIds.isEmpty()) {
-            skills
-        } else {
-            skills.filter { it.id !in mentionedIds }
         }
-        SkillMatcher.match(latestUserMessage, candidates)
-            .forEach { hit ->
-                appendEventOnce(
-                    existing,
-                    sessionId,
-                    id = "auto:$userMessageId:${hit.skill.id}",
-                    kind = CapabilityEvent.Kind.SKILL,
-                    name = hit.skill.name,
-                    description = "系统自动匹配命中，指导规则已直接注入",
-                )
-            }
     }
 
     private suspend fun writeSkillEvents(
         existing: List<HarnessMessage>,
         sessionId: String,
         userMessageId: String,
-        mentionedNames: Set<String>,
+        decision: TurnSkillDecision,
     ) {
-        val skills = runCatching { skillRepository.allSkills.first() }.getOrDefault(emptyList())
-            .filter { skill ->
-                val names = setOf(
-                    skill.name.lowercase(),
-                    skill.id.lowercase(),
-                    skill.triggerCommand?.removePrefix("/")?.lowercase().orEmpty(),
-                )
-                names.any { it.isNotBlank() && it in mentionedNames }
-            }
-        skills.forEach { skill ->
+        // mentionedIds 已经过 resolver 的 isEnabled / 空正文门禁——此前这里用 allSkills
+        // 且不过滤，@一个被禁用的技能也会写"已生效"卡片，而同一请求里正文并未注入、
+        // 系统提示还把它列进"未匹配"，三处信号互相矛盾。
+        decision.mentionedIds.forEach { skillId ->
+            val skill = decisionSkillName(decision, skillId) ?: return@forEach
             appendEventOnce(
                 existing,
                 sessionId,
-                id = "skill:$userMessageId:${skill.id}",
+                id = "skill:$userMessageId:$skillId",
                 kind = CapabilityEvent.Kind.SKILL,
-                name = skill.name,
-                description = skill.description,
+                name = skill,
+                description = "已按 @提及 注入该技能的指导规则",
             )
         }
     }
@@ -159,6 +151,15 @@ class CapabilityEventWriter @Inject constructor(
                     description = desc,
                 )
             }
+    }
+
+    /** 从仓储拿技能名（卡片只需要名字；拿不到就跳过该卡片，不写无名事件）。 */
+    private suspend fun decisionSkillName(decision: TurnSkillDecision, skillId: String): String? {
+        if (skillId.isBlank()) return null
+        return runCatching { skillRepository.allSkills.first() }
+            .getOrDefault(emptyList())
+            .firstOrNull { it.id == skillId }
+            ?.name
     }
 
     private suspend fun appendEventOnce(

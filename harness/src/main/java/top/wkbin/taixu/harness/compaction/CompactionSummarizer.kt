@@ -9,6 +9,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import top.wkbin.taixu.harness.ApiMessage
 import top.wkbin.taixu.harness.AssistantText
 import top.wkbin.taixu.harness.CapabilityEvent
+import top.wkbin.taixu.harness.SKILL_SUGGESTION_PENDING
 import top.wkbin.taixu.harness.SkillSuggestion
 import top.wkbin.taixu.harness.HarnessApiMapper
 import top.wkbin.taixu.harness.HarnessMessage
@@ -33,6 +34,9 @@ import top.wkbin.taixu.harness.UserMessage
 object ConversationText {
 
     const val TOOL_RESULT_CHAR_LIMIT = 2_000
+
+    /** 待处理状态（与 HarnessMessage.SKILL_SUGGESTION_PENDING 同源）。 */
+    private const val PENDING_STATUS = SKILL_SUGGESTION_PENDING
     private const val ARG_VALUE_CHAR_LIMIT = 240
     private const val THINKING_CHAR_LIMIT = 1_200
     /** 序列化文本总量上限（字符）：超出时保头尾，避免摘要请求本身爆上下文。 */
@@ -52,7 +56,14 @@ object ConversationText {
         while (index < messages.size) {
             val message = messages[index]
             when (message) {
-                is CapabilityEvent, is ModelSwitchEvent, is SkillSuggestion -> Unit
+                is CapabilityEvent, is ModelSwitchEvent -> Unit
+                // 未处理的技能建议不进摘要正文（它是给用户看的卡片，不是对话内容），
+                // 但要留一个锚点，否则用户在折叠区里看到卡片凭空消失、且无从得知有几条待处理。
+                is SkillSuggestion ->
+                    if (message.status == PENDING_STATUS) {
+                        lines += "[System note] 折叠区内有 1 条未处理的技能进化建议（用户尚未创建/忽略）"
+                    }
+
                 is UserMessage -> lines += "[User]: ${message.text.trim()}"
                 is AssistantText -> {
                     message.reasoning?.takeIf { it.isNotBlank() }?.let {
@@ -250,8 +261,11 @@ class CompactionSummarizer @Inject constructor(
         if (serialized.isBlank()) return null
         val prompt = buildPrompt(serialized, previousSummaries)
         val summaryModel = model.copy(
-            // 摘要是一次性请求：输出上限固定为温和值，不透传主对话可能配置的极小 maxTokens
-            maxTokens = minOf(model.maxTokens ?: DEFAULT_SUMMARY_MAX_TOKENS, DEFAULT_SUMMARY_MAX_TOKENS),
+            // 摘要是一次性请求：输出上限取温和值，且**不低于** DEFAULT_SUMMARY_MAX_TOKENS。
+            // 原先用 minOf：模型档案显式配了 maxTokens=1000 时摘要上限被压到 1000，
+            // 长会话的摘要会被上游截断成残句——与这行注释想表达的意图正好相反。
+            maxTokens = (model.maxTokens ?: DEFAULT_SUMMARY_MAX_TOKENS)
+                .coerceAtLeast(DEFAULT_SUMMARY_MAX_TOKENS),
             pureChatMode = false,
         )
         // 不能吞 CancellationException：压缩发生在请求组装路径内，用户"停止"后若在此

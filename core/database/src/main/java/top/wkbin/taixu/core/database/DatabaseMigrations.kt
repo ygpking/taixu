@@ -352,3 +352,91 @@ val MIGRATION_48_49 = object : Migration(48, 49) {
     }
 }
 
+/**
+ * 技能名唯一约束（第三波，本单唯一不可逆项）。
+ *
+ * 背景：`agent_skills` 只有 id 主键，name 无唯一约束。update 进化落库曾以 LLM 提案名覆盖
+ * 目标技能名（第一波已修），此前被改过名的设备上可能已存在两个同名启用技能——
+ * `load_skill` 同名精确匹配多条即报「匹配到多个技能」，斜杠命令也会被 distinctBy 静默吞掉。
+ *
+ * 因此这一步是**先去重、再建唯一索引**：直接 CREATE UNIQUE INDEX 在含重复行的表上会失败，
+ * 而失败会被 fallbackToDestructiveMigration 接住 → 整库销毁。去重保留 updatedAt 最新的一行
+ * （技能内容的"最后写入者"），同刻则保留 id 字典序较小者以保证结果确定。
+ */
+val MIGRATION_49_50 = object : Migration(49, 50) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        // 重名消歧：每组同名技能里保留 id 最小的一行原名，其余追加 "-" + id 末 4 位。
+        //
+        // 为什么是"改名"而不是"删行"：agent_skills 没有 updatedAt 之类的时光标，
+        // 无法判断哪一行是用户更想要的内容；删错就是不可恢复的数据丢失。追加后缀则两边都保住，
+        // 用户可在设置里自行合并或删除。后缀取 id 末 4 位（id 形如 custom_1a2b3c4d / builtin_xxx），
+        // 足够区分且不依赖任何排序窗口函数。
+        db.execSQL(
+            """
+            UPDATE `agent_skills` SET `name` = `name` || '-' || replace(substr(`id`, -4), '_', '')
+            WHERE `id` IN (
+                SELECT a.`id` FROM `agent_skills` a
+                WHERE (SELECT COUNT(*) FROM `agent_skills` b WHERE b.`name` = a.`name`) > 1
+                  AND EXISTS (
+                      SELECT 1 FROM `agent_skills` b
+                      WHERE b.`name` = a.`name` AND b.`id` < a.`id`
+                  )
+            )
+            """.trimIndent(),
+        )
+        // 唯一索引：此后重名写入直接被 DB 挡下（update 进化落库与 create 去重都依赖这一点）。
+        db.execSQL(
+            "CREATE UNIQUE INDEX IF NOT EXISTS `index_agent_skills_name` ON `agent_skills` (`name`)",
+        )
+    }
+}
+
+/**
+ * 技能表新增 `autoMatchEligible` 列（默认 1 = 允许自动匹配注入）。
+ *
+ * 为什么加列：自动匹配误报的代价对**会写持久状态的技能**特别高（正文指令模型调
+ * plan/memory/scratchpad，一次误注入就可能覆盖用户真实计划）。把"要不要参与自动匹配"
+ * 变成技能的显式属性，而不是靠正则扫正文猜——既是过拟合也难维护。
+ *
+ * 加列带默认值，可回填；不回滚索引、不动主键，风险远低于唯一索引那次。
+ * 内置 `agent_context` 由 `ensureInitialized` 的内容差异重播种置为 0
+ * （`contentEqualsIgnoringEnabled` 已含该字段，翻转会触发重播种）。
+ */
+val MIGRATION_50_51 = object : Migration(50, 51) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        // 先查列是否已在：SQLite 没有 `ADD COLUMN IF NOT EXISTS`，而"迁移被重放"
+        // （备份恢复、测试夹具、手工修补）时不加守卫会直接 duplicate column 报错，
+        // 那个报错会被 fallbackToDestructiveMigration 接住变成整库销毁。
+        val hasColumn = db.query("PRAGMA table_info(`agent_skills`)").use { cursor ->
+            val nameIndex = cursor.getColumnIndex("name")
+            var found = false
+            while (cursor.moveToNext()) {
+                if (nameIndex >= 0 && cursor.getString(nameIndex) == "autoMatchEligible") {
+                    found = true
+                    break
+                }
+            }
+            found
+        }
+        if (hasColumn) return
+        db.execSQL(
+            "ALTER TABLE `agent_skills` ADD COLUMN `autoMatchEligible` INTEGER NOT NULL DEFAULT 1",
+        )
+    }
+}
+
+/**
+ * 迁移成员清单 —— **单一真相源**。
+ *
+ * `AppModule.addMigrations(...)` 与真实升级测试都从这里取，避免"测试装了某条迁移、线上漏装"
+ * 这类只有在用户设备上才暴露的偏差。新增迁移时必须同时登记到此清单。
+ *
+ * 顺序即执行顺序（Room 会按版本号挑选实际要跑的那几条，此处顺序仅是可读性）。
+ */
+val ALL_MIGRATIONS: Array<Migration> = arrayOf(
+    MIGRATION_27_28, MIGRATION_28_29, MIGRATION_29_30, MIGRATION_30_31, MIGRATION_31_32,
+    MIGRATION_32_33, MIGRATION_33_34, MIGRATION_34_35, MIGRATION_35_36, MIGRATION_36_37,
+    MIGRATION_37_38, MIGRATION_38_39, MIGRATION_39_40, MIGRATION_40_41, MIGRATION_41_42,
+    MIGRATION_42_43, MIGRATION_43_44, MIGRATION_44_45, MIGRATION_45_46, MIGRATION_46_47,
+    MIGRATION_47_48, MIGRATION_48_49, MIGRATION_49_50, MIGRATION_50_51,
+)

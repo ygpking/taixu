@@ -113,6 +113,16 @@ class AgentContextExecutor @Inject constructor(
                     }
                     else -> return false to "memory verify 需提供 id 或 key"
                 } ?: return false to "未找到要核验的记忆"
+                // scope 可见性校验与 delete/query 同口径：按 id 直接取到的记忆可能属于
+                // 别的 project/session（id 又不是密钥），不复核的话任意会话都能凭一个 id
+                // 给别人的记忆续期。delete 分支早就做了这个判定，verify 是漏网的那处。
+                val visible = when (target.scope) {
+                    "global" -> target.ownerId.isEmpty()
+                    "project" -> target.ownerId == projectOwner(workspace) && target.ownerId.isNotBlank()
+                    "session" -> target.ownerId == sessionId && sessionId.isNotBlank()
+                    else -> false
+                }
+                if (!visible) return false to "无权核验不属于当前项目或会话的记忆"
                 agentContextDao.touchMemory(target.id, System.currentTimeMillis())
                 true to "已刷新记忆 ${target.key} 的新鲜度（lastVerifiedAt 续期）"
             }
@@ -135,10 +145,11 @@ class AgentContextExecutor @Inject constructor(
             }
             "list" -> {
                 val includeExpired = (args["include_expired"]?.jsonPrimitive?.contentOrNull?.lowercase()) == "true"
+                // pinned = null（不过滤置顶态），理由见下方渲染处的注释。
                 val results = agentContextDao.getFreshMemories(
                     projectOwnerId = projectOwner(workspace),
                     sessionId = sessionId,
-                    pinned = false,
+                    pinned = null,
                     now = System.currentTimeMillis(),
                     limit = MAX_MEMORY_LIST,
                 ).plus(
@@ -149,7 +160,12 @@ class AgentContextExecutor @Inject constructor(
                 if (results.isEmpty()) {
                     true to "当前暂无长期记忆"
                 } else {
-                    val formatted = results.joinToString("\n") { it.render() }
+                    // 置顶项也列出并标注：置顶记忆本就常驻系统提示，但 list 的职责是让模型
+                    // 「我到底存过什么」可查。此前这里把置顶项过滤掉，而 query/search 不过滤、
+                    // include_expired 又能看到过期置顶项——三种口径互相矛盾。
+                    val formatted = results.joinToString("\n") { memory ->
+                        if (memory.pinned) memory.render() + " [置顶]" else memory.render()
+                    }
                     true to "已保存的记忆列表：\n$formatted"
                 }
             }
@@ -172,7 +188,10 @@ class AgentContextExecutor @Inject constructor(
                     val scope = args["scope"]?.jsonPrimitive?.contentOrNull?.lowercase() ?: "global"
                     val ownerId = memoryOwner(scope, sessionId, workspace)
                         ?: return false to "scope 仅支持 global/project/session，且 project/session 必须有对应上下文"
-                    agentContextDao.deleteMemoryByKey(key, scope, ownerId)
+                    val removed = agentContextDao.deleteMemoryByKey(key, scope, ownerId)
+                    if (removed <= 0) {
+                        return false to "未找到要删除的记忆 [$scope] key=$key（可能已被删除或键名不符）"
+                    }
                     true to "已删除记忆 [$scope] key=$key"
                 } else {
                     false to "memory delete 需提供 id 或 key"
@@ -189,7 +208,12 @@ class AgentContextExecutor @Inject constructor(
         else -> null
     }
 
-    private fun projectOwner(workspace: String): String = workspace.trim().trimEnd('/')
+    /**
+     * 工程标识归一：Windows 下同一路径可能以反斜杠与正斜杠两种写法进入，
+     * 只 trimEnd('/') 会让 project scope 的记忆与 pinned 查询互相 miss。
+     */
+    private fun projectOwner(workspace: String): String =
+        workspace.trim().replace('\\', '/').trimEnd('/')
 
     /** 新鲜度判定：expiresAt 为 null 或晚于 now 视为新鲜（过期只降权，不删除）。 */
     private fun isFresh(memory: AgentMemoryEntity, now: Long): Boolean {
@@ -390,6 +414,12 @@ class AgentContextExecutor @Inject constructor(
                     ?: return false to "scratchpad save 必须提供 key"
                 val value = args["value"]?.jsonPrimitive?.contentOrNull?.trim()
                     ?: return false to "scratchpad save 必须提供 value"
+                // 体积护栏：与 memory 的 4,096 字符口径对齐。无上限时模型可写入任意长 value，
+                // list/get 时全量回显进上下文，DB 行也无界增长。
+                if (value.length > MAX_SCRATCHPAD_VALUE_CHARS) {
+                    return false to "草稿值过长（${value.length} 字符 > $MAX_SCRATCHPAD_VALUE_CHARS 上限），" +
+                        "请拆分多次记录或精简内容"
+                }
                 agentContextDao.saveScratchpad(
                     AgentScratchpadEntity(
                         sessionId = sessionId,
@@ -433,3 +463,9 @@ class AgentContextExecutor @Inject constructor(
         }
     }
 }
+
+/**
+ * 草稿值体积上限（字符）：与 memory 的 value 上限对齐，防止模型写入任意长 value
+ * 后 list/get 全量回显进上下文、DB 行也无界增长。
+ */
+internal const val MAX_SCRATCHPAD_VALUE_CHARS = 4_096

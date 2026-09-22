@@ -31,25 +31,11 @@ import top.wkbin.taixu.harness.AssistantText
 import top.wkbin.taixu.harness.ModelSwitchEvent
 import top.wkbin.taixu.harness.UserMessage
 import top.wkbin.taixu.harness.compaction.CompactionManager
-import top.wkbin.taixu.harness.projection.LiveMessagePort
+import top.wkbin.taixu.harness.fixtures.RecordingPort
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class SessionModelSwitcherTest {
-
-    private class RecordingPort : LiveMessagePort {
-        val appended = mutableListOf<Pair<String, top.wkbin.taixu.harness.HarnessMessage>>()
-
-        override suspend fun append(sessionId: String, message: top.wkbin.taixu.harness.HarnessMessage) {
-            appended += sessionId to message
-        }
-
-        override suspend fun publishPersisted(sessionId: String, message: top.wkbin.taixu.harness.HarnessMessage) {
-            append(sessionId, message)
-        }
-
-        override fun snapshot(sessionId: String): List<top.wkbin.taixu.harness.HarnessMessage> = emptyList()
-    }
 
     private lateinit var database: AppDatabase
     private lateinit var sessions: RoomHarnessSessionRepository
@@ -73,10 +59,12 @@ class SessionModelSwitcherTest {
         store = SessionTreeStore(runtimeRepo, json, logger)
         compaction = CompactionManager(runtimeRepo, json)
         port = RecordingPort()
+        val prefs = AgentPreferences(SettingsDataStore(context, SecretManager()))
         switcher = SessionModelSwitcher(
+            budgetResolver = top.wkbin.taixu.harness.budget.ContextBudgetResolver(prefs),
             sessionDao = sessions,
             modelDao = models,
-            settingsDataStore = AgentPreferences(SettingsDataStore(context, SecretManager())),
+            settingsDataStore = prefs,
             compactionManager = compaction,
             messagePort = port,
         )

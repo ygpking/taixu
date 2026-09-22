@@ -173,10 +173,10 @@ interface AgentContextRepository {
     fun observeAllMemories(): Flow<List<AgentMemoryEntity>>
     suspend fun searchMemories(query: String, projectOwnerId: String, sessionId: String, limit: Int = 50): List<AgentMemoryEntity>
     suspend fun getPinnedMemories(projectOwnerId: String, sessionId: String): List<AgentMemoryEntity>
-    suspend fun getFreshMemories(projectOwnerId: String, sessionId: String, pinned: Boolean, now: Long, limit: Int = 100): List<AgentMemoryEntity>
+    suspend fun getFreshMemories(projectOwnerId: String, sessionId: String, pinned: Boolean?, now: Long, limit: Int = 100): List<AgentMemoryEntity>
     suspend fun touchMemory(id: String, now: Long)
     suspend fun deleteMemoryById(id: String)
-    suspend fun deleteMemoryByKey(key: String, scope: String, ownerId: String)
+    suspend fun deleteMemoryByKey(key: String, scope: String, ownerId: String): Int
     suspend fun savePlan(plan: AgentPlanEntity)
     suspend fun getPlanBySession(sessionId: String): AgentPlanEntity?
     suspend fun getActivePlan(sessionId: String): AgentPlanEntity?
@@ -277,7 +277,7 @@ class RoomAgentContextRepository @Inject constructor(private val dao: AgentConte
         dao.searchMemories(query, projectOwnerId, sessionId, limit)
     override suspend fun getPinnedMemories(projectOwnerId: String, sessionId: String) =
         dao.getPinnedMemories(projectOwnerId, sessionId)
-    override suspend fun getFreshMemories(projectOwnerId: String, sessionId: String, pinned: Boolean, now: Long, limit: Int) =
+    override suspend fun getFreshMemories(projectOwnerId: String, sessionId: String, pinned: Boolean?, now: Long, limit: Int) =
         dao.getFreshMemories(projectOwnerId, sessionId, pinned, now, limit)
     override suspend fun touchMemory(id: String, now: Long) = dao.touchMemory(id, now)
     override suspend fun deleteMemoryById(id: String) = dao.deleteMemoryById(id)

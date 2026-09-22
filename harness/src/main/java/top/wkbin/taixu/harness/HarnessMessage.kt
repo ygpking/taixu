@@ -41,6 +41,9 @@ sealed interface HarnessMessage {
  * 一轮有效工作结束后由 SkillEvolutionAdvisor 分析产出，展示为可操作卡片
  * （创建新技能 / 更新既有技能 / 忽略）。持久化用于转写回放，绝不发给模型。
  */
+/** 待处理：用户尚未创建/忽略。applied / dismissed 由处置时写入转写。 */
+const val SKILL_SUGGESTION_PENDING = "pending"
+
 @Serializable
 @SerialName("skill_suggestion")
 data class SkillSuggestion(
@@ -56,7 +59,7 @@ data class SkillSuggestion(
     val targetSkillId: String? = null,
     val reason: String = "",
     /** pending = 待处理；applied / dismissed 由 UI 内存态过滤（转写里保留原样） */
-    val status: String = "pending",
+    val status: String = SKILL_SUGGESTION_PENDING,
 ) : HarnessMessage
 
 /** UI-only capability activation event. It is persisted for the transcript but never sent to the model. */

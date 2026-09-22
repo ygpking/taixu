@@ -41,6 +41,11 @@ class HarnessProviderRunner @Inject constructor(
         val msgs = messageProjector.messagesFlow(sessId).value
         val latestUserMessage = msgs.filterIsInstance<UserMessage>().lastOrNull()
         val latestUserText = latestUserMessage?.text.orEmpty()
+        // 带上已启用技能的 knownNames：不传名单时「@Git 敏捷工作流」只会析出截断的
+        // 「git」（最长优先需要名单），于是 MCP 过滤与能力卡片都按截断形工作，
+        // 与提示注入侧（带名单重解析）结论不一致。此处没有技能仓储，退而取
+        // dynamicMcpTools 之外的全部配置名为名单不可行——改为把 knownNames 交给
+        // 调用方传入（本周后续 PR 会把整轮决策上移到 HarnessLoop）。
         val mentionedNames = MentionExtractor.parse(latestUserText)
         val effectiveModel = if (mentionedNames.isNotEmpty()) {
             val matchedTools = model.dynamicMcpTools.filter { tool ->
@@ -250,7 +255,7 @@ class HarnessProviderRunner @Inject constructor(
                     val effectiveInputLimit = ContextWindowPolicy.resolveInputLimit(
                         requestModel.inputTokenLimit,
                         ContextWindowPolicy.resolveEffectiveBudget(requestModel.contextTokens),
-                        runCatching { agentPreferences.inputTokenLimit.first() }.getOrNull(),
+                        runCatching { agentPreferences.inputTokenLimitOrNull.first() }.getOrNull(),
                     )
                     val currentTokens = estimateTokens(requestMessages)
                     // 413 分型保险丝（对齐 OMP）：本地估算已明显低于裁切基准（< 0.9 倍）却仍被拒，

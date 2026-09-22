@@ -849,6 +849,21 @@ internal fun ThinkingBlock(
 }
 
 /**
+ * 技能建议卡片的标题。
+ *
+ * update 提案优先显示**真实目标技能名**（由 targetSkillId 解析）：LLM 自由填写的
+ * skillName 曾被原样当标题，用户看到「修复既有技能：Git 敏捷工作流」就以为改的是
+ * 熟悉的那一个，而落库名字以提案为准。解析不到（技能已被删/ id 失效）时退回提案名，
+ * 至少不空白。
+ */
+internal fun skillSuggestionTitle(suggestion: SkillSuggestion, targetSkillName: String?): String =
+    if (suggestion.action == "update" && !targetSkillName.isNullOrBlank()) {
+        "将更新：" + targetSkillName
+    } else {
+        suggestion.skillName
+    }
+
+/**
  * 技能进化建议卡片（借鉴千问的对话后技能沉淀/进化）：
  * 创建新技能 / 更新既有技能 / 忽略，动作完成后由上层隐藏卡片。
  */
@@ -858,6 +873,14 @@ internal fun SkillSuggestionCard(
     onCreate: () -> Unit,
     onUpdate: () -> Unit,
     onDismiss: () -> Unit,
+    /**
+     * update 提案的**真实目标技能名**（由 targetSkillId 解析而来）。
+     *
+     * 为什么必须显示它：LLM 自由填写的 skillName 曾被原样当标题渲染，用户看到
+     * 「修复既有技能：Git 敏捷工作流」就以为自己改的是熟悉的那一个——实际落库的
+     * 名字以提案为准（第一波已改成不改名，但卡片仍没告诉用户"到底改的是谁"）。
+     */
+    targetSkillName: String? = null,
 ) {
     val isUpdate = suggestion.action == "update"
     Surface(
@@ -886,7 +909,7 @@ internal fun SkillSuggestionCard(
                 )
             }
             Text(
-                suggestion.skillName,
+                skillSuggestionTitle(suggestion, targetSkillName),
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
             )

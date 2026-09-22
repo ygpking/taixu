@@ -3,28 +3,7 @@ package top.wkbin.taixu.di
 import android.content.Context
 import androidx.room.Room
 import top.wkbin.taixu.core.database.AppDatabase
-import top.wkbin.taixu.core.database.MIGRATION_27_28
-import top.wkbin.taixu.core.database.MIGRATION_28_29
-import top.wkbin.taixu.core.database.MIGRATION_29_30
-import top.wkbin.taixu.core.database.MIGRATION_30_31
-import top.wkbin.taixu.core.database.MIGRATION_31_32
-import top.wkbin.taixu.core.database.MIGRATION_32_33
-import top.wkbin.taixu.core.database.MIGRATION_33_34
-import top.wkbin.taixu.core.database.MIGRATION_34_35
-import top.wkbin.taixu.core.database.MIGRATION_35_36
-import top.wkbin.taixu.core.database.MIGRATION_36_37
-import top.wkbin.taixu.core.database.MIGRATION_37_38
-import top.wkbin.taixu.core.database.MIGRATION_38_39
-import top.wkbin.taixu.core.database.MIGRATION_39_40
-import top.wkbin.taixu.core.database.MIGRATION_40_41
-import top.wkbin.taixu.core.database.MIGRATION_41_42
-import top.wkbin.taixu.core.database.MIGRATION_42_43
-import top.wkbin.taixu.core.database.MIGRATION_43_44
-import top.wkbin.taixu.core.database.MIGRATION_44_45
-import top.wkbin.taixu.core.database.MIGRATION_45_46
-import top.wkbin.taixu.core.database.MIGRATION_46_47
-import top.wkbin.taixu.core.database.MIGRATION_47_48
-import top.wkbin.taixu.core.database.MIGRATION_48_49
+import top.wkbin.taixu.core.database.ALL_MIGRATIONS
 import top.wkbin.taixu.core.database.WorkflowDao
 import top.wkbin.taixu.core.database.BuildScriptDao
 import top.wkbin.taixu.core.database.task.AgentTaskDao
@@ -93,7 +72,7 @@ object AppModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): AppDatabase {
         return Room.databaseBuilder(context, AppDatabase::class.java, "taixu.db")
-            .addMigrations(MIGRATION_27_28, MIGRATION_28_29, MIGRATION_29_30, MIGRATION_30_31, MIGRATION_31_32, MIGRATION_32_33, MIGRATION_33_34, MIGRATION_34_35, MIGRATION_35_36, MIGRATION_36_37, MIGRATION_37_38, MIGRATION_38_39, MIGRATION_39_40, MIGRATION_40_41, MIGRATION_41_42, MIGRATION_42_43, MIGRATION_43_44, MIGRATION_44_45, MIGRATION_45_46, MIGRATION_46_47, MIGRATION_47_48, MIGRATION_48_49)
+            .addMigrations(*ALL_MIGRATIONS)
             .fallbackToDestructiveMigration(dropAllTables = true)
             .build()
     }

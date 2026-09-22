@@ -688,8 +688,27 @@ class SettingsDataStore @Inject constructor(
      * 模型档案未单独配置 inputTokenLimit 时，回退到此全局值。
      */
     private val inputTokenLimitKey = androidx.datastore.preferences.core.intPreferencesKey("agent_input_token_limit")
+
+    /**
+     * 全局「单次输入上限」的**可空**语义：null = 用户从未设置过。
+     *
+     * 历史缺陷：这里原先用具体默认值 `DEFAULT_INPUT_LIMIT = 230_000` 表达"未配置"，
+     * 导致 `ContextBudgetDefaults.resolveInputLimit` 优先级链第 3 级「窗口×90%」
+     * 在**全部**生产调用点都是死代码——100 万窗口的模型实际按 23 万裁切
+     * （折叠线 207K 而非 810K），为 1M 窗口付的钱换来与 25.6 万窗口相同的裁切。
+     * 而 KDoc 一直声称"默认值随窗口推导而非固定值"。
+     *
+     * 保留非空的 [inputTokenLimit] 给纯展示路径用；任何参与预算计算的调用方都应改读
+     * [inputTokenLimitOrNull]，由 `ContextBudgetDefaults.resolveInputLimit` 统一推导。
+     */
+    val inputTokenLimitOrNull: Flow<Int?> = context.settingsDataStore.data.map {
+        it[inputTokenLimitKey]?.let { v -> ContextBudgetDefaults.normalizeInputLimit(v) }
+    }
+
+    /** 纯展示用（把"未设置"显示成推导值）。预算计算请用 [inputTokenLimitOrNull]。 */
     val inputTokenLimit: Flow<Int> = context.settingsDataStore.data.map {
-        it[inputTokenLimitKey] ?: ContextBudgetDefaults.DEFAULT_INPUT_LIMIT
+        it[inputTokenLimitKey]?.let { v -> ContextBudgetDefaults.normalizeInputLimit(v) }
+            ?: ContextBudgetDefaults.DEFAULT_INPUT_LIMIT
     }
     suspend fun setInputTokenLimit(value: Int) {
         context.settingsDataStore.edit {

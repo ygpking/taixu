@@ -80,8 +80,10 @@ object ContextWindowPolicy {
         reserveTokens: Int? = null,
     ): Int {
         if (budget <= 0) return 0
-        // per-model 自定义输出预留优先（对齐 pi reserveTokens）；未提供时用内置预留（输出 + 工具 schema）。
-        val reserved = (reserveTokens ?: RESERVED_OUTPUT_TOKENS) + TOOL_SCHEMA_RESERVE_TOKENS
+        // per-model 自定义输出预留优先（对齐 pi reserveTokens）；未提供时用内置预留。
+        // 内置预留按预算比例封顶（见 reservedOutputTokens）：绝对值 8,192+4,096=12,288 在
+        // 4K/8K 小窗口档位超过预算本身，会把折叠线压成 0、历史每轮塌到最小轮。
+        val reserved = (reserveTokens ?: reservedOutputTokens(budget)) + toolSchemaReserveTokens(budget)
         val hardCeiling = budget - reserved
         val safeRatio = ratioPercent.coerceIn(MIN_FOLDING_RATIO_PERCENT, MAX_FOLDING_RATIO_PERCENT)
         val scaled = (budget.toLong() * safeRatio / 100L).toInt()
@@ -123,10 +125,28 @@ object ContextWindowPolicy {
      */
     const val DEFAULT_MAX_KEEP_TOKENS = ContextBudgetDefaults.DEFAULT_MAX_KEEP_TOKENS
 
-    /** 预留：completion 输出空间（协议硬需求，与模型档位无关）。 */
+    /**
+     * 预留：completion 输出空间（协议硬需求）。
+     *
+     * 但**不能是与模型档位无关的绝对值**：8,192 + 4,096 = 12,288 在 4K/8K 小窗口档位
+     * 直接超过预算本身（8K 档预算 7,200），折叠线被 `coerceAtLeast(MIN_CONTEXT_BUDGET)`
+     * 抬成 0 或负数后历史每轮塌到 2 条。改为按预算比例封顶：比例优先，绝对值只作下限兜底。
+     */
+    private const val RESERVED_OUTPUT_FRACTION = 0.15
+    private const val TOOL_SCHEMA_RESERVE_FRACTION = 0.08
+    /** 待处理状态（与 HarnessMessage.SKILL_SUGGESTION_PENDING 同源）。 */
+    private const val PENDING_STATUS = SKILL_SUGGESTION_PENDING
+
     private const val RESERVED_OUTPUT_TOKENS = 8_192
-    /** 预留：工具/MCP schema 空间（协议硬需求，与模型档位无关）。 */
     private const val TOOL_SCHEMA_RESERVE_TOKENS = 4_096
+
+    /** 按预算比例封顶后的输出预留（小窗口档位不再吃掉整个预算）。 */
+    internal fun reservedOutputTokens(budget: Int): Int =
+        minOf(RESERVED_OUTPUT_TOKENS, (budget * RESERVED_OUTPUT_FRACTION).toInt().coerceAtLeast(512))
+
+    /** 按预算比例封顶后的工具 schema 预留。 */
+    internal fun toolSchemaReserveTokens(budget: Int): Int =
+        minOf(TOOL_SCHEMA_RESERVE_TOKENS, (budget * TOOL_SCHEMA_RESERVE_FRACTION).toInt().coerceAtLeast(256))
     /** 兜底预算（模型未单独配置 contextTokens 且全局设置未生效时使用）。真相源见 [ContextBudgetDefaults]。 */
     const val DEFAULT_CONTEXT_BUDGET = ContextBudgetDefaults.DEFAULT_TOKENS
     /** 单次输入上限默认值（裁切基准兜底）。真相源见 [ContextBudgetDefaults]。 */
@@ -171,12 +191,6 @@ object ContextWindowPolicy {
         val safeRounds = rounds?.takeIf { it > 0 } ?: 0
         return (safeRounds * MESSAGES_PER_ROUND).coerceAtLeast(MIN_KEEP_MESSAGES)
     }
-    /**
-     * 历史消息占用的绝对安全上限（token）。无论模型标称窗口多高，压缩触发线都不超过此值，
-     * 避免 flash 级模型在超高 token 下参数生成崩塌（上游 v0.15.0 引入的护栏）。
-     * 与本地 [foldingLimitFor] 的预算护栏取更严者生效，两者并存不互斥。
-     */
-    const val SAFE_GENERATION_CAP = 96_000
     private const val APPROX_CHARS_PER_TOKEN = 4
 
     /**
@@ -335,18 +349,23 @@ object ContextWindowPolicy {
     /** Conservative multilingual estimate used when a provider tokenizer is unavailable. */
     fun estimateTokens(text: String): Int {
         if (text.isBlank()) return 0
-        var cjk = 0
-        var ascii = 0
-        var punctuation = 0
-        text.forEach { ch ->
-            when {
-                ch.code in 0x2E80..0x9FFF || ch.code in 0xAC00..0xD7AF -> cjk++
-                ch.isWhitespace() -> Unit
-                ch.isLetterOrDigit() -> ascii++
-                else -> punctuation++
-            }
-        }
-        return (cjk / 1.8f + ascii / 2.5f + punctuation / 2.8f).toInt().coerceAtLeast(1)
+        var total = 0.0
+        text.forEach { ch -> total += charTokenCost(ch) }
+        return total.toInt().coerceAtLeast(1)
+    }
+
+    /**
+     * 单个字符的 token 成本（与 [estimateTokens] 同一套权重）。
+     *
+     * 抽出来是为了让"切割"与"校验"共用同一把尺：此前 [fitSystemPrompt] 按
+     * `APPROX_CHARS_PER_TOKEN=4` 反推字符数切割、再用本函数校验，两个口径差 1.6~2.22 倍，
+     * 中文场景下这道后闸从未真正生效。
+     */
+    internal fun charTokenCost(ch: Char): Double = when {
+        ch.code in 0x2E80..0x9FFF || ch.code in 0xAC00..0xD7AF -> 1.0 / 1.8
+        ch.isWhitespace() -> 0.0
+        ch.isLetterOrDigit() -> 1.0 / 2.5
+        else -> 1.0 / 2.8
     }
 
     const val DEFAULT_SYSTEM_PROMPT_TOKENS = 576
@@ -363,8 +382,16 @@ object ContextWindowPolicy {
      * 预算钳制：先按当前模型/全局回退取值，再统一钳制到 [1, MAX_CONTEXT_BUDGET]。
      * 两处必须走同一口径，否则会出现"切换模型判定无需压缩、实际请求又压缩"。
      */
+    /**
+     * 与 [resolveEffectiveBudget] 同一套下限（[MIN_CONTEXT_BUDGET]）。
+     *
+     * 原先这里夹的是 `1..MAX`，而引擎侧夹的是 `MIN_CONTEXT_BUDGET..MAX`——同一声明窗口值
+     * 在两处解析出不同结果（declared=1000 时切换侧得 1,000、请求侧得 4,000）。
+     * 当前因写入侧 normalize 已钳到 [MIN_CONTEXT_BUDGET, MAX_CONTEXT_BUDGET] 而不可达，
+     * 属潜伏缺陷；统一口径后任何新写入路径都不会再触发分叉。
+     */
     fun clampedBudget(profileContextTokens: Int?, defaultBudget: Int): Int =
-        resolveBudget(profileContextTokens, defaultBudget).coerceIn(1, MAX_CONTEXT_BUDGET)
+        resolveBudget(profileContextTokens, defaultBudget).coerceIn(MIN_CONTEXT_BUDGET, MAX_CONTEXT_BUDGET)
 
     fun estimateReservedPromptTokens(
         pureChat: Boolean,
@@ -575,9 +602,10 @@ object ContextWindowPolicy {
      * 此前存在一份逐字节相同的 `tokensOf`，两份都只服务于本文件的裁剪计算，
      * 注释还都写着"与另一处口径保持一致"——典型的"靠注释同步"，
      * 任一侧改权重另一侧就会静默分叉（同族教训：注释不会运行）。
-     * 已合并为一份，重复定义不允许再加。
+     * 已合并为一份，重复定义不允许再加。压缩侧（CompactionManager）也走这里，
+     * 不允许再出现第三套 `message.toString()` 粗估。
      */
-    private fun messageTokens(message: HarnessMessage): Int = when (message) {
+    internal fun messageTokens(message: HarnessMessage): Int = when (message) {
         is CapabilityEvent, is ModelSwitchEvent, is SkillSuggestion -> 0
         is UserMessage -> estimateTokens(message.text) + message.imageUrls.size * 1_000
         is AssistantText -> estimateTokens(assistantTextForContext(message.text)) +
@@ -630,7 +658,16 @@ object ContextWindowPolicy {
 
     private fun minimalKeepFromIndex(messages: List<HarnessMessage>): Int {
         val lastUser = messages.indexOfLast { it is UserMessage }
+        // 未处理的技能建议是"带待办动作"的消息：一旦被折进压缩区，它既进不了摘要
+        // （CompactionSummarizer 按 UI-only 跳过）、又以 0 token 计账不被预算保护，
+        // 于是从投影里静默消失——用户看到的卡片没了，DB 里还在，但没有任何入口能再看到它。
+        // 把它并进最小保留单元，压缩边界最远只能切到它之前。
+        val pendingSuggestion = messages.indexOfLast {
+            it is SkillSuggestion && it.status == PENDING_STATUS
+        }
         val candidate = when {
+            pendingSuggestion >= 0 -> minOf(pendingSuggestion, if (lastUser >= 0) lastUser else messages.lastIndex)
+                .coerceAtLeast(0)
             lastUser >= 0 -> lastUser
             messages.size > 1 -> messages.lastIndex
             else -> 0
@@ -641,13 +678,38 @@ object ContextWindowPolicy {
         return if (aligned <= 0) 0 else aligned.coerceAtMost(messages.lastIndex)
     }
 
-    /** Prevent an oversized dynamic prompt from consuming the entire context before history. */
+    /**
+     * Prevent an oversized dynamic prompt from consuming the entire context before history.
+     *
+     * 切割必须与校验用同一把尺：这里按 [estimateTokens] 的字符权重（中文 1.8 / ASCII 2.5 /
+     * 标点 2.8 字符每 token）累加推进到 [maxTokens]，而不是按 `APPROX_CHARS_PER_TOKEN=4`
+     * 反推字符数。旧口径下 CJK 提示词"截断后"仍超上限 2.22 倍——因为 4 字符/token 的粗估
+     * 与 1.8 字符/token 的实估差 2.22 倍，等于这道后闸在中文场景从未生效（实测 8K 档
+     * 切割后 10,650 tokens > 整预算 8,000）。
+     *
+     * 切点按**码点**推进：`String.take` 按 char 切割会把 emoji 的代理对劈开，
+     * 产出含孤立代理项的字符串，进 JSON 请求体有被上游 400 的风险。
+     */
     fun fitSystemPrompt(prompt: String, budget: Int): String {
         if (prompt.isBlank() || budget <= 0) return prompt
         val maxTokens = (budget * MAX_SYSTEM_PROMPT_FRACTION).toInt().coerceAtLeast(MIN_SYSTEM_PROMPT_TOKENS)
         if (estimateTokens(prompt) <= maxTokens) return prompt
         val suffix = "\n\n[系统提示因上下文预算受限已截断；请优先遵守以上核心规则]"
-        return prompt.take((maxTokens * APPROX_CHARS_PER_TOKEN - suffix.length).coerceAtLeast(0)) + suffix
+        // 后缀也要占预算，否则"截断后"仍然超线。
+        val targetTokens = (maxTokens - estimateTokens(suffix)).coerceAtLeast(1)
+        var used = 0.0
+        var end = 0
+        while (end < prompt.length) {
+            val cp = prompt.codePointAt(end)
+            val width = if (Character.isSupplementaryCodePoint(cp)) 2 else 1
+            val cost = charTokenCost(prompt[end])
+            if (used + cost > targetTokens) break
+            used += cost
+            end += width
+        }
+        // 一字未删（极短提示但估算越线）时不要附加"已截断"后缀——那会让日志与请求自我欺骗。
+        if (end >= prompt.length) return prompt
+        return prompt.take(end) + suffix
     }
 
     /**

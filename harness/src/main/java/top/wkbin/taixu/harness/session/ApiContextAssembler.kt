@@ -33,6 +33,7 @@ import top.wkbin.taixu.harness.prompt.SystemPromptBuilder
  * - 视觉能力关闭时剥离图片输入
  */
 class ApiContextAssembler @Inject constructor(
+    private val budgetResolver: top.wkbin.taixu.harness.budget.ContextBudgetResolver,
     private val compactionManager: CompactionManager,
     private val settingsDataStore: AgentPreferences,
     private val systemPromptBuilder: SystemPromptBuilder,
@@ -44,36 +45,22 @@ class ApiContextAssembler @Inject constructor(
         projectTypeOverride: String = "",
         thinkingMode: Boolean = false,
     ): List<ApiMessage> {
-        val compactionEnabled = runCatching { settingsDataStore.contextCompactionEnabled.first() }.getOrDefault(true)
+        // 预算单一真相源：窗口/输入上限/折叠比例/保留上限/压缩与归档开关全部由
+        // ContextBudgetResolver 一次解析。此前这里逐项 `settingsDataStore.xxx.first()` 自读，
+        // 与 SessionModelSwitcher / 面板各自读各的——同一个偏好在三个地方有三种结果。
+        val budget = budgetResolver.resolve(model)
+        val compactionEnabled = budget.compactionEnabled
         // 压缩/截断前是否把原文落盘（OMP 范式）——失败只降级为「纯摘要」，不中断压缩。
-        val archiveEnabled = runCatching { settingsDataStore.contextArchiveEnabled.first() }.getOrDefault(true)
-        // 与 SessionModelSwitcher/clampedBudget、ChatViewModel 面板同源：占用判定、面板显示、
-        // 实际请求组装必须走同一预算口径，否则会出现「显示 500K、实际按 96K 折叠」两张皮。
-        // 预算来源：模型单独配置优先，否则全局设置，再兜底 DEFAULT_CONTEXT_BUDGET。
-        val declaredTokens = model.contextTokens
-            ?: runCatching { settingsDataStore.contextBudgetTokens.first() }.getOrDefault(ContextWindowPolicy.DEFAULT_CONTEXT_BUDGET)
+        val archiveEnabled = budget.archiveEnabled
         // 窗口能力：回答「总共能装多大」。只用于系统提示词容量上限与合理性校验，不参与裁切。
-        val windowBudget = ContextWindowPolicy.resolveEffectiveBudget(declaredTokens)
-        // 裁切基准：回答「每轮主动裁到多少」。优先级 = 模型档案 inputTokenLimit > 全局 inputTokenLimit > 按窗口推导。
-        // 历史缺陷：此处曾直接用 resolveEffectiveBudget(窗口) 当裁切基准，用户填 100 万后折叠线升到 ~98.7 万，
-        // 输入峰值 38 万永不越线 → BudgetContinuations=0 → HTTP 413 频发。
-        val globalInputLimit = runCatching { settingsDataStore.inputTokenLimit.first() }.getOrNull()
-        val inputLimit = ContextWindowPolicy.resolveInputLimit(model.inputTokenLimit, windowBudget, globalInputLimit)
+        val windowBudget = budget.windowTokens
+        // 裁切基准：档案 > 全局（可空时按窗口推导） > 推导值。
+        val inputLimit = budget.inputLimit
         // 输入上限不得超过窗口本身（窗口更小时以窗口为准，避免把请求堆过物理上限）。
-        val budgetTokens = minOf(inputLimit, windowBudget)
-        // 保留条数下限固定为 MIN_KEEP_MESSAGES（约最近 3 轮），不再由「用户轮次」设置驱动。
-        // 归因：旧设置 `contextCompactionThreshold` 是横向的「另一种计量单位」，与 token 水位并列
-        // 会让用户无从判断该调哪个；OMP 的触发判定只看 token（compaction.ts thresholdPercent）。
-        // 该 key 在数据层保留（不炸老配置），但引擎不再消费，触发完全由下面的 token 水位决定。
+        val budgetTokens = budget.budget
         val minKeepMessages = ContextWindowPolicy.MIN_KEEP_MESSAGES
-        // 「折叠线比例」：让历史在预算的一部分处就开始折叠。
-        // 与面板同源读取同一个偏好，保证两侧折叠决策一致。
-        val foldingRatioPercent = runCatching { settingsDataStore.contextFoldingRatioPercent.first() }
-            .getOrDefault(ContextWindowPolicy.DEFAULT_FOLDING_RATIO_PERCENT)
-        // 「保留窗口 token 上限」：只按条数保留会失控（单条 tool_result 可达上万 token），
-        // 该值作为条数下限之上的护栏，把折叠后剩余窗口的 token 总量夹住。
-        val maxKeepTokens = runCatching { settingsDataStore.contextMaxKeepTokens.first() }
-            .getOrDefault(ContextWindowPolicy.DEFAULT_MAX_KEEP_TOKENS)
+        val foldingRatioPercent = budget.foldingRatioPercent
+        val maxKeepTokens = budget.maxKeepTokens
         val toolCallMode = if (model.pureChatMode) ToolCallMode.DISABLED else model.toolCallMode
 
         var compactedContext = compactionManager.project(sessId)

@@ -416,10 +416,70 @@ class AgentContextTest {
         val (_, listMsg) = executor.executeScratchpad(listArgs, "session-1")
         assertTrue(listMsg.contains("当前无工作草稿记录"))
     }
+    // ---------- 第三波后 P3 批回归 ----------
+
+    /**
+     * 回归（P3）：memory verify 按 id 续期原先不做 scope 可见性校验——任意会话都能凭一个 id
+     * 给别的 project/session 归属的记忆刷新新鲜度。delete 分支早有这个判定，verify 是漏网的。
+     */
+    @Test
+    fun `memory verify rejects memories outside the current scope`() = runBlocking {
+        val other = AgentMemoryEntity(
+            id = "m-other-project",
+            key = "k",
+            value = "v",
+            scope = "project",
+            ownerId = "/some/other/project",
+            kind = "fact",
+            updatedAt = 1L,
+        )
+        fakeDao.memories[other.id] = other
+
+        val (ok, msg) = executor.executeMemory(
+            buildJsonObject { put("action", "verify"); put("id", other.id) },
+            "session-x",
+            "/my/project",
+        )
+        assertFalse("跨项目记忆不得被续期", ok)
+        assertTrue(msg.contains("无权核验"))
+        assertEquals("lastVerifiedAt 不得被改写", 0L, fakeDao.memories[other.id]!!.lastVerifiedAt)
+
+        // 同项目的照常放行
+        val mine = other.copy(id = "m-mine", ownerId = "/my/project")
+        fakeDao.memories[mine.id] = mine
+        val (okMine, _) = executor.executeMemory(
+            buildJsonObject { put("action", "verify"); put("id", mine.id) },
+            "session-x",
+            "/my/project",
+        )
+        assertTrue(okMine)
+    }
+
+    /**
+     * 回归（P3）：memory list 原先过滤掉置顶记忆，而 query/search 不过滤、
+     * include_expired 又能看到过期置顶项——三种口径互相矛盾，模型无法据 list 判断存过什么。
+     */
+    @Test
+    fun `memory list includes pinned entries with a marker`() = runBlocking {
+        fakeDao.memories["m-plain"] = AgentMemoryEntity(
+            id = "m-plain", key = "plain", value = "普通记忆", scope = "global", ownerId = "",
+            kind = "fact", updatedAt = 1L,
+        )
+        fakeDao.memories["m-pinned"] = AgentMemoryEntity(
+            id = "m-pinned", key = "pinned", value = "置顶记忆", scope = "global", ownerId = "",
+            kind = "fact", updatedAt = 2L, pinned = true,
+        )
+
+        val (ok, msg) = executor.executeMemory(buildJsonObject { put("action", "list") }, "s-1", "")
+        assertTrue(ok)
+        assertTrue("置顶记忆必须出现在 list 里：$msg", msg.contains("置顶记忆"))
+        assertTrue("置顶项需有可见标注：$msg", msg.contains("[置顶]"))
+        assertTrue(msg.contains("普通记忆"))
+    }
 }
 
-private class FakeAgentContextDao : AgentContextRepository {
-    private val memories = ConcurrentHashMap<String, AgentMemoryEntity>()
+internal class FakeAgentContextDao : AgentContextRepository {
+    internal val memories = ConcurrentHashMap<String, AgentMemoryEntity>()
     private val plans = ConcurrentHashMap<String, AgentPlanEntity>()
     private val scratchpads = ConcurrentHashMap<String, AgentScratchpadEntity>()
 
@@ -438,10 +498,10 @@ private class FakeAgentContextDao : AgentContextRepository {
     override suspend fun getPinnedMemories(projectOwnerId: String, sessionId: String): List<AgentMemoryEntity> =
         getMemoriesForContext(projectOwnerId, sessionId, 100).filter { it.pinned }
 
-    override suspend fun getFreshMemories(projectOwnerId: String, sessionId: String, pinned: Boolean, now: Long, limit: Int): List<AgentMemoryEntity> =
+    override suspend fun getFreshMemories(projectOwnerId: String, sessionId: String, pinned: Boolean?, now: Long, limit: Int): List<AgentMemoryEntity> =
         getMemoriesForContext(projectOwnerId, sessionId, limit).filter {
             val expires = it.expiresAt
-            it.pinned == pinned && (expires == null || expires > now)
+            (pinned == null || it.pinned == pinned) && (expires == null || expires > now)
         }
 
     override suspend fun touchMemory(id: String, now: Long) {
@@ -470,8 +530,10 @@ private class FakeAgentContextDao : AgentContextRepository {
         memories.remove(id)
     }
 
-    override suspend fun deleteMemoryByKey(key: String, scope: String, ownerId: String) {
+    override suspend fun deleteMemoryByKey(key: String, scope: String, ownerId: String): Int {
+        val before = memories.size
         memories.values.removeAll { it.key == key && it.scope == scope && it.ownerId == ownerId }
+        return before - memories.size
     }
 
     override suspend fun savePlan(plan: AgentPlanEntity) {
@@ -530,4 +592,5 @@ private class FakeAgentContextDao : AgentContextRepository {
         clearScratchpads(sessionId)
         deleteSessionScopedMemories(sessionId)
     }
+
 }

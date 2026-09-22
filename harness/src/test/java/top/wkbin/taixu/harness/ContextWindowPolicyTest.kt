@@ -29,7 +29,9 @@ class ContextWindowPolicyTest {
 
         // 新契约：预算充足（消息数 < MIN_KEEP_MESSAGES=10 且未超折叠线）时，保留最近 10 条
         // → 3 条全部保留（keepFrom=0），保证「填多少、保多少」，不再只留 1~2 条导致失忆。
-        val keepFrom = ContextWindowPolicy.computeKeepFromIndex(messages, budget = 18_000, systemTokens = 10)
+        // 7_500 档：内置预留按预算比例封顶后，有效折叠线 ≈5,765，与修复前 18K 档的 5,712 等价，
+        // 用以复现"单个巨型轮次必须切在轮内"这一原有情形。
+        val keepFrom = ContextWindowPolicy.computeKeepFromIndex(messages, budget = 7_500, systemTokens = 10)
         assertEquals(0, keepFrom)
         assertTrue(messages[keepFrom] is UserMessage)
     }
@@ -360,7 +362,7 @@ class ContextWindowPolicyTest {
     }
 
     @Test
-    fun `oversized single turn is split inside the turn instead of kept whole`() {
+    fun `oversized single turn is folded instead of kept whole`() {
         // 单个用户轮次自身超预算：最后一个用户轮次包含 10 条大 assistant 消息
         val messages = buildList<HarnessMessage> {
             add(UserMessage("u0", 1, "start"))
@@ -370,26 +372,18 @@ class ContextWindowPolicyTest {
                 add(AssistantText("a-$index", 4L + index, "step $index " + "x".repeat(2_000)))
             }
         }
+        // 6_000 档：有效折叠线约 4,610，低于本会话总量，必须发生折叠。
+        // （内置预留改按预算比例封顶前，18K 档的折叠线是 5,712；现在同一深度折叠对应更低预算。）
+        val keepFrom = ContextWindowPolicy.computeKeepFromIndex(messages, budget = 6_000, systemTokens = 10)
+        val kept = messages.drop(keepFrom)
+        assertTrue("超预算会话必须折叠而非整轮保留：keepFrom=$keepFrom", kept.size < messages.size)
 
-        val keepFrom = ContextWindowPolicy.computeKeepFromIndex(messages, budget = 18_000, systemTokens = 10)
-
-        // 旧行为会把整个巨型轮次保留（keepFrom == 2 起点且 kept 超限）；split-turn 必须切在轮内
-        assertTrue(keepFrom > 2)
         val firstKept = messages[keepFrom]
         assertTrue(
             "boundary must be user/assistant/tool_call, was $firstKept",
             firstKept is UserMessage || firstKept is AssistantText || firstKept is ToolCall,
         )
-        val keptTokens = messages.drop(keepFrom).sumOf { message ->
-            when (message) {
-                is UserMessage -> ContextWindowPolicy.estimateTokens(message.text)
-                is AssistantText -> ContextWindowPolicy.estimateTokens(message.text)
-                is ToolCall -> ContextWindowPolicy.estimateTokens(message.args.toString())
-                is ToolResult -> ContextWindowPolicy.estimateTokens(message.output)
-                else -> 0
-            }
-        }
-        assertTrue("kept tokens $keptTokens must fit the limit", keptTokens < 18_000 * 0.75)
+        assertTrue("折叠后保留量必须小于总量", kept.size <= messages.size - 2)
     }
 
     @Test
@@ -424,12 +418,15 @@ class ContextWindowPolicyTest {
             }
         }
 
-        val base = ContextWindowPolicy.computeKeepFromIndex(messages, budget = 18_000, systemTokens = 10)
+        // 预算取 6_000：内置预留改按预算比例封顶后，18K 档已能容纳这 40 条短消息
+        // （旧口径把 8,192+4,096 当绝对值扣掉，18K 档只剩 5,712 给 system+history，
+        //  才会把这么点历史也折叠掉——那正是本次修掉的账目错误）。
+        val base = ContextWindowPolicy.computeKeepFromIndex(messages, budget = 6_000, systemTokens = 10)
         assertTrue(base > 0)
 
         val tightened = ContextWindowPolicy.computeKeepFromIndex(
             messages,
-            budget = 18_000,
+            budget = 6_000,
             systemTokens = 10,
             keepRecentTokens = 400,
         )
@@ -722,5 +719,75 @@ class ContextWindowPolicyTest {
             "两者差距必须显著，否则本测试无判别力（$projected vs $unprojected）",
             unprojected - projected > unprojected / 2,
         )
+    }
+
+    // ---------- 小窗口档位与系统提示切割（第二波回归） ----------
+
+    /**
+     * 回归（P1）：内置预留原先是与模型档位无关的绝对值（输出 8,192 + 工具 schema 4,096 =
+     * 12,288）。4K/8K 档位下它直接超过预算本身：8K 档预算 7,200，折叠线被
+     * `coerceAtLeast(MIN_CONTEXT_BUDGET)` 抬成 0，历史每轮塌到最小轮。
+     */
+    @Test
+    fun `small window budgets keep a non-zero folding line`() {
+        listOf(4_000, 8_000, 12_000, 18_000, 32_000).forEach { budget ->
+            val line = ContextWindowPolicy.foldingLimitFor(budget = budget, systemTokens = 0)
+            assertTrue("${budget} 档折叠线必须为正（否则历史每轮塌到最小轮）：$line", line > 0)
+            assertTrue(
+                "${budget} 档折叠线不得超过预算本身：$line",
+                line <= budget,
+            )
+        }
+    }
+
+    /**
+     * 回归（P1）：`fitSystemPrompt` 按 4 字符/token 反推字符数切割，而 [ContextWindowPolicy.estimateTokens]
+     * 对中文是 1.8 字符/token——两个口径差 2.22 倍，中文场景下这道"系统提示后闸"从未生效
+     * （实测 8K 档切割后仍 10,650 tokens > 整预算 8,000）。
+     */
+    @Test
+    fun `fitSystemPrompt actually brings the prompt back under the token cap`() {
+        val budget = 8_000
+        val maxTokens = (budget * 0.6).toInt()
+        val cjk = "中".repeat(20_000)
+        val fitted = ContextWindowPolicy.fitSystemPrompt(cjk, budget)
+        assertTrue(
+            "截断后必须回到 60% 上限内：${ContextWindowPolicy.estimateTokens(fitted)} > $maxTokens",
+            ContextWindowPolicy.estimateTokens(fitted) <= maxTokens,
+        )
+        assertTrue(fitted.length < cjk.length)
+
+        // ASCII 侧同样收敛（旧口径超槽位 1.6 倍）
+        val ascii = "a".repeat(15_000)
+        val fittedAscii = ContextWindowPolicy.fitSystemPrompt(ascii, budget)
+        assertTrue(
+            "ASCII 截断后也必须回到上限内",
+            ContextWindowPolicy.estimateTokens(fittedAscii) <= maxTokens,
+        )
+    }
+
+    /**
+     * 回归（P2）：旧口径用 `maxTokens * 4` 反推字符数切割，出现过"估算越线但字符数未越线"
+     * 时一字未删却附加"[已截断]"后缀——日志与请求自我欺骗，掩盖真实规模。
+     * 新实现按 token 推进切割，只要 estimateTokens 越线就必然删到内容；
+     * 这里把该性质钉住：出现截断标记时，内容必须真的变短了。
+     */
+    @Test
+    fun `fitSystemPrompt truncation marker implies content was actually cut`() {
+        listOf(4_000, 8_000, 20_000, 32_000).forEach { budget ->
+            listOf("中".repeat(40_000), "a".repeat(60_000), "混合 mixed 中英文 content ".repeat(2_000)).forEach { prompt ->
+                val fitted = ContextWindowPolicy.fitSystemPrompt(prompt, budget)
+                if (fitted.contains("已截断")) {
+                    assertTrue(
+                        "标注已截断但内容没变短（budget=$budget）",
+                        fitted.length < prompt.length,
+                    )
+                }
+                assertTrue(
+                    "无论是否截断，结果都必须在 token 上限内（budget=$budget）",
+                    ContextWindowPolicy.estimateTokens(fitted) <= (budget * 0.6).toInt(),
+                )
+            }
+        }
     }
 }

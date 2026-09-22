@@ -262,7 +262,7 @@ class ToolExecutor @Inject constructor(
                     }
                     // 模糊匹配仅作兜底，且必须唯一命中——若命中多条还静默取第一条，
                     // 会出现「load_skill("Git") 却加载了 Git 敏捷工作流」这类选错技能的问题。
-                    val fuzzy = if (exact.isEmpty()) {
+                    val fuzzy = if (exact.isEmpty() && queryLower.length >= MIN_FUZZY_QUERY_CHARS) {
                         skills.filter { skill ->
                             skill.name.lowercase().contains(queryLower) ||
                                 (skill.triggerCommand?.removePrefix("/")?.lowercase()?.contains(queryLower) == true)
@@ -270,10 +270,23 @@ class ToolExecutor @Inject constructor(
                     } else {
                         emptyList()
                     }
-                    val pool = if (exact.isNotEmpty()) exact else fuzzy
+                    val pool = if (exact.isNotEmpty()) {
+                        exact
+                    } else if (queryLower.length < MIN_FUZZY_QUERY_CHARS) {
+                        // 过短的 query 会让"包含它"的技能成片命中，回一份全量罗列噪声，
+                        // 且真正想找的那个反被埋掉。要求用完整名称或 id。
+                        emptyList()
+                    } else {
+                        fuzzy
+                    }
                     when {
-                        pool.isEmpty() -> false to "未找到匹配的技能：$query。可用技能：" +
-                            skills.joinToString("、") { it.name }
+                        pool.isEmpty() -> false to (
+                            if (queryLower.length < MIN_FUZZY_QUERY_CHARS) {
+                                "查询过短（$query），请使用完整技能名或 id。"
+                            } else {
+                                "未找到匹配的技能：$query。可用技能：" + skills.joinToString("、") { it.name }
+                            }
+                            )
                         pool.size > 1 -> false to "技能名 $query 匹配到多个技能：" +
                             pool.joinToString("、") { it.name } + "。请使用完整技能名或 id 重试。"
                         else -> {
@@ -1101,3 +1114,6 @@ internal fun clipSkillBody(body: String): String =
         body.take(MAX_SKILL_BODY_CHARS) +
             "\n…（正文已按上下文预算截断；完整内容见该技能资源目录下的文件，可分片阅读）"
     }
+
+/** 模糊匹配的最小 query 长度：过短会让"包含它"的技能成片命中。 */
+private const val MIN_FUZZY_QUERY_CHARS = 2

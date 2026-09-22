@@ -102,8 +102,9 @@ class BranchSummarizerSessionCleanupTest {
 
     @Test
     fun `too short abandoned branch is skipped and not registered`() = runBlocking {
-        // 被放弃段不足 MIN_MESSAGES 时不生成摘要；markSummarized 在校验前登记，
-        // 因此同一 leaf 不会反复重算——这条用例把该行为钉住。
+        // 被放弃段不足 MIN_MESSAGES 时不生成摘要；登记必须发生在长度校验**之后**，
+        // 否则「先短后长」的分支（放弃时太短、后来又长起来再被放弃）会因为登记已存在
+        // 而永远拿不到摘要——关键结论静默丢失。
         store.ensureMainLane("s-short")
         store.append("s-short", UserMessage("u1", 1, "问题"))
         store.append("s-short", AssistantText("a1", 2, "答复"))
@@ -113,5 +114,53 @@ class BranchSummarizerSessionCleanupTest {
 
         val summarized = branchSummarizer.summarizeAbandonedBranch("s-short", "a1", "u2b")
         assertFalse("被放弃段太短不得生成摘要", summarized)
+        assertEquals(
+            "校验不通过时不得留下登记（否则该分支以后长起来也永不摘要）",
+            0,
+            branchSummarizer.summarizedSessionCountForTest(),
+        )
+    }
+
+    /**
+     * 回归（P3）：同一个被放弃 leaf，第一次因为"新叶子分叉点靠后"导致被放弃段太短而跳过；
+     * 第二次换成"分叉点更早"的新叶子，被放弃段变长就必须能补上摘要。
+     *
+     * 旧代码先登记再校验：第一次的登记会把同一 oldLeafId 的第二次尝试永久挡掉。
+     * （`abandonedMessages` 的长度只取决于 (oldLeaf 路径, newLeaf 路径) 的公共前缀长度，
+     *  所以换 newLeaf 就能改变它——这是该缺陷唯一可达的触发路径。）
+     */
+    @Test
+    fun `same old leaf still summarizes when the new leaf diverges earlier`() = runBlocking {
+        store.ensureMainLane("s-grow")
+        store.append("s-grow", UserMessage("u1", 1, "任务：重构网络层"))
+        store.append("s-grow", AssistantText("a1", 2, "先看现状"))
+        store.append("s-grow", UserMessage("u2", 3, "按方案 A 推进"))
+        store.append("s-grow", AssistantText("a3", 4, "遇到循环依赖"))
+
+        // 分支 X：从 a3 继续 u4/a4
+        store.moveTo("s-grow", "a3")
+        store.append("s-grow", UserMessage("u4", 5, "继续方案 A"))
+        store.append("s-grow", AssistantText("a4", 6, "仍受阻"))
+        // 分支 Y：从 u2 分叉（比 a3 更晚），u5/a5
+        store.moveTo("s-grow", "u2")
+        store.append("s-grow", UserMessage("u5", 7, "换方案 B"))
+        store.append("s-grow", AssistantText("a5", 8, "方案 B 可行"))
+
+        // 第一次：oldLeaf=a4、newLeaf=a5 → 公共前缀到 u2，被放弃段 = a3,u4,a4（3 条 < MIN）
+        assertFalse(
+            "被放弃段太短不得生成摘要",
+            branchSummarizer.summarizeAbandonedBranch("s-grow", "a4", "a5"),
+        )
+        assertEquals("校验不通过时不得留下登记", 0, branchSummarizer.summarizedSessionCountForTest())
+
+        // 分支 W：从 u1 就分叉（更早），u6
+        store.moveTo("s-grow", "u1")
+        store.append("s-grow", UserMessage("u6", 9, "完全另一个方向"))
+
+        // 第二次：同一个 oldLeaf=a4，但 newLeaf=u6 分叉更早 → 被放弃段 = a1,u2,a3,u4,a4（5 条）
+        assertTrue(
+            "换更早分叉的新叶子后必须补上摘要（登记不能挡住这条路）",
+            branchSummarizer.summarizeAbandonedBranch("s-grow", "a4", "u6"),
+        )
     }
 }

@@ -48,6 +48,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import top.wkbin.taixu.harness.SKILL_SUGGESTION_PENDING
 import top.wkbin.taixu.harness.AssistantText
 import top.wkbin.taixu.harness.HarnessMessage
 import top.wkbin.taixu.harness.HarnessTool
@@ -121,6 +122,8 @@ internal fun ChatMessageList(
     hiddenSkillSuggestions: Set<String> = emptySet(),
     onApplySkillSuggestion: (SkillSuggestion, Boolean) -> Unit = { _, _ -> },
     onDismissSkillSuggestion: (String) -> Unit = {},
+    /** 把 update 建议的 targetSkillId 解析成真实技能名（卡片据此显示"将更新：<名字>"）。 */
+    resolveTargetSkillName: (String?) -> String? = { null },
 ) {
     // 折叠状态用自定义 Saver：Map 不能直接存入 Bundle（会抛 IllegalArgumentException）
     var expandedOverrides by rememberSaveable(stateSaver = ExpandedOverridesSaver) { mutableStateOf(mapOf<String, Boolean>()) }
@@ -217,12 +220,17 @@ internal fun ChatMessageList(
                     is ChatRenderItem.MessageItem -> {
                         when (val message = item.message) {
                             is CapabilityEvent -> CapabilityEventCard(message)
-                            is SkillSuggestion -> if (message.id !in hiddenSkillSuggestions) {
+                            // 已处置的建议（applied/dismissed）不再渲染卡片。
+                            // 判定依据是**转写里最后一条同 id 消息的 status**，而不是 UI 的内存集合：
+                            // 内存态在进程重启后即丢，用户"忽略"过的卡片会复活、WebChat 侧也永远
+                            // 显示 pending。转写是 append-only 的，写一条同 id 的新消息即可。
+                            is SkillSuggestion -> if (message.status == SKILL_SUGGESTION_PENDING) {
                                 SkillSuggestionCard(
                                     suggestion = message,
                                     onCreate = { onApplySkillSuggestion(message, true) },
                                     onUpdate = { onApplySkillSuggestion(message, false) },
                                     onDismiss = { onDismissSkillSuggestion(message.id) },
+                                    targetSkillName = resolveTargetSkillName(message.targetSkillId),
                                 )
                             }
                             is ModelSwitchEvent -> ModelSwitchCard(message)

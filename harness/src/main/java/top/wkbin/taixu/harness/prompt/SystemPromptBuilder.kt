@@ -16,12 +16,15 @@ import top.wkbin.taixu.core.model.AgentSkill
 import top.wkbin.taixu.core.model.BuiltinMcpPresets
 import top.wkbin.taixu.core.model.McpToolInfo
 import top.wkbin.taixu.core.tools.ToolRepository
+import top.wkbin.taixu.harness.ContextWindowPolicy
 import top.wkbin.taixu.harness.MentionExtractor
 import top.wkbin.taixu.harness.R
 import top.wkbin.taixu.harness.SubagentDepartmentIndexRenderer
 import top.wkbin.taixu.harness.ToolCallMode
 import top.wkbin.taixu.harness.WorkspaceFileAccess
 import top.wkbin.taixu.harness.mcp.McpToolApiName
+import top.wkbin.taixu.harness.skill.SkillDecisionResolver
+import top.wkbin.taixu.harness.skill.SkillInjectionMemory
 import top.wkbin.taixu.harness.skill.SkillMatcher
 
 /**
@@ -72,30 +75,32 @@ class SystemPromptBuilder @Inject constructor(
 
         val allSkills = runCatching { skillRepository.allSkills.first() }.getOrDefault(emptyList())
 
-        // @提及 二次解析：上游 MentionExtractor.parse 只传了文本，无法识别含空格的技能名
-        // （如「Git 敏捷工作流」会被截成「Git」而静默失配）。此处以已启用技能的
-        // name/id/triggerCommand 作为已知名单重解析并合并，确保空格名与全角输入都能命中。
-        val knownSkillNames = allSkills
-            .filter { it.isEnabled }
-            .flatMap { listOf(it.name, it.id, it.triggerCommand?.removePrefix("/").orEmpty()) }
-            .filter { it.isNotBlank() }
-        val effectiveMentions = if (latestUserMessage.isBlank()) {
-            mentionedNames
-        } else {
-            mentionedNames + MentionExtractor.parse(latestUserMessage, knownSkillNames)
-        }
-        val selectedSkills = selectSkills(allSkills, effectiveMentions)
         // 「未匹配提及」的已知名单必须覆盖全部可 @ 实体，而不只是技能：
-        // MCP 服务与子智能体同样是 @提及的一等公民（HarnessProviderRunner 用同一份
-        // mentionedNames 挂载 MCP 工具）。只比对技能时，`@浏览器` 这类合法 MCP 提及
-        // 每轮都会被判成"未匹配到任何已启用技能"注入系统提示——既噪声，
+        // MCP 服务/工具与子智能体同样是 @提及的一等公民（HarnessProviderRunner 用同一份
+        // mentionedNames 挂载 MCP 工具；工具名级提及在动态挂载路径也是合法支持的）。
+        // 漏掉它们会把合法提及判成"未匹配到任何已启用技能"——既噪声，
         // 还会诱导模型反过来要求用户"修正拼写"。
         val otherKnownNames = runCatching {
-            val mcpNames = mcpServerRepository.servers.first().flatMap { listOf(it.id, it.name) }
+            val mcpNames = mcpServerRepository.servers.first()
+                .flatMap { listOf(it.id, it.name) } +
+                mcpTools.map { it.name } + mcpTools.map { it.serverId }
             val subagentNames = subagentRepository.enabledProfiles().flatMap { listOf(it.id, it.name) }
             (mcpNames + subagentNames).filter { it.isNotBlank() }
         }.getOrDefault(emptyList())
-        val missedMentions = selectUnmatchedMentions(allSkills, effectiveMentions, otherKnownNames)
+
+        // 一轮一次决策：提及解析（带已知名单，能识别含空格技能名）、isEnabled/空正文门禁、
+        // 机械预匹配、未匹配判定，全部走同一个纯函数。
+        // CapabilityEventWriter 调的是同一个 resolver、同一份输入——此前两侧各算一遍且
+        // 归一口径不同，于是"卡片说已注入、提示说未匹配"这类矛盾每轮都在发生。
+        val decision = SkillDecisionResolver.resolve(
+            latestUserMessage = latestUserMessage,
+            allSkills = allSkills,
+            toolCallMode = toolCallMode,
+            stickyIds = SkillInjectionMemory.stickyIds(sessionId),
+            otherKnownNames = otherKnownNames,
+        )
+        val selectedSkills = allSkills.filter { it.id in decision.mentionedIds }
+        val missedMentions = decision.unmatchedMentions
         val skippedSkills = mutableListOf<String>()
 
         // 机械预匹配（治本核心）：不再指望模型"自觉扫目录"，而由系统按任务文本做确定性判定，
@@ -103,12 +108,7 @@ class SystemPromptBuilder @Inject constructor(
         // 这样"按需加载"这一步不再依赖模型主动发起 load_skill 工具调用——彻底消除
         // "提示里写着要扫、模型读过即忘、且遗漏无声无息" 的缺陷。
         // 未 @提及 且正文已注入的技能从目录中排除，避免目录里出现"已生效却仍让模型再加载"的重复。
-        val autoMatchedSkills = selectAutoMatchedSkills(
-            allSkills = allSkills,
-            latestUserMessage = latestUserMessage,
-            toolCallMode = toolCallMode,
-            excludedIds = selectedSkills.mapTo(mutableSetOf()) { it.id },
-        )
+        val autoMatchedSkills = allSkills.filter { it.id in decision.autoMatchedIds }
         val autoMatchedIds = autoMatchedSkills.mapTo(mutableSetOf()) { it.id }
         val injectedSkills = selectedSkills + autoMatchedSkills
 
@@ -116,6 +116,9 @@ class SystemPromptBuilder @Inject constructor(
             if (injectedSkills.isNotEmpty()) {
                 append("## 当前生效的专精技能指导规则 (Active Skills)\n\n")
                 var used = 0
+                // 记下本轮自动注入的技能，供下一轮粘性续用：追问轮的关键词可能不复现，
+                // 不保留就等于"无声遗漏"每隔一轮复发一次。
+                SkillInjectionMemory.record(sessionId, decision.autoMatchedIds)
                 val rendered = injectedSkills.mapNotNull { skill ->
                     val body = skill.systemPrompt.trim()
                     // 正文护栏：单技能超限则截断并标注；累计超预算则跳过并登记，避免少数巨型技能
@@ -239,12 +242,40 @@ class SystemPromptBuilder @Inject constructor(
                 freshCache.take(MAX_PROMPT_MEMORIES)
             }
         }.getOrDefault(emptyList())
-        val recallSection = if (recallMemories.isNotEmpty()) {
-            "\n\n## 长期事实与偏好记忆（relevant recall，低权威：仅在与当前请求相关时参考，可被当前对话覆盖）\n" +
-                recallMemories.joinToString("\n") {
-                    "- [${it.scope}/${it.kind}] ${it.key.take(MAX_PROMPT_MEMORY_KEY_CHARS)}: " +
-                        it.value.take(MAX_PROMPT_MEMORY_VALUE_CHARS)
-                }
+        // 注入税治理：recall 段改按 **token 预算**封顶，而不是固定"32 条 × 512 字符"。
+        // 误报写入的记忆是 project scope、跨会话存活的（每轮都在为一次误报付 token），
+        // 实测 32 条 recall ≈ 9,371 tokens/轮——与技能正文 24K 字符同一量级。
+        // 超预算的整条不注入，并在段尾注明"还有 N 条未注入"，让模型知道可以去查。
+        // 这里拿不到 assembler 解析出的真实预算（build() 在它之前跑），退一步用全局预算兜底值：
+        // 它至少让 recall 段的规模随用户配置的档位缩放，而不是恒定 32 条。
+        val recallBudget = maxOf(
+            (recallBudgetTokens() * MAX_RECALL_FRACTION).toInt(),
+            MIN_RECALL_TOKENS,
+        )
+        val recallLines = mutableListOf<String>()
+        var recallTokens = 0
+        var recallOmitted = 0
+        for (memory in recallMemories) {
+            val line = "- [${memory.scope}/${memory.kind}] " +
+                "${memory.key.take(MAX_PROMPT_MEMORY_KEY_CHARS)}: " +
+                memory.value.take(MAX_PROMPT_MEMORY_VALUE_CHARS)
+            val cost = ContextWindowPolicy.estimateTokens(line)
+            if (recallLines.isNotEmpty() && recallTokens + cost > recallBudget) {
+                recallOmitted = recallMemories.size - recallLines.size
+                break
+            }
+            recallLines += line
+            recallTokens += cost
+        }
+        val recallSection = if (recallLines.isNotEmpty()) {
+            val header =
+                "\n\n## 长期事实与偏好记忆（relevant recall，低权威：仅在与当前请求相关时参考，可被当前对话覆盖）\n"
+            val tail = if (recallOmitted > 0) {
+                "\n（另有 $recallOmitted 条相关记忆因上下文预算未注入；需要时可用 memory(action=\"list\") 查看）"
+            } else {
+                ""
+            }
+            header + recallLines.joinToString("\n") + tail
         } else ""
 
         val activePlan = runCatching { agentContextDao.getActivePlan(sessionId) }.getOrNull()
@@ -351,23 +382,30 @@ class SystemPromptBuilder @Inject constructor(
             activePlanExists = activePlanExists,
         ).joinToString("\n\n") { block -> promptAssets.read(block.assetPath) }
 
+        // 段落顺序即**裁剪优先级**：fitSystemPrompt 超预算时从头部保留、从尾部丢弃（head-cut）。
+        // 因此高权威、用户显式配置、协议必需的段落必须靠前，逐轮变化的低权威段落
+        // （技能正文、recall）必须沉到最后。
+        //
+        // 旧顺序把 pinned（自述"最高权威"）、Active Plan、工具调用协议放在尾部，而逐轮变化的
+        // 技能正文放在第 2 位——超预算时先丢的是用户长期指令与任务计划，留下的却可能是
+        // 误报注入的技能正文。这与本文件自述的"可变分节后置"原则正好相反。
         return listOf(
             basePrompt,
-            skillSectionFallback,
+            pinnedSection,
+            planSection,
+            toolCallSection,
             toolsSection,
             prootSection,
             privilegeSection,
-            routedBlocks,
+            subagentSection,
             installedToolsSection,
             mcpCapabilitySection,
-            pinnedSection,
-            planSection,
+            routedBlocks,
             scratchpadSection,
-            subagentSection,
-            toolCallSection,
             workspaceGuidance,
             workspaceParts?.projectContext.orEmpty(),
             thinkingLanguageSection,
+            skillSectionFallback,
             recallSection,
         ).filter { it.isNotBlank() }.joinToString("\n\n") { it.trim() }
     }
@@ -468,7 +506,9 @@ class SystemPromptBuilder @Inject constructor(
         // 与 load_skill 的 activeSkills 门禁保持同一口径。
         val normalized = mentionedNames.mapTo(mutableSetOf()) { normalizeMentionKey(it) }
         return allSkills.filter { skill ->
-            if (!skill.isEnabled) return@filter false
+            // 空正文技能不进注入：renderSkillCatalog 与 SkillMatcher 都有这道门禁，
+            // 唯提及链路原先没有——@一个空技能会渲染出一个只有标题的空节。
+            if (!skill.isEnabled || skill.systemPrompt.isBlank()) return@filter false
             val candidates = listOf(
                 skill.name,
                 skill.id,
@@ -586,12 +626,28 @@ class SystemPromptBuilder @Inject constructor(
         }
     }
 
+    /** recall 段的预算基准：全局预算兜底值（build() 早于 assembler 的预算解析，拿不到真实值）。 */
+    private suspend fun recallBudgetTokens(): Int =
+        runCatching { settingsDataStore.contextBudgetTokens.first() }
+            .getOrDefault(ContextWindowPolicy.DEFAULT_CONTEXT_BUDGET)
+
     companion object {
         // Key/value memory is a compact RAG layer, not another copy of conversation history.
         private const val MAX_PROMPT_MEMORIES = 32
         private const val MAX_PROMPT_MEMORY_KEY_CHARS = 128
         private const val MAX_PROMPT_MEMORY_VALUE_CHARS = 512
         private const val MAX_PROMPT_RECALL_QUERY_CHARS = 256
+
+        /**
+         * recall 段占预算的比例上限。
+         *
+         * 误报写入的记忆是 project scope、跨会话存活的——每轮都在为一次误报付 token，
+         * 32 条 × 512 字符实测约 9,371 tokens/轮，与技能正文 24K 字符同一量级。
+         */
+        private const val MAX_RECALL_FRACTION = 0.06
+
+        /** recall 段的 token 下限：再紧的预算也至少给一条，避免整段消失让模型以为没记忆。 */
+        private const val MIN_RECALL_TOKENS = 256
         private const val MAX_WORKSPACE_CACHE_ENTRIES = 16
         /** scratchpad 注入条数上限与单条截断（与 pinned 1500、recall 512 同量级，避免撑爆预算）。 */
         private const val MAX_SCRATCHPAD_LINES = 8

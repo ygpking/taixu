@@ -31,6 +31,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import top.wkbin.taixu.harness.skill.AdvisorModelClient
 import top.wkbin.taixu.harness.mcp.McpToolApiName
 
 /** HTTP 429 的结构化错误，供 Harness 区分临时限流与账户额度耗尽。 */
@@ -775,7 +776,7 @@ class ProviderClient @Inject constructor(
     private val mcpManager: top.wkbin.taixu.harness.mcp.McpManager,
     private val settingsDataStore: AgentPreferences,
     private val json: Json,
-) {
+) : AdvisorModelClient  {
     private val apiKeyScheduler = ApiKeyScheduler()
     // 非流式专用：保留 callTimeout 总超时（含响应体读取），防止慢端点永久挂起。
     private val httpClient: OkHttpClient = okHttpClient.newBuilder()
@@ -819,7 +820,7 @@ class ProviderClient @Inject constructor(
      * [modelVariant] 用于覆盖档案里的默认模型名，实现同一供应商档案下的会话级模型隔离。
      * 否则回退到当前激活模型。无可用模型且未设置 API Key 时直接抛出明确异常。
      */
-    suspend fun resolveConfigured(modelId: String? = null, modelVariant: String? = null): ModelConfig = withContext(Dispatchers.IO) {
+    override suspend fun resolveConfigured(modelId: String?, modelVariant: String?): ModelConfig = withContext(Dispatchers.IO) {
         val requested = modelId?.takeIf { it.isNotBlank() }?.let { modelDao.findById(it) }
         val active = requested ?: modelDao.activeModel()
         val providerKey = providerRepository.readApiKey().orEmpty()
@@ -920,7 +921,7 @@ class ProviderClient @Inject constructor(
         }
     }
 
-    suspend fun chat(model: ModelConfig, messages: List<ApiMessage>): ChatResult =
+    override suspend fun chat(model: ModelConfig, messages: List<ApiMessage>): ChatResult =
         executeWithRotatedApiKey(model, apiKeyScheduler) { selected ->
             val sanitized = sanitizeApiTranscript(messages)
             when {
