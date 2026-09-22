@@ -39,6 +39,14 @@ data class AgentSkillEntity(
     val isImmutable: Boolean,
     val category: String,
     val resourcePath: String?,
+    /**
+     * 是否允许机械预匹配自动注入（默认 true）。
+     *
+     * 独立成列而不是从正文猜：会不会写持久状态是技能的**属性**，不该由正则扫描
+     * systemPrompt 决定（那既是过拟合也难维护）。加列可回填默认值，迁移风险远低于
+     * 第三波的唯一索引。
+     */
+    val autoMatchEligible: Boolean = true,
 )
 
 @Dao
@@ -171,6 +179,9 @@ class AgentSkillRepository @Inject constructor(
                 ?: dir.name,
             description = metadata["description"]?.takeIf { it.isNotBlank() }
                 ?.take(MAX_DESCRIPTION_CHARS) ?: PLACEHOLDER_SKILL_DESCRIPTION,
+            // frontmatter 可声明 `auto_match: false`：该 Skill 的正文会写持久状态时，
+            // 作者可自行退出自动匹配（仍可靠 @提及 / load_skill 激活）。
+            autoMatchEligible = metadata["auto_match"]?.trim()?.lowercase() != "false",
             systemPrompt = markdown + "\n\n【Skill 资源目录】$guestPath\n如需执行该 Skill 附带的脚本，请先检查脚本内容与参数，再从此目录调用。",
             isBuiltin = false,
             category = "自定义",
@@ -303,7 +314,8 @@ private fun AgentSkillEntity.contentEqualsIgnoringEnabled(other: AgentSkillEntit
         isBuiltin == other.isBuiltin &&
         isImmutable == other.isImmutable &&
         category == other.category &&
-        resourcePath == other.resourcePath
+        resourcePath == other.resourcePath &&
+        autoMatchEligible == other.autoMatchEligible
 
 private fun AgentSkillEntity.toModel() = AgentSkill(
     id = id,
@@ -317,6 +329,7 @@ private fun AgentSkillEntity.toModel() = AgentSkill(
     isImmutable = isImmutable,
     category = category,
     resourcePath = resourcePath,
+    autoMatchEligible = autoMatchEligible,
 )
 
 private fun AgentSkill.toEntity() = AgentSkillEntity(
@@ -331,4 +344,5 @@ private fun AgentSkill.toEntity() = AgentSkillEntity(
     isImmutable = isImmutable,
     category = category,
     resourcePath = resourcePath,
+    autoMatchEligible = autoMatchEligible,
 )
