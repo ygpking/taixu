@@ -33,6 +33,9 @@ import top.wkbin.taixu.harness.UserMessage
 object ConversationText {
 
     const val TOOL_RESULT_CHAR_LIMIT = 2_000
+
+    /** 与 HarnessMessage.SkillSuggestion.status 的默认值一致（待处理）。 */
+    private const val PENDING_STATUS = "pending"
     private const val ARG_VALUE_CHAR_LIMIT = 240
     private const val THINKING_CHAR_LIMIT = 1_200
     /** 序列化文本总量上限（字符）：超出时保头尾，避免摘要请求本身爆上下文。 */
@@ -52,7 +55,14 @@ object ConversationText {
         while (index < messages.size) {
             val message = messages[index]
             when (message) {
-                is CapabilityEvent, is ModelSwitchEvent, is SkillSuggestion -> Unit
+                is CapabilityEvent, is ModelSwitchEvent -> Unit
+                // 未处理的技能建议不进摘要正文（它是给用户看的卡片，不是对话内容），
+                // 但要留一个锚点，否则用户在折叠区里看到卡片凭空消失、且无从得知有几条待处理。
+                is SkillSuggestion ->
+                    if (message.status == PENDING_STATUS) {
+                        lines += "[System note] 折叠区内有 1 条未处理的技能进化建议（用户尚未创建/忽略）"
+                    }
+
                 is UserMessage -> lines += "[User]: ${message.text.trim()}"
                 is AssistantText -> {
                     message.reasoning?.takeIf { it.isNotBlank() }?.let {

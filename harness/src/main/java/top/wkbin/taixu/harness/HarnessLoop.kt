@@ -439,6 +439,9 @@ class HarnessLoop @Inject constructor(
         branchSummarizer.dropSession(id)
         // 技能注入粘性记忆也按会话回收（进程内 map，否则长跑设备按 sessionId 无界增长）
         top.wkbin.taixu.harness.skill.SkillInjectionMemory.forget(id)
+        // 顾问的自有 scope 不进 sessionJobs，deleteSession 的 cancelAndJoin 够不到它；
+        // 这里显式回收它的 per-session 状态，避免删会话后 LLM 结果仍写下孤儿建议行。
+        skillEvolutionAdvisor?.forgetSession(id)
         sessionLoopDetectors.remove(id)
         sessionCancelEpochs.remove(id)
         cancellingSessions.remove(id)

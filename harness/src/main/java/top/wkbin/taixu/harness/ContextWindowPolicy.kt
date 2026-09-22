@@ -134,6 +134,9 @@ object ContextWindowPolicy {
      */
     private const val RESERVED_OUTPUT_FRACTION = 0.15
     private const val TOOL_SCHEMA_RESERVE_FRACTION = 0.08
+    /** 与 HarnessMessage.SkillSuggestion.status 的默认值一致（待处理）。 */
+    private const val PENDING_STATUS = "pending"
+
     private const val RESERVED_OUTPUT_TOKENS = 8_192
     private const val TOOL_SCHEMA_RESERVE_TOKENS = 4_096
 
@@ -655,7 +658,16 @@ object ContextWindowPolicy {
 
     private fun minimalKeepFromIndex(messages: List<HarnessMessage>): Int {
         val lastUser = messages.indexOfLast { it is UserMessage }
+        // 未处理的技能建议是"带待办动作"的消息：一旦被折进压缩区，它既进不了摘要
+        // （CompactionSummarizer 按 UI-only 跳过）、又以 0 token 计账不被预算保护，
+        // 于是从投影里静默消失——用户看到的卡片没了，DB 里还在，但没有任何入口能再看到它。
+        // 把它并进最小保留单元，压缩边界最远只能切到它之前。
+        val pendingSuggestion = messages.indexOfLast {
+            it is SkillSuggestion && it.status == PENDING_STATUS
+        }
         val candidate = when {
+            pendingSuggestion >= 0 -> minOf(pendingSuggestion, if (lastUser >= 0) lastUser else messages.lastIndex)
+                .coerceAtLeast(0)
             lastUser >= 0 -> lastUser
             messages.size > 1 -> messages.lastIndex
             else -> 0
