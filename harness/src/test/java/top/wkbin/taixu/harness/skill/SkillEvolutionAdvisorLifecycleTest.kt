@@ -3,7 +3,10 @@ package top.wkbin.taixu.harness.skill
 import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -222,5 +225,45 @@ class SkillEvolutionAdvisorLifecycleTest {
             "未处理的技能建议不得被压缩折出投影",
             after.messages.any { it is SkillSuggestion && it.id == "sg1" },
         )
+    }
+
+    @Test
+    fun `recordSuggestionStatus appends a same id message with the new status`() = runBlocking {
+        val sessionId = "s-status"
+        store.ensureMainLane(sessionId)
+        val suggestion = SkillSuggestion(
+            id = "sg-status",
+            createdAt = 1L,
+            action = "create",
+            skillName = "待处理建议",
+            description = "d",
+            systemPrompt = "p",
+            reason = "r",
+        )
+        store.append(sessionId, suggestion)
+
+        advisor.recordSuggestionStatus(sessionId, suggestion, "dismissed")
+
+        // 断言读持久源：实时投影的首建是异步合历史的，刚 append 完立刻读 value 可能只看到一半。
+        val same = projector.loadHistory(sessionId).filter { it.id == "sg-status" }
+        assertEquals("同 id 应有两条（原 + 处置）", 2, same.size)
+        val last = same.last() as SkillSuggestion
+        assertEquals("dismissed", last.status)
+        assertEquals("内容不得被改写", suggestion.skillName, last.skillName)
+    }
+
+    @Test
+    fun `maybeSuggest returns a joinable handle`() = runBlocking {
+        val sessionId = "s-job"
+        store.ensureMainLane(sessionId)
+        // 契约：调用方能拿到句柄并 join 它（deleteSession 就是靠这个取消 in-flight 分析）。
+        // 这里没配模型，分析会快速失败并被内部 catch 吞掉 → job 正常完成；
+        // 对一个"已完成"的 job 调 cancelAndJoin 必须是无害的（生产里删会话时它可能早已结束）。
+        val job = advisor.maybeSuggest(sessionId)
+        withContext(Dispatchers.Default) { job.cancelAndJoin() }
+        assertTrue("join 一个已结束的 job 不得抛错", job.isCompleted)
+        // 再 join 一次仍然无害（deleteSession 与正常结束可能竞争同一条 job）
+        withContext(Dispatchers.Default) { job.cancelAndJoin() }
+        assertTrue(job.isCompleted)
     }
 }

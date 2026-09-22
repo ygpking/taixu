@@ -95,6 +95,14 @@ class HarnessLoop @Inject constructor(
     val currentSessionId: StateFlow<String> get() = sessionTracker.currentSessionId
 
     private val sessionJobs = ConcurrentHashMap<String, Job>()
+
+    /**
+     * 顾问（技能进化）协程登记表。
+     *
+     * 顾问跑在自有 scope 里，不在 sessionJobs 中；但删会话时必须能取消/join 它，
+     * 否则 in-flight 的 LLM 调用仍会把 SkillSuggestion 写进已删除会话的 message 树。
+     */
+    private val advisorJobs = ConcurrentHashMap<String, Job>()
     private val sessionMutexes = ConcurrentHashMap<String, Mutex>()
     private val sessionCancelEpochs = ConcurrentHashMap<String, AtomicLong>()
     private val foregroundLoadGeneration = AtomicLong()
@@ -121,6 +129,20 @@ class HarnessLoop @Inject constructor(
     val messages: StateFlow<List<HarnessMessage>> get() = messageProjector.foregroundMessages
 
     /** Session-scoped message stream used by trusted secondary surfaces such as TaiXu WebChat. */
+    /**
+     * 把一条技能进化建议的处置结果（applied / dismissed）写进转写。
+     *
+     * 由 ChatViewModel 在用户点"创建技能/更新技能/忽略"时调用。原先这些状态只活在
+     * UI 的内存集合里，进程重启即丢（忽略过的卡片复活、WebChat 永远显示 pending）。
+     */
+    suspend fun recordSkillSuggestionStatus(
+        sessionId: String,
+        suggestion: top.wkbin.taixu.harness.SkillSuggestion,
+        status: String,
+    ) {
+        skillEvolutionAdvisor?.recordSuggestionStatus(sessionId, suggestion, status)
+    }
+
     fun messagesForSession(sessionId: String): StateFlow<List<HarnessMessage>> =
         messageProjector.messagesFlow(sessionId)
 
@@ -439,8 +461,9 @@ class HarnessLoop @Inject constructor(
         branchSummarizer.dropSession(id)
         // 技能注入粘性记忆也按会话回收（进程内 map，否则长跑设备按 sessionId 无界增长）
         top.wkbin.taixu.harness.skill.SkillInjectionMemory.forget(id)
-        // 顾问的自有 scope 不进 sessionJobs，deleteSession 的 cancelAndJoin 够不到它；
-        // 这里显式回收它的 per-session 状态，避免删会话后 LLM 结果仍写下孤儿建议行。
+        // 顾问协程：先取消/join in-flight 的分析，再回收 per-session 状态。
+        // 顺序不能反——只 forget 不 cancel 的话，LLM 返回后仍会往已删除会话写建议行。
+        advisorJobs.remove(id)?.cancelAndJoin()
         skillEvolutionAdvisor?.forgetSession(id)
         sessionLoopDetectors.remove(id)
         sessionCancelEpochs.remove(id)
@@ -958,7 +981,8 @@ class HarnessLoop @Inject constructor(
                     stateMirrors.setRunState(sessId, SessionRunState.COMPLETED)
                     // 千问式「对话后技能进化」：一轮有效工作结束后异步分析是否值得
                     // 沉淀新技能/修复既有技能；失败与取消路径不触发，且完全不影响主对话
-                    skillEvolutionAdvisor?.maybeSuggest(sessId)
+                    val advisorJob = skillEvolutionAdvisor?.maybeSuggest(sessId)
+                    if (advisorJob != null) advisorJobs[sessId] = advisorJob
                 }
                 RunResult.WaitingApproval -> {
                     taskId?.let { agentTaskStateMachine.markWaitingApproval(it) }

@@ -134,8 +134,8 @@ object ContextWindowPolicy {
      */
     private const val RESERVED_OUTPUT_FRACTION = 0.15
     private const val TOOL_SCHEMA_RESERVE_FRACTION = 0.08
-    /** 与 HarnessMessage.SkillSuggestion.status 的默认值一致（待处理）。 */
-    private const val PENDING_STATUS = "pending"
+    /** 待处理状态（与 HarnessMessage.SKILL_SUGGESTION_PENDING 同源）。 */
+    private const val PENDING_STATUS = SKILL_SUGGESTION_PENDING
 
     private const val RESERVED_OUTPUT_TOKENS = 8_192
     private const val TOOL_SCHEMA_RESERVE_TOKENS = 4_096
