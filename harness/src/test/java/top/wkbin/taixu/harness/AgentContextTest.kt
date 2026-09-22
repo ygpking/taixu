@@ -470,8 +470,10 @@ private class FakeAgentContextDao : AgentContextRepository {
         memories.remove(id)
     }
 
-    override suspend fun deleteMemoryByKey(key: String, scope: String, ownerId: String) {
+    override suspend fun deleteMemoryByKey(key: String, scope: String, ownerId: String): Int {
+        val before = memories.size
         memories.values.removeAll { it.key == key && it.scope == scope && it.ownerId == ownerId }
+        return before - memories.size
     }
 
     override suspend fun savePlan(plan: AgentPlanEntity) {

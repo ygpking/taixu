@@ -176,7 +176,7 @@ interface AgentContextRepository {
     suspend fun getFreshMemories(projectOwnerId: String, sessionId: String, pinned: Boolean, now: Long, limit: Int = 100): List<AgentMemoryEntity>
     suspend fun touchMemory(id: String, now: Long)
     suspend fun deleteMemoryById(id: String)
-    suspend fun deleteMemoryByKey(key: String, scope: String, ownerId: String)
+    suspend fun deleteMemoryByKey(key: String, scope: String, ownerId: String): Int
     suspend fun savePlan(plan: AgentPlanEntity)
     suspend fun getPlanBySession(sessionId: String): AgentPlanEntity?
     suspend fun getActivePlan(sessionId: String): AgentPlanEntity?
