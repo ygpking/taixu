@@ -255,7 +255,7 @@ class HarnessProviderRunner @Inject constructor(
                     val effectiveInputLimit = ContextWindowPolicy.resolveInputLimit(
                         requestModel.inputTokenLimit,
                         ContextWindowPolicy.resolveEffectiveBudget(requestModel.contextTokens),
-                        runCatching { agentPreferences.inputTokenLimit.first() }.getOrNull(),
+                        runCatching { agentPreferences.inputTokenLimitOrNull.first() }.getOrNull(),
                     )
                     val currentTokens = estimateTokens(requestMessages)
                     // 413 分型保险丝（对齐 OMP）：本地估算已明显低于裁切基准（< 0.9 倍）却仍被拒，

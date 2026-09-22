@@ -173,6 +173,7 @@ class AgentPreferences @Inject constructor(private val store: SettingsDataStore)
     val commandOutputCompressionEnabled get() = store.commandOutputCompressionEnabled
     val baseCommandTimeoutSeconds get() = store.baseCommandTimeoutSeconds
     override val contextBudgetTokens get() = store.contextBudgetTokens
+    override val inputTokenLimitOrNull get() = store.inputTokenLimitOrNull
     override val inputTokenLimit get() = store.inputTokenLimit
     override val contextFoldingRatioPercent get() = store.contextFoldingRatioPercent
     override val contextMaxKeepTokens get() = store.contextMaxKeepTokens

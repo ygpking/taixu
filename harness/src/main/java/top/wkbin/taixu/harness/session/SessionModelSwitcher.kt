@@ -24,6 +24,7 @@ import top.wkbin.taixu.harness.projection.LiveMessagePort
  */
 @Singleton
 class SessionModelSwitcher @Inject constructor(
+    private val budgetResolver: top.wkbin.taixu.harness.budget.ContextBudgetResolver,
     private val sessionDao: HarnessSessionRepository,
     private val modelDao: AiModelRepository,
     private val settingsDataStore: AgentPreferences,
@@ -68,17 +69,31 @@ class SessionModelSwitcher @Inject constructor(
         // 触发压缩——压缩时机与所用模型都偏离预期。toContextTokens 仅作 UI 展示，
         // 保留标称窗口值。
         val defaultBudget = defaultBudget()
-        val windowBudgetForProfile = ContextWindowPolicy.clampedBudget(profile.contextTokens, defaultBudget)
-        // 决策口径必须与 ApiContextAssembler 一致：那里已改为按「单次输入上限」裁切，
-        // 此处若仍按窗口值判断，会出现「切换判定无需压缩、实际请求又压缩」的分歧。
-        val toBudget = minOf(
-            ContextWindowPolicy.resolveInputLimit(
-                profile.inputTokenLimit,
-                windowBudgetForProfile,
-                runCatching { settingsDataStore.inputTokenLimit.first() }.getOrNull(),
+        // 预算单一真相源：与 ApiContextAssembler 走同一个 resolver，从此两侧不可能分叉。
+        // 此前这里自己读一部分设置（漏读 contextFoldingRatioPercent / contextMaxKeepTokens），
+        // 用户把折叠比例设成 100 时切换仍按硬编码 90% 折叠，而同数据同预算下请求路径判定
+        // 不折叠——"切换即不可逆压缩"就是这么来的。
+        val budget = budgetResolver.resolve(
+            top.wkbin.taixu.harness.ModelConfig(
+                name = profile.name,
+                provider = profile.provider,
+                model = profile.model,
+                baseUrl = profile.baseUrl,
+                apiKey = null,
+                contextTokens = profile.contextTokens,
+                inputTokenLimit = profile.inputTokenLimit,
+                compactionKeepRecentTokens = profile.compactionKeepRecentTokens,
+                compactionReserveTokens = profile.compactionReserveTokens,
+                pureChatMode = profile.pureChatMode,
+                toolCallMode = if (profile.toolCallMode.equals("disabled", ignoreCase = true)) {
+                    top.wkbin.taixu.harness.ToolCallMode.DISABLED
+                } else {
+                    top.wkbin.taixu.harness.ToolCallMode.NATIVE
+                },
             ),
-            windowBudgetForProfile,
         )
+        val windowBudgetForProfile = budget.windowTokens
+        val toBudget = budget.budget
         val fromBudget = previousProfile?.contextTokens?.let {
             ContextWindowPolicy.resolveBudget(it, defaultBudget)
         }
@@ -102,6 +117,8 @@ class SessionModelSwitcher @Inject constructor(
                 context.messages,
                 toBudget,
                 systemTokens,
+                foldingRatioPercent = budget.foldingRatioPercent,
+                maxKeepTokens = budget.maxKeepTokens,
                 keepRecentTokens = profile.compactionKeepRecentTokens ?: 0,
                 reserveTokens = profile.compactionReserveTokens,
             )

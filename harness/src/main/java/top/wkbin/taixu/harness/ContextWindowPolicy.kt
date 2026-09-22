@@ -599,9 +599,10 @@ object ContextWindowPolicy {
      * 此前存在一份逐字节相同的 `tokensOf`，两份都只服务于本文件的裁剪计算，
      * 注释还都写着"与另一处口径保持一致"——典型的"靠注释同步"，
      * 任一侧改权重另一侧就会静默分叉（同族教训：注释不会运行）。
-     * 已合并为一份，重复定义不允许再加。
+     * 已合并为一份，重复定义不允许再加。压缩侧（CompactionManager）也走这里，
+     * 不允许再出现第三套 `message.toString()` 粗估。
      */
-    private fun messageTokens(message: HarnessMessage): Int = when (message) {
+    internal fun messageTokens(message: HarnessMessage): Int = when (message) {
         is CapabilityEvent, is ModelSwitchEvent, is SkillSuggestion -> 0
         is UserMessage -> estimateTokens(message.text) + message.imageUrls.size * 1_000
         is AssistantText -> estimateTokens(assistantTextForContext(message.text)) +

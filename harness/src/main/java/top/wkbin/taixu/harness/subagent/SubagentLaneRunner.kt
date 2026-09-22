@@ -324,7 +324,7 @@ class SubagentLaneRunner @Inject constructor(
         val inputLimit = ContextWindowPolicy.resolveInputLimit(
             model.inputTokenLimit,
             windowBudget,
-            runCatching { settingsDataStore.inputTokenLimit.first() }.getOrNull(),
+            runCatching { settingsDataStore.inputTokenLimitOrNull.first() }.getOrNull(),
         )
         val budget = minOf(inputLimit, windowBudget)
         return (budget * LANE_HISTORY_BUDGET_FRACTION).toInt().coerceAtLeast(MIN_LANE_HISTORY_TOKENS)

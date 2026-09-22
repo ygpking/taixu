@@ -34,6 +34,9 @@ class FakeBudgetPreferences(
     val contextCompactionEnabledFlow = MutableStateFlow(contextCompactionEnabled)
     val contextBudgetTokensFlow = MutableStateFlow(contextBudgetTokens)
     val inputTokenLimitFlow = MutableStateFlow(inputTokenLimit)
+
+    /** 可空语义：null = 从未设置（走窗口推导）。默认给个具体值以兼容旧测试。 */
+    val inputTokenLimitOrNullFlow = MutableStateFlow<Int?>(inputTokenLimit)
     val contextFoldingRatioPercentFlow = MutableStateFlow(contextFoldingRatioPercent)
     val contextMaxKeepTokensFlow = MutableStateFlow(contextMaxKeepTokens)
     val contextArchiveEnabledFlow = MutableStateFlow(contextArchiveEnabled)
@@ -41,6 +44,7 @@ class FakeBudgetPreferences(
 
     override val contextCompactionEnabled: Flow<Boolean> get() = contextCompactionEnabledFlow
     override val contextBudgetTokens: Flow<Int> get() = contextBudgetTokensFlow
+    override val inputTokenLimitOrNull: Flow<Int?> get() = inputTokenLimitOrNullFlow
     override val inputTokenLimit: Flow<Int> get() = inputTokenLimitFlow
     override val contextFoldingRatioPercent: Flow<Int> get() = contextFoldingRatioPercentFlow
     override val contextMaxKeepTokens: Flow<Int> get() = contextMaxKeepTokensFlow
@@ -55,6 +59,7 @@ class FakeBudgetPreferences(
     fun asReadOnlySnapshot(): BudgetPreferences = object : BudgetPreferences {
         override val contextCompactionEnabled: Flow<Boolean> = contextCompactionEnabledFlow
         override val contextBudgetTokens: Flow<Int> = contextBudgetTokensFlow
+        override val inputTokenLimitOrNull: Flow<Int?> = inputTokenLimitOrNullFlow
         override val inputTokenLimit: Flow<Int> = inputTokenLimitFlow
         override val contextFoldingRatioPercent: Flow<Int> = contextFoldingRatioPercentFlow
         override val contextMaxKeepTokens: Flow<Int> = contextMaxKeepTokensFlow
@@ -75,7 +80,7 @@ fun FakeBudgetPreferences.withBudget(
 ): FakeBudgetPreferences = apply {
     foldingRatioPercent?.let { contextFoldingRatioPercentFlow.value = it }
     maxKeepTokens?.let { contextMaxKeepTokensFlow.value = it }
-    inputLimit?.let { inputTokenLimitFlow.value = it }
+    inputLimit?.let { inputTokenLimitFlow.value = it; inputTokenLimitOrNullFlow.value = it }
     budgetTokens?.let { contextBudgetTokensFlow.value = it }
     compactionEnabled?.let { contextCompactionEnabledFlow.value = it }
     archiveEnabled?.let { contextArchiveEnabledFlow.value = it }
