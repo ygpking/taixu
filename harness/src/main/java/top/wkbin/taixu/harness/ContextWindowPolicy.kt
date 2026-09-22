@@ -188,12 +188,6 @@ object ContextWindowPolicy {
         val safeRounds = rounds?.takeIf { it > 0 } ?: 0
         return (safeRounds * MESSAGES_PER_ROUND).coerceAtLeast(MIN_KEEP_MESSAGES)
     }
-    /**
-     * 历史消息占用的绝对安全上限（token）。无论模型标称窗口多高，压缩触发线都不超过此值，
-     * 避免 flash 级模型在超高 token 下参数生成崩塌（上游 v0.15.0 引入的护栏）。
-     * 与本地 [foldingLimitFor] 的预算护栏取更严者生效，两者并存不互斥。
-     */
-    const val SAFE_GENERATION_CAP = 96_000
     private const val APPROX_CHARS_PER_TOKEN = 4
 
     /**
@@ -385,8 +379,16 @@ object ContextWindowPolicy {
      * 预算钳制：先按当前模型/全局回退取值，再统一钳制到 [1, MAX_CONTEXT_BUDGET]。
      * 两处必须走同一口径，否则会出现"切换模型判定无需压缩、实际请求又压缩"。
      */
+    /**
+     * 与 [resolveEffectiveBudget] 同一套下限（[MIN_CONTEXT_BUDGET]）。
+     *
+     * 原先这里夹的是 `1..MAX`，而引擎侧夹的是 `MIN_CONTEXT_BUDGET..MAX`——同一声明窗口值
+     * 在两处解析出不同结果（declared=1000 时切换侧得 1,000、请求侧得 4,000）。
+     * 当前因写入侧 normalize 已钳到 [MIN_CONTEXT_BUDGET, MAX_CONTEXT_BUDGET] 而不可达，
+     * 属潜伏缺陷；统一口径后任何新写入路径都不会再触发分叉。
+     */
     fun clampedBudget(profileContextTokens: Int?, defaultBudget: Int): Int =
-        resolveBudget(profileContextTokens, defaultBudget).coerceIn(1, MAX_CONTEXT_BUDGET)
+        resolveBudget(profileContextTokens, defaultBudget).coerceIn(MIN_CONTEXT_BUDGET, MAX_CONTEXT_BUDGET)
 
     fun estimateReservedPromptTokens(
         pureChat: Boolean,

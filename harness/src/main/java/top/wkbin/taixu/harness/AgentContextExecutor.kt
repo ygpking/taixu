@@ -172,7 +172,10 @@ class AgentContextExecutor @Inject constructor(
                     val scope = args["scope"]?.jsonPrimitive?.contentOrNull?.lowercase() ?: "global"
                     val ownerId = memoryOwner(scope, sessionId, workspace)
                         ?: return false to "scope 仅支持 global/project/session，且 project/session 必须有对应上下文"
-                    agentContextDao.deleteMemoryByKey(key, scope, ownerId)
+                    val removed = agentContextDao.deleteMemoryByKey(key, scope, ownerId)
+                    if (removed <= 0) {
+                        return false to "未找到要删除的记忆 [$scope] key=$key（可能已被删除或键名不符）"
+                    }
                     true to "已删除记忆 [$scope] key=$key"
                 } else {
                     false to "memory delete 需提供 id 或 key"
@@ -189,7 +192,12 @@ class AgentContextExecutor @Inject constructor(
         else -> null
     }
 
-    private fun projectOwner(workspace: String): String = workspace.trim().trimEnd('/')
+    /**
+     * 工程标识归一：Windows 下同一路径可能以反斜杠与正斜杠两种写法进入，
+     * 只 trimEnd('/') 会让 project scope 的记忆与 pinned 查询互相 miss。
+     */
+    private fun projectOwner(workspace: String): String =
+        workspace.trim().replace('\\', '/').trimEnd('/')
 
     /** 新鲜度判定：expiresAt 为 null 或晚于 now 视为新鲜（过期只降权，不删除）。 */
     private fun isFresh(memory: AgentMemoryEntity, now: Long): Boolean {
@@ -390,6 +398,12 @@ class AgentContextExecutor @Inject constructor(
                     ?: return false to "scratchpad save 必须提供 key"
                 val value = args["value"]?.jsonPrimitive?.contentOrNull?.trim()
                     ?: return false to "scratchpad save 必须提供 value"
+                // 体积护栏：与 memory 的 4,096 字符口径对齐。无上限时模型可写入任意长 value，
+                // list/get 时全量回显进上下文，DB 行也无界增长。
+                if (value.length > MAX_SCRATCHPAD_VALUE_CHARS) {
+                    return false to "草稿值过长（${value.length} 字符 > $MAX_SCRATCHPAD_VALUE_CHARS 上限），" +
+                        "请拆分多次记录或精简内容"
+                }
                 agentContextDao.saveScratchpad(
                     AgentScratchpadEntity(
                         sessionId = sessionId,
@@ -433,3 +447,9 @@ class AgentContextExecutor @Inject constructor(
         }
     }
 }
+
+/**
+ * 草稿值体积上限（字符）：与 memory 的 value 上限对齐，防止模型写入任意长 value
+ * 后 list/get 全量回显进上下文、DB 行也无界增长。
+ */
+internal const val MAX_SCRATCHPAD_VALUE_CHARS = 4_096

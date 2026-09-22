@@ -74,17 +74,42 @@ interface AgentContextDao {
         WHERE ((scope = 'global' AND ownerId = '')
             OR (:projectOwnerId != '' AND scope = 'project' AND ownerId = :projectOwnerId)
             OR (:sessionId != '' AND scope = 'session' AND ownerId = :sessionId))
-          AND (`key` LIKE '%' || :query || '%' OR `value` LIKE '%' || :query || '%')
+          AND (`key` LIKE '%' || :queryEscaped || '%' ESCAPE '\'
+            OR `value` LIKE '%' || :queryEscaped || '%' ESCAPE '\')
         ORDER BY updatedAt DESC, id ASC
         LIMIT :limit
     """)
-    suspend fun searchMemories(query: String, projectOwnerId: String, sessionId: String, limit: Int): List<AgentMemoryEntity>
+    suspend fun searchMemoriesEscaped(
+        queryEscaped: String,
+        projectOwnerId: String,
+        sessionId: String,
+        limit: Int,
+    ): List<AgentMemoryEntity>
+
+    /**
+     * 记忆检索。[query] 会先经 [escapeLikePattern] 转义，因此 `%`、`_`、`\` 按字面匹配——
+     * 模型常直接传路径或符号串（含 `_`），不转义时召回集会偏离预期。
+     * 转义放在 Kotlin 侧而非 SQL 里：SQL 侧replace 三层嵌套既难读也难测。
+     */
+    suspend fun searchMemories(
+        query: String,
+        projectOwnerId: String,
+        sessionId: String,
+        limit: Int,
+    ): List<AgentMemoryEntity> =
+        searchMemoriesEscaped(escapeLikePattern(query), projectOwnerId, sessionId, limit)
 
     @Query("DELETE FROM agent_memories WHERE id = :id")
     suspend fun deleteMemoryById(id: String)
 
+    /**
+     * 按键删除记忆，返回实际删除的行数。
+     *
+     * 返回值是必需的：原先返回 Unit，调用方只能无条件回「已删除」——key 不存在时
+     * 模型会误认为删除生效。
+     */
     @Query("DELETE FROM agent_memories WHERE `key` = :key AND scope = :scope AND ownerId = :ownerId")
-    suspend fun deleteMemoryByKey(key: String, scope: String, ownerId: String)
+    suspend fun deleteMemoryByKey(key: String, scope: String, ownerId: String): Int
 
     // ========== 任务规划 (Plan) ==========
 
@@ -155,3 +180,12 @@ interface AgentContextDao {
     @Query("DELETE FROM agent_scratchpads WHERE sessionId = :sessionId")
     suspend fun clearScratchpads(sessionId: String)
 }
+
+/**
+ * 转义 SQL LIKE 通配符，使 `%`、`_`、`\` 按字面匹配（配合 `ESCAPE '\'`）。
+ *
+ * 不做转义时，模型传进来的路径/符号串（`foo_bar`、`a%b`）会被当成通配符，
+ * 召回集偏离预期——本文件内 searchBranch 早已这么做，searchMemories 是漏网的那一处。
+ */
+internal fun escapeLikePattern(raw: String): String =
+    raw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
