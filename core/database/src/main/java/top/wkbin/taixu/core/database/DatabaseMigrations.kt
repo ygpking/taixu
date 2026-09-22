@@ -424,3 +424,19 @@ val MIGRATION_50_51 = object : Migration(50, 51) {
         )
     }
 }
+
+/**
+ * 迁移成员清单 —— **单一真相源**。
+ *
+ * `AppModule.addMigrations(...)` 与真实升级测试都从这里取，避免"测试装了某条迁移、线上漏装"
+ * 这类只有在用户设备上才暴露的偏差。新增迁移时必须同时登记到此清单。
+ *
+ * 顺序即执行顺序（Room 会按版本号挑选实际要跑的那几条，此处顺序仅是可读性）。
+ */
+val ALL_MIGRATIONS: Array<Migration> = arrayOf(
+    MIGRATION_27_28, MIGRATION_28_29, MIGRATION_29_30, MIGRATION_30_31, MIGRATION_31_32,
+    MIGRATION_32_33, MIGRATION_33_34, MIGRATION_34_35, MIGRATION_35_36, MIGRATION_36_37,
+    MIGRATION_37_38, MIGRATION_38_39, MIGRATION_39_40, MIGRATION_40_41, MIGRATION_41_42,
+    MIGRATION_42_43, MIGRATION_43_44, MIGRATION_44_45, MIGRATION_45_46, MIGRATION_46_47,
+    MIGRATION_47_48, MIGRATION_48_49, MIGRATION_49_50, MIGRATION_50_51,
+)
