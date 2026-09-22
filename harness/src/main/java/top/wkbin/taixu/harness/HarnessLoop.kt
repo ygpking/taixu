@@ -437,6 +437,8 @@ class HarnessLoop @Inject constructor(
         sessionDao.deleteSession(id)
         rewindController.dropSession(id)
         branchSummarizer.dropSession(id)
+        // 技能注入粘性记忆也按会话回收（进程内 map，否则长跑设备按 sessionId 无界增长）
+        top.wkbin.taixu.harness.skill.SkillInjectionMemory.forget(id)
         sessionLoopDetectors.remove(id)
         sessionCancelEpochs.remove(id)
         cancellingSessions.remove(id)

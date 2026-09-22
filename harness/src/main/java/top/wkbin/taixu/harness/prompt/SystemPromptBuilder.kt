@@ -22,6 +22,8 @@ import top.wkbin.taixu.harness.SubagentDepartmentIndexRenderer
 import top.wkbin.taixu.harness.ToolCallMode
 import top.wkbin.taixu.harness.WorkspaceFileAccess
 import top.wkbin.taixu.harness.mcp.McpToolApiName
+import top.wkbin.taixu.harness.skill.SkillDecisionResolver
+import top.wkbin.taixu.harness.skill.SkillInjectionMemory
 import top.wkbin.taixu.harness.skill.SkillMatcher
 
 /**
@@ -72,28 +74,11 @@ class SystemPromptBuilder @Inject constructor(
 
         val allSkills = runCatching { skillRepository.allSkills.first() }.getOrDefault(emptyList())
 
-        // @提及 二次解析：上游 MentionExtractor.parse 只传了文本，无法识别含空格的技能名
-        // （如「Git 敏捷工作流」会被截成「Git」而静默失配）。此处以已启用技能的
-        // name/id/triggerCommand 作为已知名单重解析并合并，确保空格名与全角输入都能命中。
-        val knownSkillNames = allSkills
-            .filter { it.isEnabled }
-            .flatMap { listOf(it.name, it.id, it.triggerCommand?.removePrefix("/").orEmpty()) }
-            .filter { it.isNotBlank() }
-        val effectiveMentions = if (latestUserMessage.isBlank()) {
-            mentionedNames
-        } else {
-            mentionedNames + MentionExtractor.parse(latestUserMessage, knownSkillNames)
-        }
-        val selectedSkills = selectSkills(allSkills, effectiveMentions)
         // 「未匹配提及」的已知名单必须覆盖全部可 @ 实体，而不只是技能：
-        // MCP 服务与子智能体同样是 @提及的一等公民（HarnessProviderRunner 用同一份
-        // mentionedNames 挂载 MCP 工具）。只比对技能时，`@浏览器` 这类合法 MCP 提及
-        // 每轮都会被判成"未匹配到任何已启用技能"注入系统提示——既噪声，
+        // MCP 服务/工具与子智能体同样是 @提及的一等公民（HarnessProviderRunner 用同一份
+        // mentionedNames 挂载 MCP 工具；工具名级提及在动态挂载路径也是合法支持的）。
+        // 漏掉它们会把合法提及判成"未匹配到任何已启用技能"——既噪声，
         // 还会诱导模型反过来要求用户"修正拼写"。
-        // 工具名也要进来：MCP 工具名级 @提及 在挂载路径是合法支持的
-        // （HarnessProviderRunner 用 mentionedNames 筛 dynamicMcpTools），只收服务 id/名时
-        // `@cat` 这类工具提及会被判成"未匹配到任何已启用技能，请确认拼写"——噪声，
-        // 还会诱导模型要求用户改一个本来正确的写法。
         val otherKnownNames = runCatching {
             val mcpNames = mcpServerRepository.servers.first()
                 .flatMap { listOf(it.id, it.name) } +
@@ -101,7 +86,20 @@ class SystemPromptBuilder @Inject constructor(
             val subagentNames = subagentRepository.enabledProfiles().flatMap { listOf(it.id, it.name) }
             (mcpNames + subagentNames).filter { it.isNotBlank() }
         }.getOrDefault(emptyList())
-        val missedMentions = selectUnmatchedMentions(allSkills, effectiveMentions, otherKnownNames)
+
+        // 一轮一次决策：提及解析（带已知名单，能识别含空格技能名）、isEnabled/空正文门禁、
+        // 机械预匹配、未匹配判定，全部走同一个纯函数。
+        // CapabilityEventWriter 调的是同一个 resolver、同一份输入——此前两侧各算一遍且
+        // 归一口径不同，于是"卡片说已注入、提示说未匹配"这类矛盾每轮都在发生。
+        val decision = SkillDecisionResolver.resolve(
+            latestUserMessage = latestUserMessage,
+            allSkills = allSkills,
+            toolCallMode = toolCallMode,
+            stickyIds = SkillInjectionMemory.stickyIds(sessionId),
+            otherKnownNames = otherKnownNames,
+        )
+        val selectedSkills = allSkills.filter { it.id in decision.mentionedIds }
+        val missedMentions = decision.unmatchedMentions
         val skippedSkills = mutableListOf<String>()
 
         // 机械预匹配（治本核心）：不再指望模型"自觉扫目录"，而由系统按任务文本做确定性判定，
@@ -109,12 +107,7 @@ class SystemPromptBuilder @Inject constructor(
         // 这样"按需加载"这一步不再依赖模型主动发起 load_skill 工具调用——彻底消除
         // "提示里写着要扫、模型读过即忘、且遗漏无声无息" 的缺陷。
         // 未 @提及 且正文已注入的技能从目录中排除，避免目录里出现"已生效却仍让模型再加载"的重复。
-        val autoMatchedSkills = selectAutoMatchedSkills(
-            allSkills = allSkills,
-            latestUserMessage = latestUserMessage,
-            toolCallMode = toolCallMode,
-            excludedIds = selectedSkills.mapTo(mutableSetOf()) { it.id },
-        )
+        val autoMatchedSkills = allSkills.filter { it.id in decision.autoMatchedIds }
         val autoMatchedIds = autoMatchedSkills.mapTo(mutableSetOf()) { it.id }
         val injectedSkills = selectedSkills + autoMatchedSkills
 
@@ -122,6 +115,9 @@ class SystemPromptBuilder @Inject constructor(
             if (injectedSkills.isNotEmpty()) {
                 append("## 当前生效的专精技能指导规则 (Active Skills)\n\n")
                 var used = 0
+                // 记下本轮自动注入的技能，供下一轮粘性续用：追问轮的关键词可能不复现，
+                // 不保留就等于"无声遗漏"每隔一轮复发一次。
+                SkillInjectionMemory.record(sessionId, decision.autoMatchedIds)
                 val rendered = injectedSkills.mapNotNull { skill ->
                     val body = skill.systemPrompt.trim()
                     // 正文护栏：单技能超限则截断并标注；累计超预算则跳过并登记，避免少数巨型技能
