@@ -9,6 +9,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import top.wkbin.taixu.harness.ApiMessage
 import top.wkbin.taixu.harness.AssistantText
 import top.wkbin.taixu.harness.CapabilityEvent
+import top.wkbin.taixu.harness.SKILL_SUGGESTION_PENDING
 import top.wkbin.taixu.harness.SkillSuggestion
 import top.wkbin.taixu.harness.HarnessApiMapper
 import top.wkbin.taixu.harness.HarnessMessage
@@ -34,8 +35,8 @@ object ConversationText {
 
     const val TOOL_RESULT_CHAR_LIMIT = 2_000
 
-    /** 与 HarnessMessage.SkillSuggestion.status 的默认值一致（待处理）。 */
-    private const val PENDING_STATUS = "pending"
+    /** 待处理状态（与 HarnessMessage.SKILL_SUGGESTION_PENDING 同源）。 */
+    private const val PENDING_STATUS = SKILL_SUGGESTION_PENDING
     private const val ARG_VALUE_CHAR_LIMIT = 240
     private const val THINKING_CHAR_LIMIT = 1_200
     /** 序列化文本总量上限（字符）：超出时保头尾，避免摘要请求本身爆上下文。 */

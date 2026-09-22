@@ -53,15 +53,20 @@ class SkillEvolutionAdvisor @Inject constructor(
     private val lastSuggestionAtLock = Any()
 
     /** 只在成功 run 结束后由 HarnessLoop 调用；内部全量容错，绝不向调用方抛异常。 */
-    fun maybeSuggest(sessId: String) {
-        scope.launch {
-            try {
-                analyzeAndEmit(sessId)
-            } catch (cancellation: kotlinx.coroutines.CancellationException) {
-                throw cancellation
-            } catch (t: Throwable) {
-                logger.w("SkillEvolution: analyze failed for $sessId", t)
-            }
+    /**
+     * 发起一次分析，返回它所在的 Job。
+     *
+     * 返回 Job 是为了让调用方（HarnessLoop）能把它纳入 deleteSession 的 join 范围——
+     * 顾问跑在自有 scope 里，调用方原先拿不到任何句柄，删会话时 in-flight 的 LLM 调用
+     * 仍会把结果写进已删除会话的 message 树。
+     */
+    fun maybeSuggest(sessId: String): kotlinx.coroutines.Job = scope.launch {
+        try {
+            analyzeAndEmit(sessId)
+        } catch (cancellation: kotlinx.coroutines.CancellationException) {
+            throw cancellation
+        } catch (t: Throwable) {
+            logger.w("SkillEvolution: analyze failed for $sessId", t)
         }
     }
 
@@ -137,6 +142,23 @@ class SkillEvolutionAdvisor @Inject constructor(
      */
     fun forgetSession(sessId: String) {
         lastSuggestionAt.remove(sessId)
+    }
+
+    /**
+     * 把一条建议的处置结果写进转写（同 id、status=applied/dismissed）。
+     *
+     * 为什么必须落库：applied/dismissed 原先只活在 ChatViewModel 的内存集合里，
+     * 进程一重启就丢——用户"忽略"过的卡片复活、WebChat 侧永远显示 pending。
+     * 转写本身是 append-only 的，写一条同 id 的新消息即可；UI 按"最后一条同 id 消息的
+     * status"过滤，天然幂等（重复点击写两条 applied 也无副作用）。
+     */
+    suspend fun recordSuggestionStatus(
+        sessionId: String,
+        suggestion: SkillSuggestion,
+        status: String,
+    ) {
+        val cleared = suggestion.copy(status = status)
+        projector.append(sessionId, cleared)
     }
 
     private suspend fun resolveModel(sessId: String): ModelConfig? =

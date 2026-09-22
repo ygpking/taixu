@@ -204,6 +204,9 @@ class TaiXuWebChatAgentGateway @Inject constructor(
                 put("type", "agent_tool_summary")
                 put("toolTitle", "技能建议: ${message.skillName}")
                 put("toolType", "skill_suggestion")
+                // status 现在真的会变：处置结果按同 id 追加进转写（applied / dismissed），
+                // WebChat 侧据此过滤已处理的卡片。此前它恒为 "pending"——
+                // 因为 applied/dismissed 只活在 UI 的内存集合里，重启即丢。
                 put("status", message.status)
                 put("action", message.action)
                 put("details", message.description)

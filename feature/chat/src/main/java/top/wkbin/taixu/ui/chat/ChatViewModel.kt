@@ -1066,6 +1066,12 @@ class ChatViewModel @Inject constructor(
     }
 
     private companion object {
+        /** 技能建议已落地（创建/更新技能）。 */
+        const val SKILL_SUGGESTION_APPLIED = "applied"
+
+        /** 技能建议被用户忽略。 */
+        const val SKILL_SUGGESTION_DISMISSED = "dismissed"
+
         val WORKFLOW_COMMAND = Regex("^/wf(?:\\s+([A-Za-z0-9_.-]+))?$")
     }
 
@@ -1099,6 +1105,13 @@ class ChatViewModel @Inject constructor(
                 }
             }
             if (result.isSuccess) {
+                // 处置结果写进转写（同 id、status=applied），UI 按转写过滤而不是内存集合：
+                // 内存态在进程重启后就丢，用户"创建"过的卡片会复活并可被二次点击。
+                harnessLoop.recordSkillSuggestionStatus(
+                    currentSessionId.value,
+                    suggestion,
+                    SKILL_SUGGESTION_APPLIED,
+                )
                 _hiddenSkillSuggestions.update { it + suggestion.id }
             } else {
                 // 失败不再静默：回滚幂等标记（允许重试），保留卡片并复用既有 notice 通道
@@ -1128,6 +1141,17 @@ class ChatViewModel @Inject constructor(
 
     fun dismissSkillSuggestion(id: String) {
         _hiddenSkillSuggestions.update { it + id }
+        // 忽略同样落库：否则重启后卡片复活，反复忽略反复出现。
+        val suggestion = messages.value.filterIsInstance<SkillSuggestion>().lastOrNull { it.id == id }
+        if (suggestion != null) {
+            viewModelScope.launch {
+                harnessLoop.recordSkillSuggestionStatus(
+                    currentSessionId.value,
+                    suggestion,
+                    SKILL_SUGGESTION_DISMISSED,
+                )
+            }
+        }
     }
 
     private fun SkillSuggestion.toAgentSkill(nameOverride: String? = null): top.wkbin.taixu.core.model.AgentSkill = top.wkbin.taixu.core.model.AgentSkill(
