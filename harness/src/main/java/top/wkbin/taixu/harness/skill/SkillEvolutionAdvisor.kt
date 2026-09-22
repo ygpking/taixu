@@ -65,12 +65,20 @@ class SkillEvolutionAdvisor @Inject constructor(
         }
     }
 
-    private suspend fun analyzeAndEmit(sessId: String) {
+    /**
+     * 分析并产出建议。提为 internal 供测试同步驱动（[maybeSuggest] 是 fire-and-forget，
+     * 拿不到 job，断言不了中间状态）。
+     */
+    internal suspend fun analyzeAndEmit(sessId: String) {
         if (!settingsDataStore.skillEvolutionSuggestions.first()) return
 
         // 必须先取快照再判门槛：早退路径不应占用冷却窗口（否则一次空跑会让真正有价值的
         // 下一轮在 30 分钟内被静默吞掉）。
-        val messages = projector.messagesFlow(sessId).value
+        // digest 读**持久源**而不是实时投影快照：`messagesFlow(...).value` 在会话被 LRU
+        // 驱逐（`SessionMessageProjector.MAX_CACHED_SESSIONS = 4`）时会拿到空列表，
+        // 于是 buildConversationDigest 返回 null、本方法静默返回——技能进化对该会话
+        // 永久失效，而多会话后台并行正是这个引擎的主打能力。
+        val messages = runCatching { projector.loadHistory(sessId) }.getOrNull() ?: return
         val digest = buildConversationDigest(messages) ?: return
 
         // 工具调用门槛：仅当本轮有足够多的工具调用（= 确实做了步骤化工作）才值得花一次
@@ -82,11 +90,13 @@ class SkillEvolutionAdvisor @Inject constructor(
         // 冷却判定与写入必须在同一临界区内。用**独立的锁对象**而不是 `synchronized(lastSuggestionAt)`：
         // 锁对象若与被保护容器是同一个，就要求"所有对该 map 的访问都持锁"，这条不变式靠注释
         // 守不住；解耦之后，忘记持锁的访问至少不会被同一把锁挡住从而死锁，也更容易在测试里发现。
+        // 冷却**判定**在这里，但**写入**挪到 projector.append 成功之后（见文件末尾）：
+        // 原先先写再分析，而 action=none（提示词明示这是默认答案）、JSON 非法、
+        // normalizeProposal 返回 null 都是最高频结局——一次失败分析会静默吞掉该会话
+        // 随后 30 分钟的建议机会，与 72-73 行自称的不变式正好相反。
         synchronized(lastSuggestionAtLock) {
             val last = lastSuggestionAt[sessId] ?: 0L
             if (now - last < COOLDOWN_MS) return
-            lastSuggestionAt[sessId] = now
-            lastSuggestionAt.pruneIfStale(now)
         }
 
         // 只把**已启用**技能交给顾问判断：被用户禁用的技能在 load_skill 里被 activeSkills 门禁挡住，
@@ -113,6 +123,20 @@ class SkillEvolutionAdvisor @Inject constructor(
         val proposal = parseAdvisorResponse(result.content.orEmpty()) ?: return
         val normalized = normalizeProposal(proposal, skills) ?: return
         projector.append(sessId, normalized.toMessage(java.util.UUID.randomUUID().toString(), System.currentTimeMillis()))
+        // 只有真的产出建议才占用冷却窗口。
+        synchronized(lastSuggestionAtLock) {
+            lastSuggestionAt[sessId] = System.currentTimeMillis()
+            lastSuggestionAt.pruneIfStale(System.currentTimeMillis())
+        }
+    }
+
+    /**
+     * 会话删除时回收：顾问跑在自有 scope 里，`HarnessLoop.deleteSession` 的
+     * `cancelAndJoin(sessionJobs)` 结构上够不到它；不回收的话，删会话瞬间返回的 LLM
+     * 结果仍会往已删除会话的 message 树里追加一行永无 UI 可达的 SkillSuggestion。
+     */
+    fun forgetSession(sessId: String) {
+        lastSuggestionAt.remove(sessId)
     }
 
     private suspend fun resolveModel(sessId: String): ModelConfig? =
