@@ -61,7 +61,13 @@ class AppDatabaseUpgradeFromV49Test {
         /** PR#27 建的技能名唯一索引。 */
         const val SKILL_NAME_INDEX = "index_agent_skills_name"
 
-        /** 写入一行技能用的列清单 + 占位符（两条路径共用，避免手写漂移）。 */
+        /** 写入一行技能用的列清单 + 占位符（**v49 形态**：无 `autoMatchEligible` 列）。 */
+        const val INSERT_V49_SKILL_SQL =
+            "INSERT INTO `agent_skills` (`id`,`name`,`description`,`systemPrompt`,`triggerCommand`," +
+                "`iconName`,`isEnabled`,`isBuiltin`,`isImmutable`,`category`,`resourcePath`) " +
+                "VALUES (?,?,'d','p',NULL,'Code',1,0,0,'进化',NULL)"
+
+        /** 写入一行技能（**v51 形态**：含 `autoMatchEligible` 列）。用于升级后/全新库。 */
         const val INSERT_SKILL_SQL =
             "INSERT INTO `agent_skills` (`id`,`name`,`description`,`systemPrompt`,`triggerCommand`," +
                 "`iconName`,`isEnabled`,`isBuiltin`,`isImmutable`,`category`,`resourcePath`," +
@@ -132,7 +138,8 @@ class AppDatabaseUpgradeFromV49Test {
                     "VALUES ('ws-sentinel','/tmp/ws-sentinel',111,0)",
             )
             db.execSQL("INSERT INTO `agent_approval_settings` (`id`,`mode`) VALUES (1,'AUTO')")
-            db.execSQL(INSERT_SKILL_SQL, arrayOf("k-sentinel", "周报整理"))
+            // 注意：此处必须用 **v49 形态**的 INSERT —— 此刻还没有 autoMatchEligible 列
+            db.execSQL(INSERT_V49_SKILL_SQL, arrayOf("k-sentinel", "周报整理"))
             db.version = 49
         } finally {
             db.close()
