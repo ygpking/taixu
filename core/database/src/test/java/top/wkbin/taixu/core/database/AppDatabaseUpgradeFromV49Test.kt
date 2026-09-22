@@ -201,8 +201,13 @@ class AppDatabaseUpgradeFromV49Test {
 
     private fun tableCount(db: AppDatabase): Int = int(
         db,
+        // 只排除 Room/SQLite 自己的表。注意**不能**写成 `name NOT LIKE 'android_%'`：
+        // 业务表里有一张 `android_apps`（已装应用清单），那样会被连坐排除，
+        // 于是 v49 与 v51 都只数出 32，把"少了一张表"误报成"被清库重建"。
+        // 真实系统表只有 `android_metadata` 一张，按等值排除即可。
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' " +
-            "AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'android_%' AND name NOT LIKE 'room_%'",
+            "AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'room_%' " +
+            "AND name <> 'android_metadata'",
     )
 
     // ------------------------------------------------------------------ 断言
