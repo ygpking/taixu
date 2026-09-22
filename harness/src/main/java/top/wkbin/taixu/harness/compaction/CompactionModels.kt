@@ -20,6 +20,15 @@ data class CompactedContext(
     val summary: String? = null,
     val messages: List<HarnessMessage> = emptyList(),
     /**
+     * 投影发生时的 lane 叶子 id。
+     *
+     * compact() 用它做落库前的稳定性复核：压缩主干是一次数秒的 LLM 调用，期间并发写 lane
+     * 会让叶子前进，而 appendToLane 对陈旧 parentId 是静默 rebase——窗口内写入的消息会
+     * 永久退出投影。不能从 messages 末条推导：分支摘要等非 message 条目不进 messages
+     * 却会推进叶子。
+     */
+    val sourceLeafId: String? = null,
+    /**
      * 活跃分支上、最近一次压缩之后的分支摘要（对齐 pi 的 BranchSummaryEntry）。
      * 按树序排列；在 compact() 时会被折叠进新的压缩摘要，不会重复注入。
      */

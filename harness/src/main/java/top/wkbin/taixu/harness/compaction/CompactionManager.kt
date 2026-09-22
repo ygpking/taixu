@@ -31,6 +31,7 @@ class CompactionManager @Inject constructor(
             return CompactedContext(
                 messages = entries.mapNotNull(::decodeMessage),
                 branchSummaries = branchSummariesWithin(entries, afterSequence = null),
+                sourceLeafId = lane.leafId,
             )
         }
 
@@ -45,6 +46,7 @@ class CompactionManager @Inject constructor(
             summary = payload.summary,
             messages = retained + afterMessages,
             branchSummaries = branchSummariesWithin(entries, afterSequence = latestCompaction.sequence),
+            sourceLeafId = lane.leafId,
         )
     }
 
@@ -83,10 +85,16 @@ class CompactionManager @Inject constructor(
          * 不复核的后果：归档目录在删除清理**之后**又被建回来（会话 id 不复用，
          * 于是永久残留），并往已删除的会话写孤儿 lane 行。
          * 调用方不传时退化为 `{ true }`，行为与从前一致。
+         *
+         * 注意该复核**只覆盖归档**：落库前的会话存在性与 lane 叶子稳定性由 compact 内部
+         * 另行复核（见下方 `leafBeforeAppend`）。
          */
         sessionStillExists: suspend () -> Boolean = { true },
     ): CompactedContext {
         require(keepFromIndex in 1..context.messages.size) { "Compaction must remove at least one message" }
+        // 期望的父叶子 = 投影快照时的 lane 叶子（CompactionContext.sourceLeafId）。
+        // 落库前的稳定性复核要用它，见下方 appendToLane 前的检查。
+        val expectedLeafId = context.sourceLeafId
         val lane = repository.ensureLane(sessionId, laneName)
         val collapsed = context.messages.take(keepFromIndex)
         val retained = context.messages.drop(keepFromIndex)
@@ -145,7 +153,7 @@ class CompactionManager @Inject constructor(
                 .ifBlank { ContextArchive.searchEntryNote(collapsed.size) }
             )
         val payload = CompactionPayload(
-            sourceLeafId = lane.leafId,
+            sourceLeafId = expectedLeafId ?: lane.leafId,
             summary = summaryWithIndex,
             retainedMessagesJson = json.encodeToString(ListSerializer(HarnessMessage.serializer()), retained),
             compactedMessageCount = collapsed.size,
@@ -154,10 +162,33 @@ class CompactionManager @Inject constructor(
             estimatedTokensBefore = context.messages.sumOf(::messageTokens),
             createdAt = now,
         )
+        // 落库前复核 lane 叶子是否仍在快照点上。压缩的主干是一次数秒的 LLM 调用，
+        // 期间任何并发写 lane 都会让叶子前进：`appendToLane` 对陈旧 parentId 是**静默 rebase**
+        // （改写 parentId 挂到最新叶子），而 project() 用「retained 快照 + sequence 晚于压缩条目」
+        // 重建上下文——窗口内写入的消息既不在 retained 也不满足 sequence 条件，从此永久消失，
+        // 且无异常、无日志、UI 里还在。切换压缩跑在 viewModelScope，不进 sessionJobs、
+        // 不持 lane 锁，`isSessionBusy` 看不见它，与用户随手发消息的窗口天然重叠。
+        // 复核不通过就放弃本次压缩、原样返回 context：下一轮请求会重新判定并重试，
+        // 代价是一次白跑的 LLM 调用，收益是消息不丢。
+        // 同一道闸门也覆盖"会话已被删除"：往已删除会话 appendToLane 会经 ensureLane
+        // 重建 lane 行并落下压缩条目，成为永久孤儿（被用量统计与备份扫到）。
+        if (!sessionStillExists()) {
+            Log.w("ContextCompaction", "放弃本次压缩：会话 $sessionId 已不存在")
+            return context
+        }
+        val leafBeforeAppend = repository.findLane(sessionId, laneName)?.leafId
+        if (expectedLeafId != null && leafBeforeAppend != null && leafBeforeAppend != expectedLeafId) {
+            Log.w(
+                "ContextCompaction",
+                "放弃本次压缩：lane 叶子已从 $expectedLeafId 前进到 $leafBeforeAppend，" +
+                    "期间有新消息写入，落库会使其永久退出投影",
+            )
+            return context
+        }
         val entry = HarnessEntryEntity(
             id = UUID.randomUUID().toString(),
             sessionId = sessionId,
-            parentId = lane.leafId,
+            parentId = leafBeforeAppend ?: lane.leafId,
             createdAt = now,
             entryType = ENTRY_TYPE,
             customType = null,

@@ -351,23 +351,30 @@ class SystemPromptBuilder @Inject constructor(
             activePlanExists = activePlanExists,
         ).joinToString("\n\n") { block -> promptAssets.read(block.assetPath) }
 
+        // 段落顺序即**裁剪优先级**：fitSystemPrompt 超预算时从头部保留、从尾部丢弃（head-cut）。
+        // 因此高权威、用户显式配置、协议必需的段落必须靠前，逐轮变化的低权威段落
+        // （技能正文、recall）必须沉到最后。
+        //
+        // 旧顺序把 pinned（自述"最高权威"）、Active Plan、工具调用协议放在尾部，而逐轮变化的
+        // 技能正文放在第 2 位——超预算时先丢的是用户长期指令与任务计划，留下的却可能是
+        // 误报注入的技能正文。这与本文件自述的"可变分节后置"原则正好相反。
         return listOf(
             basePrompt,
-            skillSectionFallback,
+            pinnedSection,
+            planSection,
+            toolCallSection,
             toolsSection,
             prootSection,
             privilegeSection,
-            routedBlocks,
+            subagentSection,
             installedToolsSection,
             mcpCapabilitySection,
-            pinnedSection,
-            planSection,
+            routedBlocks,
             scratchpadSection,
-            subagentSection,
-            toolCallSection,
             workspaceGuidance,
             workspaceParts?.projectContext.orEmpty(),
             thinkingLanguageSection,
+            skillSectionFallback,
             recallSection,
         ).filter { it.isNotBlank() }.joinToString("\n\n") { it.trim() }
     }

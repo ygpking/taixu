@@ -17,6 +17,15 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * 目录扫描但 frontmatter 无 description 时的占位描述。
+ *
+ * 它是"给人看的说明"，却被 SkillMatcher 无差别当作匹配语料：多个无描述技能共享同一句话，
+ * 产出「目录/发现/自定/定义」四个高频 2-gram，任务里共现两个即可把技能推过注入阈值。
+ * 匹配侧因此要把它识别出来并排除（见 SkillMatcher）。
+ */
+const val PLACEHOLDER_SKILL_DESCRIPTION = "从目录自动发现的 Skill"
+
 @Entity(tableName = "agent_skills")
 data class AgentSkillEntity(
     @androidx.room.PrimaryKey val id: String,
@@ -161,7 +170,7 @@ class AgentSkillRepository @Inject constructor(
                 ?: markdown.lineSequence().firstOrNull { it.startsWith("# ") }?.removePrefix("# ")?.trim()
                 ?: dir.name,
             description = metadata["description"]?.takeIf { it.isNotBlank() }
-                ?.take(MAX_DESCRIPTION_CHARS) ?: "从目录自动发现的 Skill",
+                ?.take(MAX_DESCRIPTION_CHARS) ?: PLACEHOLDER_SKILL_DESCRIPTION,
             systemPrompt = markdown + "\n\n【Skill 资源目录】$guestPath\n如需执行该 Skill 附带的脚本，请先检查脚本内容与参数，再从此目录调用。",
             isBuiltin = false,
             category = "自定义",

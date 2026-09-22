@@ -107,9 +107,12 @@ class ContextWatermarkRefactorTest {
         )
         assertEquals("预算充足时不折叠（100 轮也一样）", 0, fitAll)
 
+        // 4_000 档：内置预留按预算比例封顶后，8K 档已能容纳这 100 条短消息
+        // （旧口径把 8,192+4,096 当绝对值扣掉，8K 档只剩约 600 可用，才会折叠——
+        //  那正是本次修掉的账目错误）。要构造"确实超水位"需要更低档位。
         val overflow = ContextWindowPolicy.computeKeepFromIndex(
             messages = messages,
-            budget = 8_000,
+            budget = 4_000,
             systemTokens = 100,
             minKeepMessages = ContextWindowPolicy.MIN_KEEP_MESSAGES,
         )
