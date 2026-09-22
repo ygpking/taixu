@@ -739,6 +739,55 @@ class ContextWindowPolicyTest {
         assertTrue(ContextWindowPolicy.estimateHarnessPayloadBytes(shrunk) <= 8_000)
     }
 
+    /**
+     * 回归：data: URL 图片必须按 ESTIMATED_IMAGE_TOKENS 常量估算，不得按 base64 长度折算。
+     *
+     * 曾经的缺陷：estimateApiMessages 对 `data:image/` 走 `image.length / 3`，一张
+     * 200KB 的图被算成约 6.6 万 token（真实量级 1600），单张夸大 40 倍。经
+     * outputBudget 的 `available = context - estimateApiMessages` 传导后，
+     * available 被压到 1，最终 max_tokens=1 —— 带图请求模型无法产出任何内容。
+     */
+    @Test
+    fun `data url image is estimated by constant not by base64 length`() {
+        val oneImage = "data:image/png;base64," + "A".repeat(200_000)
+        val messages = listOf(
+            ApiMessage(role = "user", content = "看图", imageUrls = listOf(oneImage)),
+        )
+
+        val estimated = ContextWindowPolicy.estimateApiMessages(messages)
+
+        // 20 万字符若按长度折算约 6.6 万 token；按常量则只有 1600 出头。
+        // 断言必须显著低于"按长度折算"的量级，才能捕获旧口径回归。
+        assertTrue(
+            "图片估算应远低于 base64 长度折算值，实测 $estimated",
+            estimated < 10_000,
+        )
+        assertTrue(estimated >= ContextWindowPolicy.ESTIMATED_IMAGE_TOKENS)
+    }
+
+    /**
+     * 回归：带图请求的输出预算不得被图片估算压到 1。
+     *
+     * 旧口径下 3 张图即可把 available 压到 1，模型无法输出。
+     * 修复后同场景必须留出足够的输出预算。
+     */
+    @Test
+    fun `output budget stays usable when request contains images`() {
+        val image = "data:image/png;base64," + "A".repeat(200_000)
+        val messages = listOf(
+            ApiMessage(role = "user", content = "看图", imageUrls = listOf(image, image, image)),
+        )
+
+        val budget = ContextWindowPolicy.outputBudget(
+            configured = null,
+            providerDefault = 8_192,
+            messages = messages,
+            contextTokens = 128_000,
+        )
+
+        assertTrue("带图请求仍应保留可观的输出预算，实测 $budget", budget > 1_000)
+    }
+
     @Test
     fun `byte budget is a no-op when payload already fits`() {
         val messages = listOf(

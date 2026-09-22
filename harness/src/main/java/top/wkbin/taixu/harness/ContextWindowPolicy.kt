@@ -246,11 +246,11 @@ object ContextWindowPolicy {
         // content-part markers too, while our fallback tokenizer cannot see them.
         4 + estimateTokens(message.content.orEmpty()) +
             estimateTokens(message.reasoning_content.orEmpty()) +
-            message.imageUrls.sumOf { image ->
-                if (image.startsWith("data:image/", ignoreCase = true)) {
-                    (image.length / 3).coerceAtLeast(ESTIMATED_IMAGE_TOKENS)
-                } else ESTIMATED_IMAGE_TOKENS
-            } +
+            // 图片一律按每张常量估算（与 estimateTokens(UserMessage)、压缩侧、providerRunner
+            // 同一口径）。此前 data: URL 走 `长度/3`，把一张压缩后的 200KB 图算成约 6.6 万
+            // token（真实量级 1600），单张即夸大 40 倍，会把 outputBudget 的 available
+            // 压到 1（max_tokens=1），带图请求模型无法产出——同一语义四处实现不一致的典型。
+            message.imageUrls.size * ESTIMATED_IMAGE_TOKENS +
             message.tool_calls.orEmpty().sumOf { call ->
                 estimateTokens(call.function.name) + estimateTokens(call.function.arguments) + 4
             }
