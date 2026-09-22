@@ -16,6 +16,19 @@ data class AgentSkill(
     val category: String = "通用",
     /** 私有 Skill 包解压目录；为空表示仅包含提示词。 */
     val resourcePath: String? = null,
+    /**
+     * 是否允许被**机械预匹配自动注入**。
+     *
+     * 默认 true。设为 false 的技能仍可经 @提及 / `load_skill` / 斜杠命令显式激活，
+     * 只是不再由系统按任务文本自动注入正文。
+     *
+     * 为什么需要它：自动匹配"高精度优先、宁缺毋滥"，但误报的代价对**会写持久状态的技能**
+     * 特别高——它们的正文指令模型调用 plan/memory/scratchpad，一次误注入就可能覆盖用户
+     * 真实计划、留下跨会话记忆。显式激活把这类技能的启动权交还用户。
+     *
+     * 目录扫描来的技能可在 SKILL.md frontmatter 用 `auto_match: false` 声明。
+     */
+    val autoMatchEligible: Boolean = true,
 )
 
 object BuiltinSkills {
@@ -36,6 +49,9 @@ object BuiltinSkills {
             isBuiltin = true,
             isImmutable = true,
             category = "核心系统",
+            // 该技能正文指令模型写 plan/memory/scratchpad（持久状态）。自动匹配一旦误报，
+            // 代价是覆盖用户真实计划 + 跨会话记忆污染，因此只允许显式激活。
+            autoMatchEligible = false,
         ),
         AgentSkill(
             id = "linux_ops",

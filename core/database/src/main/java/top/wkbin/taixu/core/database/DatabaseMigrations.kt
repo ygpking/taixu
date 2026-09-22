@@ -390,3 +390,37 @@ val MIGRATION_49_50 = object : Migration(49, 50) {
         )
     }
 }
+
+/**
+ * 技能表新增 `autoMatchEligible` 列（默认 1 = 允许自动匹配注入）。
+ *
+ * 为什么加列：自动匹配误报的代价对**会写持久状态的技能**特别高（正文指令模型调
+ * plan/memory/scratchpad，一次误注入就可能覆盖用户真实计划）。把"要不要参与自动匹配"
+ * 变成技能的显式属性，而不是靠正则扫正文猜——既是过拟合也难维护。
+ *
+ * 加列带默认值，可回填；不回滚索引、不动主键，风险远低于唯一索引那次。
+ * 内置 `agent_context` 由 `ensureInitialized` 的内容差异重播种置为 0
+ * （`contentEqualsIgnoringEnabled` 已含该字段，翻转会触发重播种）。
+ */
+val MIGRATION_50_51 = object : Migration(50, 51) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        // 先查列是否已在：SQLite 没有 `ADD COLUMN IF NOT EXISTS`，而"迁移被重放"
+        // （备份恢复、测试夹具、手工修补）时不加守卫会直接 duplicate column 报错，
+        // 那个报错会被 fallbackToDestructiveMigration 接住变成整库销毁。
+        val hasColumn = db.query("PRAGMA table_info(`agent_skills`)").use { cursor ->
+            val nameIndex = cursor.getColumnIndex("name")
+            var found = false
+            while (cursor.moveToNext()) {
+                if (nameIndex >= 0 && cursor.getString(nameIndex) == "autoMatchEligible") {
+                    found = true
+                    break
+                }
+            }
+            found
+        }
+        if (hasColumn) return
+        db.execSQL(
+            "ALTER TABLE `agent_skills` ADD COLUMN `autoMatchEligible` INTEGER NOT NULL DEFAULT 1",
+        )
+    }
+}

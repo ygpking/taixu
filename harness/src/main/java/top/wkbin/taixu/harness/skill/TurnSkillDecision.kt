@@ -110,6 +110,8 @@ object SkillDecisionResolver {
         if (allSkills.isEmpty()) {
             return emptyDecision(latestUserMessage, stickyIds).copy(rawMentions = rawMentions)
         }
+        // 可注入池：已启用 + 正文非空。（自动匹配的 autoMatchEligible 门禁在下面
+        // 挑 autoMatched 时施加——@提及仍然允许激活这类技能。）
         val enabled = allSkills.filter { it.isEnabled && it.systemPrompt.isNotBlank() }
         val byKey: Map<String, AgentSkill> = buildMap {
             enabled.forEach { skill ->
@@ -125,8 +127,15 @@ object SkillDecisionResolver {
         val autoMatched = if (toolCallMode == ToolCallMode.DISABLED || text.isBlank()) {
             emptyList()
         } else {
-            val sticky = enabled.filter { it.id in stickyIds && it.id !in mentioned.map { s -> s.id } }
-            val fresh = SkillMatcher.match(text, enabled.filter { it.id !in stickyIds })
+            // 自动匹配池额外要求 autoMatchEligible；粘性池同理（否则上一轮显式激活的
+            // 技能会被粘性悄悄转成"每轮自动注入"）。
+            val sticky = enabled.filter {
+                it.id in stickyIds && it.id !in mentioned.map { s -> s.id } && it.autoMatchEligible
+            }
+            val fresh = SkillMatcher.match(
+                text,
+                enabled.filter { it.id !in stickyIds && it.autoMatchEligible },
+            )
                 .map { it.skill }
                 .filter { skill -> mentioned.none { it.id == skill.id } }
             (sticky + fresh).distinctBy { it.id }

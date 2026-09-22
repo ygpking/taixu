@@ -16,6 +16,7 @@ import top.wkbin.taixu.core.model.AgentSkill
 import top.wkbin.taixu.core.model.BuiltinMcpPresets
 import top.wkbin.taixu.core.model.McpToolInfo
 import top.wkbin.taixu.core.tools.ToolRepository
+import top.wkbin.taixu.harness.ContextWindowPolicy
 import top.wkbin.taixu.harness.MentionExtractor
 import top.wkbin.taixu.harness.R
 import top.wkbin.taixu.harness.SubagentDepartmentIndexRenderer
@@ -241,12 +242,40 @@ class SystemPromptBuilder @Inject constructor(
                 freshCache.take(MAX_PROMPT_MEMORIES)
             }
         }.getOrDefault(emptyList())
-        val recallSection = if (recallMemories.isNotEmpty()) {
-            "\n\n## 长期事实与偏好记忆（relevant recall，低权威：仅在与当前请求相关时参考，可被当前对话覆盖）\n" +
-                recallMemories.joinToString("\n") {
-                    "- [${it.scope}/${it.kind}] ${it.key.take(MAX_PROMPT_MEMORY_KEY_CHARS)}: " +
-                        it.value.take(MAX_PROMPT_MEMORY_VALUE_CHARS)
-                }
+        // 注入税治理：recall 段改按 **token 预算**封顶，而不是固定"32 条 × 512 字符"。
+        // 误报写入的记忆是 project scope、跨会话存活的（每轮都在为一次误报付 token），
+        // 实测 32 条 recall ≈ 9,371 tokens/轮——与技能正文 24K 字符同一量级。
+        // 超预算的整条不注入，并在段尾注明"还有 N 条未注入"，让模型知道可以去查。
+        // 这里拿不到 assembler 解析出的真实预算（build() 在它之前跑），退一步用全局预算兜底值：
+        // 它至少让 recall 段的规模随用户配置的档位缩放，而不是恒定 32 条。
+        val recallBudget = maxOf(
+            (recallBudgetTokens() * MAX_RECALL_FRACTION).toInt(),
+            MIN_RECALL_TOKENS,
+        )
+        val recallLines = mutableListOf<String>()
+        var recallTokens = 0
+        var recallOmitted = 0
+        for (memory in recallMemories) {
+            val line = "- [${memory.scope}/${memory.kind}] " +
+                "${memory.key.take(MAX_PROMPT_MEMORY_KEY_CHARS)}: " +
+                memory.value.take(MAX_PROMPT_MEMORY_VALUE_CHARS)
+            val cost = ContextWindowPolicy.estimateTokens(line)
+            if (recallLines.isNotEmpty() && recallTokens + cost > recallBudget) {
+                recallOmitted = recallMemories.size - recallLines.size
+                break
+            }
+            recallLines += line
+            recallTokens += cost
+        }
+        val recallSection = if (recallLines.isNotEmpty()) {
+            val header =
+                "\n\n## 长期事实与偏好记忆（relevant recall，低权威：仅在与当前请求相关时参考，可被当前对话覆盖）\n"
+            val tail = if (recallOmitted > 0) {
+                "\n（另有 $recallOmitted 条相关记忆因上下文预算未注入；需要时可用 memory(action=\"list\") 查看）"
+            } else {
+                ""
+            }
+            header + recallLines.joinToString("\n") + tail
         } else ""
 
         val activePlan = runCatching { agentContextDao.getActivePlan(sessionId) }.getOrNull()
@@ -597,12 +626,28 @@ class SystemPromptBuilder @Inject constructor(
         }
     }
 
+    /** recall 段的预算基准：全局预算兜底值（build() 早于 assembler 的预算解析，拿不到真实值）。 */
+    private suspend fun recallBudgetTokens(): Int =
+        runCatching { settingsDataStore.contextBudgetTokens.first() }
+            .getOrDefault(ContextWindowPolicy.DEFAULT_CONTEXT_BUDGET)
+
     companion object {
         // Key/value memory is a compact RAG layer, not another copy of conversation history.
         private const val MAX_PROMPT_MEMORIES = 32
         private const val MAX_PROMPT_MEMORY_KEY_CHARS = 128
         private const val MAX_PROMPT_MEMORY_VALUE_CHARS = 512
         private const val MAX_PROMPT_RECALL_QUERY_CHARS = 256
+
+        /**
+         * recall 段占预算的比例上限。
+         *
+         * 误报写入的记忆是 project scope、跨会话存活的——每轮都在为一次误报付 token，
+         * 32 条 × 512 字符实测约 9,371 tokens/轮，与技能正文 24K 字符同一量级。
+         */
+        private const val MAX_RECALL_FRACTION = 0.06
+
+        /** recall 段的 token 下限：再紧的预算也至少给一条，避免整段消失让模型以为没记忆。 */
+        private const val MIN_RECALL_TOKENS = 256
         private const val MAX_WORKSPACE_CACHE_ENTRIES = 16
         /** scratchpad 注入条数上限与单条截断（与 pinned 1500、recall 512 同量级，避免撑爆预算）。 */
         private const val MAX_SCRATCHPAD_LINES = 8

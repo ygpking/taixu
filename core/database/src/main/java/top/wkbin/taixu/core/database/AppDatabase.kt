@@ -41,7 +41,7 @@ import top.wkbin.taixu.core.database.task.AgentTaskDao
         WorkflowEntity::class,
         WorkflowExecutionLogEntity::class,
     ],
-    version = 50,
+    version = 51,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {

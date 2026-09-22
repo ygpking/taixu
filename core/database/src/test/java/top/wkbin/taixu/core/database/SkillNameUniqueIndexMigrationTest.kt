@@ -51,12 +51,12 @@ class SkillNameUniqueIndexMigrationTest {
             """
             INSERT INTO `agent_skills`
                 (`id`, `name`, `description`, `systemPrompt`, `triggerCommand`, `iconName`,
-                 `isEnabled`, `isBuiltin`, `isImmutable`, `category`, `resourcePath`)
+                 `isEnabled`, `isBuiltin`, `isImmutable`, `category`, `resourcePath`, `autoMatchEligible`)
             VALUES
-                ('custom_a1', '周报整理', 'd', 'p', NULL, 'Code', 1, 0, 0, '进化', NULL),
-                ('custom_b2', '周报整理', 'd2', 'p2', NULL, 'Code', 1, 0, 0, '进化', NULL),
-                ('custom_c3', '周报整理', 'd3', 'p3', NULL, 'Code', 1, 0, 0, '进化', NULL),
-                ('solo_d4', '独一份', 'd', 'p', NULL, 'Code', 1, 0, 0, '进化', NULL)
+                ('custom_a1', '周报整理', 'd', 'p', NULL, 'Code', 1, 0, 0, '进化', NULL, 1),
+                ('custom_b2', '周报整理', 'd2', 'p2', NULL, 'Code', 1, 0, 0, '进化', NULL, 1),
+                ('custom_c3', '周报整理', 'd3', 'p3', NULL, 'Code', 1, 0, 0, '进化', NULL, 1),
+                ('solo_d4', '独一份', 'd', 'p', NULL, 'Code', 1, 0, 0, '进化', NULL, 1)
             """.trimIndent(),
         )
     }
@@ -105,8 +105,8 @@ class SkillNameUniqueIndexMigrationTest {
                 """
                 INSERT INTO `agent_skills`
                     (`id`, `name`, `description`, `systemPrompt`, `triggerCommand`, `iconName`,
-                     `isEnabled`, `isBuiltin`, `isImmutable`, `category`, `resourcePath`)
-                VALUES ('custom_dup', '周报整理', 'd', 'p', NULL, 'Code', 1, 0, 0, '进化', NULL)
+                     `isEnabled`, `isBuiltin`, `isImmutable`, `category`, `resourcePath`, `autoMatchEligible`)
+                VALUES ('custom_dup', '周报整理', 'd', 'p', NULL, 'Code', 1, 0, 0, '进化', NULL, 1)
                 """.trimIndent(),
             )
         }
@@ -125,5 +125,76 @@ class SkillNameUniqueIndexMigrationTest {
         // 再来一次不应报错、不应再删行（索引已存在用 IF NOT EXISTS，去重无重复可行）
         MIGRATION_49_50.migrate(writable())
         assertEquals(afterFirst, ids())
+    }
+}
+
+/** MIGRATION_50_51：autoMatchEligible 加列带默认值，既有行全部回填为"允许"。 */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
+class SkillAutoMatchEligibilityMigrationTest {
+
+    private lateinit var database: AppDatabase
+
+    @Before
+    fun setUp() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        database = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+    }
+
+    @After
+    fun tearDown() {
+        database.close()
+    }
+
+    /** 把 agent_skills 打回 v50 形态（没有 autoMatchEligible 列），才能真的跑到迁移分支。 */
+    private fun downgradeToV50Shape() {
+        val db = database.openHelper.writableDatabase
+        db.execSQL("DROP TABLE IF EXISTS `agent_skills`")
+        db.execSQL(
+            """
+            CREATE TABLE `agent_skills`
+                (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `description` TEXT NOT NULL,
+                 `systemPrompt` TEXT NOT NULL, `triggerCommand` TEXT, `iconName` TEXT NOT NULL,
+                 `isEnabled` INTEGER NOT NULL, `isBuiltin` INTEGER NOT NULL,
+                 `isImmutable` INTEGER NOT NULL, `category` TEXT NOT NULL,
+                 `resourcePath` TEXT, PRIMARY KEY(`id`))
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            INSERT INTO `agent_skills`
+                (`id`, `name`, `description`, `systemPrompt`, `triggerCommand`, `iconName`,
+                 `isEnabled`, `isBuiltin`, `isImmutable`, `category`, `resourcePath`)
+            VALUES ('c1', '技能一', 'd', 'p', NULL, 'Code', 1, 0, 0, '自定义', NULL),
+                   ('c2', '技能二', 'd', 'p', NULL, 'Code', 1, 0, 0, '自定义', NULL)
+            """.trimIndent(),
+        )
+    }
+
+    @Test
+    fun `add column backfills every existing row as eligible`() {
+        downgradeToV50Shape()
+        val db = database.openHelper.writableDatabase
+
+        MIGRATION_50_51.migrate(db)
+
+        val flags = db.query("SELECT `autoMatchEligible` FROM `agent_skills` ORDER BY `id`").use { c ->
+            buildList { while (c.moveToNext()) add(c.getInt(0)) }
+        }
+        assertEquals("加列必须带默认值，既有行回填为 1（允许自动匹配）", listOf(1, 1), flags)
+    }
+
+    @Test
+    fun `migration is idempotent`() {
+        downgradeToV50Shape()
+        val db = database.openHelper.writableDatabase
+        MIGRATION_50_51.migrate(db)
+        MIGRATION_50_51.migrate(db) // 重放不得抛 duplicate column
+        val count = db.query("SELECT COUNT(*) FROM `agent_skills`").use { c ->
+            c.moveToFirst(); c.getInt(0)
+        }
+        assertEquals("重放不得改动数据", 2, count)
     }
 }

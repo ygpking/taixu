@@ -132,7 +132,10 @@ internal object SkillMatcher {
         val taskCjk = cjkBigrams(task)
 
         return skills.asSequence()
-            .filter { it.isEnabled && it.systemPrompt.isNotBlank() }
+            // 三门禁：已启用、正文非空、**允许自动匹配**。
+            // 第三道是"会写持久状态的技能只准显式激活"（见 AgentSkill.autoMatchEligible）：
+            // 它们的正文指令模型调 plan/memory/scratchpad，误报一次就可能覆盖用户真实计划。
+            .filter { it.isEnabled && it.systemPrompt.isNotBlank() && it.autoMatchEligible }
             .mapNotNull { skill -> score(skill, taskLower, taskEn, taskCjk) }
             .sortedByDescending { it.score }
             .take(maxHits)
