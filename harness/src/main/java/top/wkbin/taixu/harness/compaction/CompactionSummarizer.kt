@@ -250,8 +250,11 @@ class CompactionSummarizer @Inject constructor(
         if (serialized.isBlank()) return null
         val prompt = buildPrompt(serialized, previousSummaries)
         val summaryModel = model.copy(
-            // 摘要是一次性请求：输出上限固定为温和值，不透传主对话可能配置的极小 maxTokens
-            maxTokens = minOf(model.maxTokens ?: DEFAULT_SUMMARY_MAX_TOKENS, DEFAULT_SUMMARY_MAX_TOKENS),
+            // 摘要是一次性请求：输出上限取温和值，且**不低于** DEFAULT_SUMMARY_MAX_TOKENS。
+            // 原先用 minOf：模型档案显式配了 maxTokens=1000 时摘要上限被压到 1000，
+            // 长会话的摘要会被上游截断成残句——与这行注释想表达的意图正好相反。
+            maxTokens = (model.maxTokens ?: DEFAULT_SUMMARY_MAX_TOKENS)
+                .coerceAtLeast(DEFAULT_SUMMARY_MAX_TOKENS),
             pureChatMode = false,
         )
         // 不能吞 CancellationException：压缩发生在请求组装路径内，用户"停止"后若在此

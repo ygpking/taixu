@@ -90,8 +90,14 @@ class SystemPromptBuilder @Inject constructor(
         // mentionedNames 挂载 MCP 工具）。只比对技能时，`@浏览器` 这类合法 MCP 提及
         // 每轮都会被判成"未匹配到任何已启用技能"注入系统提示——既噪声，
         // 还会诱导模型反过来要求用户"修正拼写"。
+        // 工具名也要进来：MCP 工具名级 @提及 在挂载路径是合法支持的
+        // （HarnessProviderRunner 用 mentionedNames 筛 dynamicMcpTools），只收服务 id/名时
+        // `@cat` 这类工具提及会被判成"未匹配到任何已启用技能，请确认拼写"——噪声，
+        // 还会诱导模型要求用户改一个本来正确的写法。
         val otherKnownNames = runCatching {
-            val mcpNames = mcpServerRepository.servers.first().flatMap { listOf(it.id, it.name) }
+            val mcpNames = mcpServerRepository.servers.first()
+                .flatMap { listOf(it.id, it.name) } +
+                mcpTools.map { it.name } + mcpTools.map { it.serverId }
             val subagentNames = subagentRepository.enabledProfiles().flatMap { listOf(it.id, it.name) }
             (mcpNames + subagentNames).filter { it.isNotBlank() }
         }.getOrDefault(emptyList())
@@ -475,7 +481,9 @@ class SystemPromptBuilder @Inject constructor(
         // 与 load_skill 的 activeSkills 门禁保持同一口径。
         val normalized = mentionedNames.mapTo(mutableSetOf()) { normalizeMentionKey(it) }
         return allSkills.filter { skill ->
-            if (!skill.isEnabled) return@filter false
+            // 空正文技能不进注入：renderSkillCatalog 与 SkillMatcher 都有这道门禁，
+            // 唯提及链路原先没有——@一个空技能会渲染出一个只有标题的空节。
+            if (!skill.isEnabled || skill.systemPrompt.isBlank()) return@filter false
             val candidates = listOf(
                 skill.name,
                 skill.id,

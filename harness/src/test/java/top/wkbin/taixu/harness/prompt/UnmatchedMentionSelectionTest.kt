@@ -82,4 +82,20 @@ class UnmatchedMentionSelectionTest {
         )
         assertTrue("全角输入折半角后应命中：$missed", missed.isEmpty())
     }
+
+    /**
+     * 回归（P3）：MCP **工具名**级 @提及 是挂载路径合法支持的（HarnessProviderRunner 用
+     * mentionedNames 筛 dynamicMcpTools），但 otherKnownNames 原先只收服务 id/名——
+     * `@cat` 这类工具提及会被判成"未匹配到任何已启用技能，请确认拼写"，既噪声
+     * 还会诱导模型要求用户改一个本来正确的写法。
+     */
+    @Test
+    fun `mcp tool names count as known so they are not reported as typos`() {
+        val missed = selectUnmatchedMentions(
+            allSkills = skills,
+            mentionedNames = setOf("cat", "grep", "未知技能"),
+            otherKnownNames = listOf("file-server", "cat", "grep"),
+        )
+        assertEquals("只有真正未知的提及应被提示", listOf("未知技能"), missed)
+    }
 }

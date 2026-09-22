@@ -113,6 +113,16 @@ class AgentContextExecutor @Inject constructor(
                     }
                     else -> return false to "memory verify 需提供 id 或 key"
                 } ?: return false to "未找到要核验的记忆"
+                // scope 可见性校验与 delete/query 同口径：按 id 直接取到的记忆可能属于
+                // 别的 project/session（id 又不是密钥），不复核的话任意会话都能凭一个 id
+                // 给别人的记忆续期。delete 分支早就做了这个判定，verify 是漏网的那处。
+                val visible = when (target.scope) {
+                    "global" -> target.ownerId.isEmpty()
+                    "project" -> target.ownerId == projectOwner(workspace) && target.ownerId.isNotBlank()
+                    "session" -> target.ownerId == sessionId && sessionId.isNotBlank()
+                    else -> false
+                }
+                if (!visible) return false to "无权核验不属于当前项目或会话的记忆"
                 agentContextDao.touchMemory(target.id, System.currentTimeMillis())
                 true to "已刷新记忆 ${target.key} 的新鲜度（lastVerifiedAt 续期）"
             }
@@ -135,10 +145,11 @@ class AgentContextExecutor @Inject constructor(
             }
             "list" -> {
                 val includeExpired = (args["include_expired"]?.jsonPrimitive?.contentOrNull?.lowercase()) == "true"
+                // pinned = null（不过滤置顶态），理由见下方渲染处的注释。
                 val results = agentContextDao.getFreshMemories(
                     projectOwnerId = projectOwner(workspace),
                     sessionId = sessionId,
-                    pinned = false,
+                    pinned = null,
                     now = System.currentTimeMillis(),
                     limit = MAX_MEMORY_LIST,
                 ).plus(
@@ -149,7 +160,12 @@ class AgentContextExecutor @Inject constructor(
                 if (results.isEmpty()) {
                     true to "当前暂无长期记忆"
                 } else {
-                    val formatted = results.joinToString("\n") { it.render() }
+                    // 置顶项也列出并标注：置顶记忆本就常驻系统提示，但 list 的职责是让模型
+                    // 「我到底存过什么」可查。此前这里把置顶项过滤掉，而 query/search 不过滤、
+                    // include_expired 又能看到过期置顶项——三种口径互相矛盾。
+                    val formatted = results.joinToString("\n") { memory ->
+                        if (memory.pinned) memory.render() + " [置顶]" else memory.render()
+                    }
                     true to "已保存的记忆列表：\n$formatted"
                 }
             }

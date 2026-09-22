@@ -151,10 +151,10 @@ data class LegacyEnvironmentVariable(
 )
 
 @Singleton
-class AgentPreferences @Inject constructor(private val store: SettingsDataStore) {
+class AgentPreferences @Inject constructor(private val store: SettingsDataStore) : BudgetPreferences {
 
     /** 对话结束后自动建议沉淀/进化技能（默认开启） */
-    val skillEvolutionSuggestions: Flow<Boolean> = store.skillEvolutionSuggestions
+    override val skillEvolutionSuggestions: Flow<Boolean> = store.skillEvolutionSuggestions
 
     suspend fun setSkillEvolutionSuggestions(enabled: Boolean) = store.setSkillEvolutionSuggestions(enabled)
 
@@ -165,18 +165,18 @@ class AgentPreferences @Inject constructor(private val store: SettingsDataStore)
     val selectedDistribution get() = store.selectedDistribution
     val thinkingExpanded get() = store.thinkingExpanded
     val defaultReasoningDepth get() = store.defaultReasoningDepth
-    val contextCompactionEnabled get() = store.contextCompactionEnabled
+    override val contextCompactionEnabled get() = store.contextCompactionEnabled
     val contextCompactionThreshold get() = store.contextCompactionThreshold
     val maxToolRounds get() = store.maxToolRounds
     val roundLimitAutoContinuations get() = store.roundLimitAutoContinuations
     val autoWorkspaceCwd get() = store.autoWorkspaceCwd
     val commandOutputCompressionEnabled get() = store.commandOutputCompressionEnabled
     val baseCommandTimeoutSeconds get() = store.baseCommandTimeoutSeconds
-    val contextBudgetTokens get() = store.contextBudgetTokens
-    val inputTokenLimit get() = store.inputTokenLimit
-    val contextFoldingRatioPercent get() = store.contextFoldingRatioPercent
-    val contextMaxKeepTokens get() = store.contextMaxKeepTokens
-    val contextArchiveEnabled get() = store.contextArchiveEnabled
+    override val contextBudgetTokens get() = store.contextBudgetTokens
+    override val inputTokenLimit get() = store.inputTokenLimit
+    override val contextFoldingRatioPercent get() = store.contextFoldingRatioPercent
+    override val contextMaxKeepTokens get() = store.contextMaxKeepTokens
+    override val contextArchiveEnabled get() = store.contextArchiveEnabled
     suspend fun setContextArchiveEnabled(value: Boolean) = store.setContextArchiveEnabled(value)
     suspend fun setContextFoldingRatioPercent(value: Int) = store.setContextFoldingRatioPercent(value)
     suspend fun setContextMaxKeepTokens(value: Int) = store.setContextMaxKeepTokens(value)

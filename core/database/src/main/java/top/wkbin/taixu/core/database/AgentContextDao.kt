@@ -36,18 +36,30 @@ interface AgentContextDao {
     """)
     suspend fun getPinnedMemories(projectOwnerId: String, sessionId: String): List<AgentMemoryEntity>
 
-    /** 未过期记忆（新鲜度查询基础）：expiresAt 为 null 或晚于 now 视为新鲜。 */
+    /**
+     * 未过期记忆（新鲜度查询基础）：expiresAt 为 null 或晚于 now 视为新鲜。
+     *
+     * [pinned] 传 null 表示不过滤置顶态——此前只有 true/false 两档，调用方想看"全部"
+     * （含置顶）时只能自己拼两次查询，于是 memory list 干脆过滤掉置顶项，
+     * 与 query/search 不过滤、include_expired 又能看到过期置顶项形成三种口径。
+     */
     @Query("""
         SELECT * FROM agent_memories
         WHERE ((scope = 'global' AND ownerId = '')
             OR (:projectOwnerId != '' AND scope = 'project' AND ownerId = :projectOwnerId)
             OR (:sessionId != '' AND scope = 'session' AND ownerId = :sessionId))
-          AND pinned = :pinned
+          AND (:pinned IS NULL OR pinned = :pinned)
           AND (expiresAt IS NULL OR expiresAt > :now)
         ORDER BY updatedAt DESC
         LIMIT :limit
     """)
-    suspend fun getFreshMemories(projectOwnerId: String, sessionId: String, pinned: Boolean, now: Long, limit: Int): List<AgentMemoryEntity>
+    suspend fun getFreshMemories(
+        projectOwnerId: String,
+        sessionId: String,
+        pinned: Boolean?,
+        now: Long,
+        limit: Int,
+    ): List<AgentMemoryEntity>
 
     /** 续期：确认记忆仍然有效，刷新 lastVerifiedAt（新鲜度信号，不删除）。 */
     @Query("UPDATE agent_memories SET lastVerifiedAt = :now WHERE id = :id AND (expiresAt IS NULL OR expiresAt > :now)")
