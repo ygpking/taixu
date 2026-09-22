@@ -122,6 +122,8 @@ internal fun ChatMessageList(
     hiddenSkillSuggestions: Set<String> = emptySet(),
     onApplySkillSuggestion: (SkillSuggestion, Boolean) -> Unit = { _, _ -> },
     onDismissSkillSuggestion: (String) -> Unit = {},
+    /** 把 update 建议的 targetSkillId 解析成真实技能名（卡片据此显示"将更新：<名字>"）。 */
+    resolveTargetSkillName: (String?) -> String? = { null },
 ) {
     // 折叠状态用自定义 Saver：Map 不能直接存入 Bundle（会抛 IllegalArgumentException）
     var expandedOverrides by rememberSaveable(stateSaver = ExpandedOverridesSaver) { mutableStateOf(mapOf<String, Boolean>()) }
@@ -228,6 +230,7 @@ internal fun ChatMessageList(
                                     onCreate = { onApplySkillSuggestion(message, true) },
                                     onUpdate = { onApplySkillSuggestion(message, false) },
                                     onDismiss = { onDismissSkillSuggestion(message.id) },
+                                    targetSkillName = resolveTargetSkillName(message.targetSkillId),
                                 )
                             }
                             is ModelSwitchEvent -> ModelSwitchCard(message)
