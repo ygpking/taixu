@@ -227,7 +227,14 @@ class CompactionManager @Inject constructor(
         .filter { it.isNotBlank() }
         .toList()
 
-    private fun messageTokens(message: HarnessMessage): Int = ContextWindowPolicy.estimateTokens(message.toString())
+    /**
+     * 压缩侧 token 估算：与引擎**同一把尺**（[ContextWindowPolicy.messageTokens]）。
+     *
+     * 原先这里用 `estimateTokens(message.toString())`——数据类 toString 含字段名与转义
+     * JSON，比结构化估算粗且偏大，于是"压缩前估算"与引擎实际发送量对不上，
+     * `estimatedTokensBefore` 也只能进日志、无法回读。现在两边同源。
+     */
+    private fun messageTokens(message: HarnessMessage): Int = ContextWindowPolicy.messageTokens(message)
 
     /** Preserve both durable early context and the newest folded state after the cap is reached. */
     private fun mergeRollingSummary(previous: String?, incremental: String): String {

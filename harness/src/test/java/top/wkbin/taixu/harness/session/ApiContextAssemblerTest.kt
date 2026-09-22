@@ -96,7 +96,12 @@ class ApiContextAssemblerTest {
             privilegeRenderer = PrivilegeSectionRenderer { "" },
             promptRouter = PromptRouter(promptAssets),
         )
-        assembler = ApiContextAssembler(compactionManager, agentPrefs, builder)
+        assembler = ApiContextAssembler(
+            top.wkbin.taixu.harness.budget.ContextBudgetResolver(agentPrefs),
+            compactionManager,
+            agentPrefs,
+            builder,
+        )
     }
 
     @After

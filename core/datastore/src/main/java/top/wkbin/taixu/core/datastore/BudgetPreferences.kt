@@ -19,7 +19,16 @@ interface BudgetPreferences {
     /** 会话占用预算兜底值（模型未声明 contextTokens 时用）。 */
     val contextBudgetTokens: Flow<Int>
 
-    /** 全局「单次输入上限」当前语义（含默认值）。 */
+    /**
+     * 全局「单次输入上限」的**可空**语义：null = 从未设置，由
+     * `ContextBudgetDefaults.resolveInputLimit` 按窗口推导。
+     *
+     * 预算计算必须用这个，不要用 [inputTokenLimit]——后者把"未设置"实体化成 230K，
+     * 会让按窗口推导的规则变成死代码（100 万窗口的模型被锁在 23 万）。
+     */
+    val inputTokenLimitOrNull: Flow<Int?>
+
+    /** 纯展示用（把"未设置"显示成推导值）。 */
     val inputTokenLimit: Flow<Int>
 
     /** 折叠线比例百分比（10..100，默认 90）。 */

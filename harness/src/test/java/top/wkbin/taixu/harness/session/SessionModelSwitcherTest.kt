@@ -59,10 +59,12 @@ class SessionModelSwitcherTest {
         store = SessionTreeStore(runtimeRepo, json, logger)
         compaction = CompactionManager(runtimeRepo, json)
         port = RecordingPort()
+        val prefs = AgentPreferences(SettingsDataStore(context, SecretManager()))
         switcher = SessionModelSwitcher(
+            budgetResolver = top.wkbin.taixu.harness.budget.ContextBudgetResolver(prefs),
             sessionDao = sessions,
             modelDao = models,
-            settingsDataStore = AgentPreferences(SettingsDataStore(context, SecretManager())),
+            settingsDataStore = prefs,
             compactionManager = compaction,
             messagePort = port,
         )
