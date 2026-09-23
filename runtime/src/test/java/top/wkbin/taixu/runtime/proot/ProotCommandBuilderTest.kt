@@ -1,4 +1,4 @@
-﻿package top.wkbin.taixu.runtime.proot
+package top.wkbin.taixu.runtime.proot
 
 import top.wkbin.taixu.runtime.shell.ShellCommand
 import top.wkbin.taixu.runtime.shell.SessionConfig
@@ -177,6 +177,34 @@ class ProotCommandBuilderTest {
             command = ShellCommand(commandLine = "true"),
             mounts = listOf(
                 StorageMountBinding("bad", "bad", "/storage/emulated/0", "/root", enabled = true),
+            ),
+        )
+    }
+
+    @Test
+    fun skipsUnreadableStorageMountGracefully() {
+        val args = ProotCommandBuilder(EnvironmentResolver()).build(
+            prootBinary = File("/p"),
+            rootfsDir = File("/r"),
+            workspaceDir = File("/w"),
+            command = ShellCommand(commandLine = "true"),
+            mounts = listOf(
+                StorageMountBinding("download", "下载", "/storage/emulated/0/Download", "/sdcard/Download", enabled = true),
+            ),
+        )
+
+        assert(args.none { it.contains(":/sdcard/Download") })
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun rejectsMountEscapingSharedStorageRoot() {
+        ProotCommandBuilder(EnvironmentResolver()).build(
+            prootBinary = File("/p"),
+            rootfsDir = File("/r"),
+            workspaceDir = File("/w"),
+            command = ShellCommand(commandLine = "true"),
+            mounts = listOf(
+                StorageMountBinding("escape", "escape", "/data/data/top.wkbin.taixu", "/sdcard/escape", enabled = true),
             ),
         )
     }

@@ -26,8 +26,9 @@ class CompactionManager @Inject constructor(
         // silently drops unsummarized messages before token budgeting gets a chance to compact them.
         // The latest compaction is still fetched separately to recover its retained snapshot.
         val latestCompaction = repository.latestBranchEntryOfType(sessionId, lane.leafId, ENTRY_TYPE)
-        val entries = repository.branch(sessionId, lane.leafId)
         if (latestCompaction == null) {
+            // 从未压缩：只能全量走活跃分支（此时不存在"已被折叠的历史"可省）。
+            val entries = repository.branch(sessionId, lane.leafId)
             return CompactedContext(
                 messages = entries.mapNotNull(::decodeMessage),
                 branchSummaries = branchSummariesWithin(entries, afterSequence = null),
@@ -35,17 +36,78 @@ class CompactionManager @Inject constructor(
             )
         }
 
-        val payload = json.decodeFromString(CompactionPayload.serializer(), latestCompaction.payloadJson)
-        val retained = json.decodeFromString(ListSerializer(HarnessMessage.serializer()), payload.retainedMessagesJson)
-        val afterMessages = entries.asSequence()
+        val payload = runCatching {
+            json.decodeFromString(CompactionPayload.serializer(), latestCompaction.payloadJson)
+        }.onFailure { throwable ->
+            Log.e(
+                "ContextCompaction",
+                "Failed to deserialize compaction payload for $sessionId: ${throwable.message}",
+                throwable,
+            )
+        }.getOrNull()
+
+        if (payload == null) {
+            // 异常降级：快照损坏或反序列化失败时，回退到全量活跃分支直接投射，
+            // 避免单个异常快照让 HarnessLoop 永久卡死。
+            val entries = repository.branch(sessionId, lane.leafId)
+            return CompactedContext(
+                messages = entries.mapNotNull(::decodeMessage),
+                branchSummaries = branchSummariesWithin(entries, afterSequence = null),
+                sourceLeafId = lane.leafId,
+            )
+        }
+
+        val retained = payload.retainedMessages
+            ?: payload.retainedMessagesJson?.takeIf { it.isNotBlank() }?.let { jsonStr ->
+                runCatching {
+                    json.decodeFromString(ListSerializer(HarnessMessage.serializer()), jsonStr)
+                }.onFailure {
+                    Log.w("ContextCompaction", "Failed to decode legacy retainedMessagesJson for $sessionId: ${it.message}")
+                }.getOrNull()
+            }.orEmpty()
+
+        // 已有压缩点时只截取自愈水位线之后的增量窗口（含 recall_context 块）：
+        // 已被折叠的历史消息及其 Blob 大文件不再加载进 JVM 堆，根治全分支膨胀导致的 OOM。
+        val watermark = payload.sourceWatermarkSequence ?: latestCompaction.sequence
+        val minSequence = minOf(watermark, latestCompaction.sequence)
+        val windowEntries = repository.branchWindow(sessionId, lane.leafId, minSequence)
+
+        // 自愈：重读快照之后、压缩 entry 落库之前被并发直写落库的 entry（acceptRun 不经
+        // laneLock），不在保留消息里，又因 sequence 更小被 afterMessages / afterSequence 过滤
+        // ——按水位线补回，否则从 provider 投影中永久丢失。
+        val healedEntries = payload.sourceWatermarkSequence
+            ?.takeIf { it < latestCompaction.sequence }
+            ?.let { wm ->
+                windowEntries.asSequence()
+                    .filter { it.sequence > wm && it.sequence < latestCompaction.sequence }
+                    .toList()
+            }
+            .orEmpty()
+        val healed = healedEntries.asSequence()
+            .filter { it.entryType == "message" }
+            .mapNotNull(::decodeMessage)
+            .toList()
+        // 分支摘要落在同一窗口同样被排除，一并补回注入
+        val healedBranchSummaries = healedEntries.asSequence()
+            .filter { it.entryType == BRANCH_SUMMARY_ENTRY_TYPE }
+            .mapNotNull { entry ->
+                runCatching {
+                    json.decodeFromString(BranchSummaryPayload.serializer(), entry.payloadJson).summary
+                }.getOrNull()
+            }
+            .filter { it.isNotBlank() }
+            .toList()
+
+        val afterMessages = windowEntries.asSequence()
             .filter { it.sequence > latestCompaction.sequence }
             .mapNotNull(::decodeMessage)
             .toList()
         // 压缩之后的分支摘要原样注入；之前的已在 compact() 时折叠进压缩摘要，避免重复
         return CompactedContext(
             summary = payload.summary,
-            messages = retained + afterMessages,
-            branchSummaries = branchSummariesWithin(entries, afterSequence = latestCompaction.sequence),
+            messages = retained + healed + afterMessages,
+            branchSummaries = healedBranchSummaries +
+                branchSummariesWithin(windowEntries, afterSequence = latestCompaction.sequence),
             sourceLeafId = lane.leafId,
         )
     }
@@ -155,7 +217,8 @@ class CompactionManager @Inject constructor(
         val payload = CompactionPayload(
             sourceLeafId = expectedLeafId ?: lane.leafId,
             summary = summaryWithIndex,
-            retainedMessagesJson = json.encodeToString(ListSerializer(HarnessMessage.serializer()), retained),
+            retainedMessagesJson = null,
+            retainedMessages = retained,
             compactedMessageCount = collapsed.size,
             cumulativeCompactedMessageCount = previousFoldedCount + collapsed.size,
             retainedMessageCount = retained.size,

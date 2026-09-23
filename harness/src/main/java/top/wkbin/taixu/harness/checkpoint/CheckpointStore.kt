@@ -17,7 +17,8 @@ import kotlinx.serialization.json.Json
  *
  * 落盘布局（[Persistence] 配置了根目录时启用）：
  * `<root>/<sessionId>/<turn>.index.json` + `<turn>/<seq>-<safeName>`（内容文件，null 快照无内容文件）。
- * 关轮时异步写入（失败仅放弃持久化，不影响内存态）；启动后首次访问该会话时从磁盘恢复。
+ * 关轮时异步写入（失败仅放弃持久化，不影响内存态；进程在写入前被杀会丢最近一轮的持久化——
+ * 安全网特性可接受，且该轮大概率会被重做）；启动后首次访问该会话时从磁盘恢复。
  * 未配置根目录时退化为纯内存（进程被杀后 rewind 丢失），行为与旧版一致。
  */
 @Singleton
@@ -26,6 +27,17 @@ class CheckpointStore @Inject constructor() {
     /** 持久化配置；null = 纯内存模式。由宿主在初始化期一次性注入。 */
     @Volatile
     var persistence: Persistence? = null
+
+    /**
+     * 落盘执行器：单线程串行（写索引与内容文件、超龄清理无并发竞争）。写入绝不能在
+     * [closeTurn] 的实例锁内同步执行——@Synchronized 覆盖全部方法，一次慢盘（listFiles +
+     * deleteRecursively 清理）会串行阻塞其他会话每次 write/edit 前的 capture 路径。
+     */
+    @Volatile
+    internal var diskWriteExecutor: java.util.concurrent.Executor =
+        java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "checkpoint-disk").apply { isDaemon = true }
+        }
 
     /** 磁盘恢复标记：会话首次访问时懒恢复，避免启动期全量 IO。 */
     private val restoredSessions = ConcurrentHashMap.newKeySet<String>()
@@ -169,8 +181,10 @@ class CheckpointStore @Inject constructor() {
             state.checkpoints.add(checkpoint)
             while (state.checkpoints.size > MAX_KEPT) state.checkpoints.removeAt(0)
             if (checkpoint.turn > state.lastTurn) state.lastTurn = checkpoint.turn
-            // 同步落盘：每轮一次、单文件 ≤1MiB（快照捕获上限），失败只放弃持久化不影响内存态
-            persistence?.let { disk -> runCatching { disk.write(sessionId, checkpoint) } }
+            // 异步落盘（checkpoint 不可变，可安全移交）：失败只放弃持久化不影响内存态
+            persistence?.let { disk ->
+                diskWriteExecutor.execute { runCatching { disk.write(sessionId, checkpoint) } }
+            }
         }
         state.active = null
         state.activeAnchorMessageId = null
@@ -254,12 +268,17 @@ class FileCheckpointPersistence(private val root: File) : CheckpointStore.Persis
                 val entry = json.decodeFromString<IndexEntry>(indexFile.readText(Charsets.UTF_8))
                 val snaps = entry.paths.keys.sorted().mapNotNull { seq ->
                     val path = entry.paths.getValue(seq)
-                    val content: String? = if (seq in entry.absent) {
-                        null
-                    } else {
-                        val snapFile = File(sessionDir, "${entry.turn}/${entry.files[seq] ?: return@mapNotNull null}")
-                        if (snapFile.isFile) snapFile.readText(Charsets.UTF_8) else null
+                    if (seq in entry.absent) {
+                        // 显式记录的"文件当时不存在"：null 内容是 rewind 执行删除的合法信号
+                        return@mapNotNull FileSnap(path, null)
                     }
+                    // 索引条目或内容文件缺失 = 快照损坏：整体跳过（路径不进回滚方案，文件保持原样）。
+                    // 绝不能映射为 null 内容——那会被 RewindController 当作"当时不存在"而误删现存文件。
+                    val fileName = entry.files[seq] ?: return@mapNotNull null
+                    val snapFile = File(sessionDir, "${entry.turn}/$fileName")
+                    if (!snapFile.isFile) return@mapNotNull null
+                    val content = runCatching { snapFile.readText(Charsets.UTF_8) }.getOrNull()
+                        ?: return@mapNotNull null
                     FileSnap(path, content)
                 }
                 Checkpoint(
