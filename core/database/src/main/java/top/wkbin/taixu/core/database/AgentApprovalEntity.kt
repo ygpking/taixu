@@ -80,6 +80,14 @@ interface AgentApprovalDao {
 
 
 
+    /** 查询指定会话中有效的未过期 pending 请求。 */
+    @Query("SELECT * FROM agent_approval_requests WHERE sessionId = :sessionId AND status = 'pending' AND expiresAt > :now ORDER BY createdAt ASC")
+    suspend fun listUnexpiredPendingForSession(sessionId: String, now: Long): List<AgentApprovalRequestEntity>
+
+    /** 查询指定会话中到期未决的 pending 请求。 */
+    @Query("SELECT * FROM agent_approval_requests WHERE sessionId = :sessionId AND status = 'pending' AND expiresAt <= :now ORDER BY createdAt ASC")
+    suspend fun listExpiredPendingForSession(sessionId: String, now: Long): List<AgentApprovalRequestEntity>
+
     @Query("DELETE FROM agent_approval_requests WHERE sessionId = :sessionId")
     suspend fun deleteForSession(sessionId: String)
 
@@ -106,10 +114,26 @@ class AgentApprovalRepository @Inject constructor(
             requests.filter { it.expiresAt > now }
         }
 
-    /** 读取前先清扫到期请求，保证 pending 视图与过期语义一致。 */
-    suspend fun pendingNow(sessionId: String): List<AgentApprovalRequestEntity> {
-        dao.expirePendingApprovals(System.currentTimeMillis())
-        return dao.listPendingForSession(sessionId)
+    /** 读取当前有效的未过期 pending 请求；终态写入由 sweepExpired / resolveApproval 完成。 */
+    suspend fun pendingNow(sessionId: String, now: Long = System.currentTimeMillis()): List<AgentApprovalRequestEntity> =
+        dao.listUnexpiredPendingForSession(sessionId, now)
+
+    /**
+     * 清扫指定会话中所有到期未决的请求，将其原子性置为 STATUS_EXPIRED，并返回被过期的请求列表。
+     */
+    suspend fun sweepExpiredForSession(
+        sessionId: String,
+        now: Long = System.currentTimeMillis(),
+    ): List<AgentApprovalRequestEntity> {
+        val expired = dao.listExpiredPendingForSession(sessionId, now)
+        if (expired.isEmpty()) return emptyList()
+        val claimed = mutableListOf<AgentApprovalRequestEntity>()
+        for (request in expired) {
+            if (dao.claimPendingRequest(request.id, AgentApprovalRequestEntity.STATUS_EXPIRED, now) > 0) {
+                claimed.add(request.copy(status = AgentApprovalRequestEntity.STATUS_EXPIRED, resolvedAt = now))
+            }
+        }
+        return claimed
     }
 
     suspend fun currentMode(): ApprovalMode = ApprovalMode.fromId(dao.getSettings()?.mode)
@@ -127,8 +151,6 @@ class AgentApprovalRepository @Inject constructor(
 
     suspend fun claimPending(id: String, status: String): Boolean =
         dao.claimPendingRequest(id, status, System.currentTimeMillis()) > 0
-
-
 
     suspend fun deleteForSession(sessionId: String) = dao.deleteForSession(sessionId)
 }
