@@ -26,6 +26,13 @@ interface HarnessRuntimeRepository {
         require(limit > 0) { "Branch tail limit must be positive" }
         return branch(sessionId, leafId).takeLast(limit)
     }
+
+    /**
+     * 只取水位线之后的增量条目 + 全部召回块（默认实现退化为全量分支再过滤；
+     * Room 实现走 SQL 层过滤，已折叠历史不进堆）。
+     */
+    suspend fun branchWindow(sessionId: String, leafId: String?, minSequence: Long): List<HarnessEntryEntity> =
+        branch(sessionId, leafId).filter { it.sequence >= minSequence || it.entryType == "recall_context" }
     suspend fun latestBranchEntryOfType(
         sessionId: String,
         leafId: String?,
@@ -113,6 +120,9 @@ class RoomHarnessRuntimeRepository @Inject constructor(
     override suspend fun branchTail(sessionId: String, leafId: String?, limit: Int): List<HarnessEntryEntity> {
         require(limit > 0) { "Branch tail limit must be positive" }
         return leafId?.let { dao.branchTail(sessionId, it, limit).map(::restoreFromStorage) }.orEmpty()
+    }
+    override suspend fun branchWindow(sessionId: String, leafId: String?, minSequence: Long): List<HarnessEntryEntity> {
+        return leafId?.let { dao.branchWindow(sessionId, it, minSequence).map(::restoreFromStorage) }.orEmpty()
     }
     override suspend fun latestBranchEntryOfType(
         sessionId: String,

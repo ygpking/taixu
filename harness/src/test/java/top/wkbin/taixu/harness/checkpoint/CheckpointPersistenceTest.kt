@@ -2,6 +2,7 @@ package top.wkbin.taixu.harness.checkpoint
 
 import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -18,6 +19,8 @@ class CheckpointPersistenceTest {
         val root = temporaryFolder.newFolder("ckpt")
         val store = CheckpointStore()
         store.persistence = FileCheckpointPersistence(root)
+        // 落盘改异步后，测试用同步直执行保证确定性（写入即刻可见）
+        store.diskWriteExecutor = java.util.concurrent.Executor { it.run() }
         return store to root
     }
 
@@ -59,6 +62,30 @@ class CheckpointPersistenceTest {
 
         assertNull(plan.first { it.path == "created.txt" }.content)
         assertEquals("", plan.first { it.path == "empty.txt" }.content)
+    }
+
+    @Test
+    fun `corrupted content files are dropped on restore instead of masquerading as absent`() {
+        val (store, root) = storeWithDisk()
+        store.beginTurn("s", "t", null)
+        store.capture("s", "a.txt", "v-a")
+        store.capture("s", "created.txt", null) // 该轮新建（真不存在）
+        store.capture("s", "b.txt", "v-b") // seq 2 → 2.snap
+        store.beginTurn("s", "t2") // 关闭并落盘
+
+        // 模拟内容文件独立丢失（部分清理失败/文件系统损坏），索引文件仍完整：
+        // 修复前 readAll 会把缺失内容映射为 null——"文件当时不存在"的语义，
+        // rewind 据此删除现存文件（数据丢失）；正确行为是整体跳过该快照。
+        assertTrue(File(root, "s/0/2.snap").delete())
+
+        val revived = CheckpointStore()
+        revived.persistence = FileCheckpointPersistence(root)
+        val plan = revived.planCodeRewind("s", 0)
+
+        assertEquals(listOf("a.txt", "created.txt"), plan.map { it.path })
+        assertEquals("v-a", plan.first { it.path == "a.txt" }.content)
+        assertNull("显式 absent 的语义保持不变", plan.first { it.path == "created.txt" }.content)
+        assertFalse("损坏快照不得以 content=null 形态混入回滚方案", plan.any { it.path == "b.txt" })
     }
 
     @Test

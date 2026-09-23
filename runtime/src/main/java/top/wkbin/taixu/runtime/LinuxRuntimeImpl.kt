@@ -748,13 +748,16 @@ class LinuxRuntimeImpl @Inject constructor(
 
     private suspend fun storageMounts(): List<StorageMountBinding> = buildList {
         val sharedEnabled = settingsDataStore.mountSharedStorageEnabled.first()
-        if (sharedEnabled && File("/storage/emulated/0").isDirectory) {
+        val sharedDir = File("/storage/emulated/0")
+        if (sharedEnabled && sharedDir.isDirectory && sharedDir.canRead()) {
             add(StorageMountBinding("system-shared", "共享存储", "/storage/emulated/0", "/sdcard", true, true))
         }
-        if (!sharedEnabled && settingsDataStore.mountDownloadEnabled.first() && File("/storage/emulated/0/Download").isDirectory) {
+        val downloadDir = File("/storage/emulated/0/Download")
+        if (!sharedEnabled && settingsDataStore.mountDownloadEnabled.first() && downloadDir.isDirectory && downloadDir.canRead()) {
             add(StorageMountBinding("system-download", "下载", "/storage/emulated/0/Download", "/sdcard/Download", true, true))
         }
-        if (!sharedEnabled && settingsDataStore.mountDocumentsEnabled.first() && File("/storage/emulated/0/Documents").isDirectory) {
+        val documentsDir = File("/storage/emulated/0/Documents")
+        if (!sharedEnabled && settingsDataStore.mountDocumentsEnabled.first() && documentsDir.isDirectory && documentsDir.canRead()) {
             add(StorageMountBinding("system-documents", "文档", "/storage/emulated/0/Documents", "/sdcard/Documents", true, true))
         }
         addAll(storageMountBindingRepository.bindings.first().filter { it.enabled })

@@ -7,13 +7,31 @@ import top.wkbin.taixu.harness.HarnessMessage
 data class CompactionPayload(
     val sourceLeafId: String?,
     val summary: String,
-    val retainedMessagesJson: String,
+    /**
+     * 旧版存储保留消息的 JSON 字符串（存在内嵌转义与 StringBuilder 扩容 OOM 风险）；
+     * 新版优先使用结构化 [retainedMessages]，本字段默认 null 以保持向后兼容。
+     */
+    val retainedMessagesJson: String? = null,
     val compactedMessageCount: Int,
     /** Cumulative folded count, added later for O(1) snapshots; null on legacy payloads. */
     val cumulativeCompactedMessageCount: Int? = null,
     val retainedMessageCount: Int,
     val estimatedTokensBefore: Int,
     val createdAt: Long,
+    /**
+     * 压缩重读快照时分支上的最大 entry sequence（自愈水位线）：重读之后、压缩 entry
+     * 落库之前被并发直写落库的消息（不经 laneLock）不在保留消息里，却因 sequence 更小
+     * 会被投影的 afterMessages 过滤——project() 按 (watermark, entry sequence) 区间
+     * 把这些消息补回，否则从 provider 投影中永久丢失。
+     * null = 未写入水位线（本 fork 生产侧尚未写入，自愈分支不激活）。
+     */
+    val sourceWatermarkSequence: Long? = null,
+    /**
+     * 结构化保留消息列表：直接序列化为嵌套 JSON 数组，消除旧版 `retainedMessagesJson`
+     * 的二次转义与反序列化时十几兆连续 char[] 缓冲区暴增，根治大会话压缩 OOM。
+     * null = 旧格式 payload，读取时回退解析 [retainedMessagesJson]。
+     */
+    val retainedMessages: List<HarnessMessage>? = null,
 )
 
 data class CompactedContext(
