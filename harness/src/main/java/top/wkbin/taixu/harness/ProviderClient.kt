@@ -812,7 +812,7 @@ class ProviderClient @Inject constructor(
             )
         }
         val dynamicMcp = runCatching { mcpManager.getActiveMcpTools() }.getOrDefault(emptyList())
-        baseConfig.applyGlobalReasoningDepth().copy(dynamicMcpTools = dynamicMcp)
+        baseConfig.withResolvedContextWindow().applyGlobalReasoningDepth().copy(dynamicMcpTools = dynamicMcp)
     }
 
     /**
@@ -847,7 +847,7 @@ class ProviderClient @Inject constructor(
             baseConfig
         }
         val dynamicMcp = runCatching { mcpManager.getActiveMcpTools() }.getOrDefault(emptyList())
-        sessionConfig.applyGlobalReasoningDepth().copy(dynamicMcpTools = dynamicMcp)
+        sessionConfig.withResolvedContextWindow().applyGlobalReasoningDepth().copy(dynamicMcpTools = dynamicMcp)
     }
 
     /**
@@ -964,6 +964,16 @@ class ProviderClient @Inject constructor(
                 onDelta,
             )
         }
+    }
+
+    /**
+     * Fallback metadata for mainstream models whose provider /models response does not
+     * expose the context window. Explicit profile values are never overwritten.
+     */
+    private fun ModelConfig.withResolvedContextWindow(): ModelConfig {
+        if (contextTokens != null) return this
+        val inferred = ModelContextWindows.resolve(model, provider) ?: return this
+        return copy(contextTokens = inferred)
     }
 
     companion object {
