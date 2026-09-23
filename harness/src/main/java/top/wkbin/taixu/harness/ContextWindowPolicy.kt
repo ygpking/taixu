@@ -11,6 +11,10 @@ object ContextWindowPolicy {
     // tokens and provider overhead instead of spending the whole model window on history.
     private const val MAX_SYSTEM_PROMPT_FRACTION = 0.60
     private const val MIN_SYSTEM_PROMPT_TOKENS = 512
+    /** 超过此 token 数的用户消息才参与巨型消息截断（普通消息交给折叠线，避免误伤）。 */
+    private const val MIN_GIANT_USER_MESSAGE_TOKENS = 2_000
+    /** 巨型用户消息截断后至少保留的头部 token 数。 */
+    private const val MIN_KEPT_USER_TURN_TOKENS = 800
     /**
      * 上下文预算的单一真相源（single source of truth）。
      *
@@ -383,11 +387,22 @@ object ContextWindowPolicy {
      * 中文场景下这道后闸从未真正生效。
      */
     internal fun charTokenCost(ch: Char): Double = when {
-        ch.code in 0x2E80..0x9FFF || ch.code in 0xAC00..0xD7AF -> 1.0 / 1.8
+        // 全角区（FF00-FFEF，如 ，！？：）与 CJK 区同价：中文标点实际 ~1 token/字，
+        // 落入 ASCII 标点桶按 /2.8 估算会对中文上下文系统性低估。
+        ch.code in 0x2E80..0x9FFF || ch.code in 0xAC00..0xD7AF || ch.code in 0xFF00..0xFFEF -> 1.0 / 1.8
         ch.isWhitespace() -> 0.0
         ch.isLetterOrDigit() -> 1.0 / 2.5
         else -> 1.0 / 2.8
     }
+
+    /**
+     * 单张图片的保守 token 估算。Claude 实际 ~1600/图，取高值方向安全：
+     * 低估会让请求溢出 provider 400，高估只是折叠稍早。
+     *
+     * 唯一真相源：此前本文件与 [HarnessProviderRunner] 各自内联 1_000，
+     * 两处口径一旦分叉，「用量面板显示的值」与「引擎实际折叠的值」就再无关联。
+     */
+    const val ESTIMATED_IMAGE_TOKENS = 1_600
 
     const val DEFAULT_SYSTEM_PROMPT_TOKENS = 576
     const val DEFAULT_NATIVE_TOOL_TOKENS = 3_600
@@ -458,7 +473,8 @@ object ContextWindowPolicy {
             when (message) {
                 is CapabilityEvent, is ModelSwitchEvent, is SkillSuggestion -> Unit
                 is UserMessage -> {
-                    conversationTokens += estimateTokens(message.text) + message.imageUrls.size * 1_000
+                    conversationTokens += estimateTokens(message.text) +
+                        message.imageUrls.size * ESTIMATED_IMAGE_TOKENS
                 }
                 is AssistantText -> {
                     conversationTokens += estimateTokens(assistantTextForContext(message.text)) +
@@ -628,7 +644,7 @@ object ContextWindowPolicy {
      */
     internal fun messageTokens(message: HarnessMessage): Int = when (message) {
         is CapabilityEvent, is ModelSwitchEvent, is SkillSuggestion -> 0
-        is UserMessage -> estimateTokens(message.text) + message.imageUrls.size * 1_000
+        is UserMessage -> estimateTokens(message.text) + message.imageUrls.size * ESTIMATED_IMAGE_TOKENS
         is AssistantText -> estimateTokens(assistantTextForContext(message.text)) +
             estimateTokens(message.reasoning.orEmpty())
         is ToolResult -> estimateTokens(message.output)
@@ -731,6 +747,52 @@ object ContextWindowPolicy {
         // 一字未删（极短提示但估算越线）时不要附加"已截断"后缀——那会让日志与请求自我欺骗。
         if (end >= prompt.length) return prompt
         return prompt.take(end) + suffix
+    }
+
+    /**
+     * 巨型用户消息兜底：折叠线算法只能按消息边界或轮内切割，单条自身超线的用户消息
+     * （粘贴长文档/日志）无法折叠，保留尾区恒超预算 → 每次请求必被 provider 400，
+     * 且压缩判定每次命中、每次失败，形成稳定失败循环。
+     *
+     * 对保留区中超大的用户消息做"头尾保留 + 指针标记"的**投影级**截断——只影响发给
+     * provider 的正文，落库 transcript 与 UI 不变，完整内容仍可用 history_read 找回。
+     */
+    fun truncateOversizedUserMessages(messages: List<HarnessMessage>, limit: Int): List<HarnessMessage> {
+        if (limit <= 0 || messages.isEmpty()) return messages
+        val total = messages.sumOf(::messageTokens)
+        if (total <= limit) return messages
+        var overage = total - limit
+        val out = messages.toMutableList()
+        // 从最大的用户消息开始截：粘贴的长文档是超限主因，也是唯一可无损压缩的正文。
+        val candidateIndexes = out.withIndex()
+            .filter { it.value is UserMessage && messageTokens(it.value) > MIN_GIANT_USER_MESSAGE_TOKENS }
+            .sortedByDescending { messageTokens(it.value) }
+            .map { it.index }
+        for (index in candidateIndexes) {
+            if (overage <= 0) break
+            val message = out[index] as UserMessage
+            val oldTokens = estimateTokens(message.text)
+            val targetTokens = (oldTokens - overage).coerceAtLeast(MIN_KEPT_USER_TURN_TOKENS)
+            val fittedText = fitUserText(message.text, targetTokens) ?: continue
+            val newTokens = estimateTokens(fittedText)
+            if (newTokens >= oldTokens) continue
+            overage -= oldTokens - newTokens
+            out[index] = message.copy(text = fittedText)
+        }
+        return out
+    }
+
+    private fun fitUserText(text: String, targetTokens: Int): String? {
+        val marker = "\n\n[…… 消息过长已截断：完整原文保留在会话记录中，需要时可用 history_read 读取 ……]\n\n"
+        var keptChars = (targetTokens * 1.5f).toInt().coerceAtLeast(marker.length + 2)
+        repeat(6) {
+            if (text.length <= keptChars) return null
+            val head = keptChars * 3 / 4
+            val candidate = text.take(head) + marker + text.takeLast(keptChars - head)
+            if (estimateTokens(candidate) <= targetTokens) return candidate
+            keptChars = (keptChars * 3 / 4).coerceAtLeast(marker.length + 2)
+        }
+        return null
     }
 
     /**

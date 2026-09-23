@@ -208,5 +208,97 @@ class ApprovalPolicyEngineTest {
         assertTrue(policy.decide(ApprovalMode.ASSISTED, HarnessTool.BASE, args("command" to "eval ls"), workspace).required)
         assertTrue(policy.decide(ApprovalMode.ASSISTED, HarnessTool.BASE, args("command" to "source ./script.sh"), workspace).required)
     }
+
+    @Test
+    fun `executable or writable filter features require approval`() {
+        // awk 是编程语言：system() 可执行任意命令，曾被过滤段白名单放行
+        assertTrue(
+            policy.decide(
+                ApprovalMode.ASSISTED,
+                HarnessTool.BASE,
+                args("command" to "ls -la | awk 'BEGIN{system(\"touch /data/local/tmp/pwned\")}'"),
+                workspace,
+            ).required,
+        )
+        // awk 的管道协程同样可执行外部命令
+        assertTrue(
+            policy.decide(
+                ApprovalMode.ASSISTED,
+                HarnessTool.BASE,
+                args("command" to "cat app.log | awk '{print \$1 | \"mail root\"}'"),
+                workspace,
+            ).required,
+        )
+        // sort -o 可写任意路径（工作区外）
+        assertTrue(
+            policy.decide(
+                ApprovalMode.ASSISTED,
+                HarnessTool.BASE,
+                args("command" to "ls | sort -o /data/local/tmp/poc"),
+                workspace,
+            ).required,
+        )
+        // find 的落盘原语（-fls / -fprint / -fprintf）
+        assertTrue(policy.decide(ApprovalMode.ASSISTED, HarnessTool.BASE, args("command" to "find . -fls /data/local/tmp/poc"), workspace).required)
+        assertTrue(policy.decide(ApprovalMode.ASSISTED, HarnessTool.BASE, args("command" to "find . -name '*.kt' -fprintf /data/local/tmp/poc \"x\""), workspace).required)
+    }
+
+    @Test
+    fun `rg preprocessor flag requires approval in primary and quoted concatenation forms`() {
+        // rg --pre 以任意命令作为预处理器
+        assertTrue(
+            policy.decide(
+                ApprovalMode.ASSISTED,
+                HarnessTool.BASE,
+                args("command" to "rg --pre 'sh /data/local/tmp/evil.sh' pattern ."),
+                workspace,
+            ).required,
+        )
+        // 引号拼接形态："--""pre" 在原文本上匹配不到 --pre，shell 却会拼接还原
+        assertTrue(
+            policy.decide(
+                ApprovalMode.ASSISTED,
+                HarnessTool.BASE,
+                args("command" to "rg \"--\"\"pre\" 'sh /data/local/tmp/evil.sh' pattern ."),
+                workspace,
+            ).required,
+        )
+    }
+
+    @Test
+    fun `plain read-only pipelines stay auto approved after filter hardening`() {
+        assertFalse(
+            policy.decide(
+                ApprovalMode.ASSISTED,
+                HarnessTool.BASE,
+                args("command" to "cat build.log | grep -c error | head -5"),
+                workspace,
+            ).required,
+        )
+        assertFalse(
+            policy.decide(
+                ApprovalMode.ASSISTED,
+                HarnessTool.BASE,
+                args("command" to "grep -o 'https?://[^ ]*' README.md | head -10"),
+                workspace,
+            ).required,
+        )
+        assertFalse(
+            policy.decide(
+                ApprovalMode.ASSISTED,
+                HarnessTool.BASE,
+                args("command" to "cd /workspace/RelayGo && rg -n foo lib | head -40"),
+                workspace,
+            ).required,
+        )
+        assertFalse(
+            policy.decide(
+                ApprovalMode.ASSISTED,
+                HarnessTool.BASE,
+                args("command" to "ls -la /workspace 2>&1 | cut -d' ' -f1 | uniq"),
+                workspace,
+            ).required,
+        )
+    }
 }
 

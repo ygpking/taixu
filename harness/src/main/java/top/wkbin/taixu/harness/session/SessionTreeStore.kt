@@ -97,7 +97,19 @@ class SessionTreeStore @Inject constructor(
         repository.deleteSessionData(sessionId)
     }
 
-    suspend fun search(sessionId: String, query: String, limit: Int = 8): List<HarnessMessage> {
+    /**
+     * 检索命中项：附带该消息在**活动分支中的原始索引**。
+     *
+     * 该索引与 [read] 的 `index` 参数是同一套编号；此前的调用方只能拿到「命中结果序号」，
+     * 与 [read] 的原始索引口径不一致，模型照抄序号会读到错误的消息。
+     */
+    data class SearchHit(val message: HarnessMessage, val index: Int)
+
+    suspend fun search(sessionId: String, query: String, limit: Int = 8): List<HarnessMessage> =
+        searchIndexed(sessionId, query, limit).map { it.message }
+
+    /** 返回活动分支中的原始索引，与 [read] 使用同一套编号。 */
+    suspend fun searchIndexed(sessionId: String, query: String, limit: Int = 8): List<SearchHit> {
         val needle = query.trim()
         if (needle.isBlank()) return emptyList()
         val lane = repository.ensureLane(sessionId, MAIN_LANE)
@@ -119,7 +131,7 @@ class SessionTreeStore @Inject constructor(
             else SearchMatch(message, index, if (exactMatch) matchedTerms + 2 else matchedTerms)
         }.sortedWith(compareByDescending<SearchMatch> { it.score }.thenByDescending { it.index })
             .take(limit.coerceIn(1, 20))
-            .map { it.message }
+            .map { SearchHit(it.message, it.index) }
     }
 
     suspend fun read(sessionId: String, messageId: String? = null, index: Int? = null): HarnessMessage? {

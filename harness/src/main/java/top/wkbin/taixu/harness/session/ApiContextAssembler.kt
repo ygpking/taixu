@@ -137,6 +137,22 @@ class ApiContextAssembler @Inject constructor(
                     msgs = ContextWindowPolicy.truncateStaleToolResults(msgs, toolCallDetails)
                 }
             }
+            if (compactionEnabled) {
+                // 巨型用户消息兜底（与 computeKeepFromIndex 同一条折叠线）：单条自身超线的
+                // 用户消息（粘贴长文档/日志）无法按消息边界折叠，保留区恒超预算 → 每轮请求
+                // 必被 provider 400，且压缩判定每次命中、每次失败，形成稳定失败循环。
+                // 对保留区超大用户消息做投影级头尾截断，落库 transcript 与 UI 不受影响。
+                msgs = ContextWindowPolicy.truncateOversizedUserMessages(
+                    msgs,
+                    ContextWindowPolicy.foldingLimitFor(
+                        budget = budgetTokens,
+                        ratioPercent = foldingRatioPercent,
+                        systemTokens = ContextWindowPolicy.estimateTokens(systemPrompt) +
+                            ContextWindowPolicy.estimateTokens(compactedContext.summaryLayer),
+                        reserveTokens = model.compactionReserveTokens,
+                    ),
+                )
+            }
             // 图片下发前先降采样：相册原图会经 Base64 膨胀约 4/3，直接把请求体顶到 413。
             msgs = ImagePayloadCompressor.downscaleHarness(msgs)
             // Token 预算之外的第二道物理护栏：超 4MiB 先压当前轮超长工具输出、

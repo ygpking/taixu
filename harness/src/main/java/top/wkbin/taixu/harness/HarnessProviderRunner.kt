@@ -100,7 +100,7 @@ class HarnessProviderRunner @Inject constructor(
                     ContextWindowPolicy.estimateTokens(call.function.name) +
                         ContextWindowPolicy.estimateTokens(call.function.arguments)
                 } +
-                message.imageUrls.size * ESTIMATED_IMAGE_TOKENS
+                message.imageUrls.size * ContextWindowPolicy.ESTIMATED_IMAGE_TOKENS
         }
         // Context and prompt remain immutable during network retries. The configured model
         // window is authoritative: a transport heuristic must never persistently compact a
@@ -430,7 +430,6 @@ class HarnessProviderRunner @Inject constructor(
 
         /** 瞬态连接故障（断线 / 读超时 / TLS 中断）的最低重试预算，不受大上下文降级影响。 */
         private const val TRANSIENT_MAX_RETRIES = 3
-        private const val ESTIMATED_IMAGE_TOKENS = 1_000
 
         internal fun maxNetworkRetriesFor(estimatedRequestTokens: Int, configuredRetries: Int): Int =
             if (estimatedRequestTokens >= LARGE_REQUEST_TOKEN_THRESHOLD) {
