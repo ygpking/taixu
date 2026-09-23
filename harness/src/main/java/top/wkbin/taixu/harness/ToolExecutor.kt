@@ -672,10 +672,10 @@ class ToolExecutor @Inject constructor(
     private suspend fun executeHistorySearch(args: JsonObject, sessionId: String): Pair<Boolean, String> {
         val query = requireString(args, "query")
         val limit = optionalLong(args, "limit", 8L, 1L, 20L).toInt()
-        val matches = messageStore?.search(sessionId, query, limit).orEmpty()
+        val matches = messageStore?.searchIndexed(sessionId, query, limit).orEmpty()
         if (matches.isEmpty()) return true to "未找到匹配历史：$query"
-        return true to matches.mapIndexed { index, message ->
-            "[$index] id=${message.id} time=${message.createdAt} ${historyLabel(message)}"
+        return true to matches.map { (message, index) ->
+            "[index=$index] id=${message.id} time=${message.createdAt} ${historyLabel(message)}"
         }.joinToString("\n")
     }
 

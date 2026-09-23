@@ -2,6 +2,7 @@ package top.wkbin.taixu.harness
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlinx.serialization.json.put
@@ -789,5 +790,73 @@ class ContextWindowPolicyTest {
                 )
             }
         }
+    }
+
+    /**
+     * 回归（P1）：全角标点（U+FF00-FFEF：，！？：；（）等）在中文上下文实际 ~1 token/字，
+     * 曾落入 ASCII 标点桶被按 /2.8 估算，对中文上下文系统性低估——低估会让请求溢出
+     * provider 400。这里钉住"全角标点与汉字同价"。
+     */
+    @Test
+    fun `full-width CJK punctuation is estimated like CJK characters`() {
+        val punct = "，。！？：；（）".repeat(10)
+        val han = "汉字测试样例闭环".repeat(10)
+        assertEquals(
+            ContextWindowPolicy.estimateTokens(han),
+            ContextWindowPolicy.estimateTokens(punct),
+        )
+    }
+
+    /**
+     * 回归（P0）：单条自身超折叠线的用户消息（粘贴长文档/日志）无法按消息边界折叠，
+     * 保留区恒超预算 → 每轮请求必被 provider 400，且压缩判定每次命中、每次失败，
+     * 形成稳定失败循环。投影级截断必须真的把总量压回线上，且不动其他消息。
+     */
+    @Test
+    fun `oversized user message is truncated back within the folding line`() {
+        val giant = UserMessage(id = "u1", createdAt = 1L, text = "长文档内容 ".repeat(20_000))
+        val normal = UserMessage(id = "u2", createdAt = 2L, text = "普通提问")
+        val limit = 20_000
+        val before = ContextWindowPolicy.messageTokens(giant)
+        assertTrue("前置条件：该消息本身必须远超折叠线", before > limit)
+
+        val result = ContextWindowPolicy.truncateOversizedUserMessages(listOf(giant, normal), limit)
+
+        assertEquals("消息条数不得变化", 2, result.size)
+        val cut = result[0] as UserMessage
+        assertTrue("被截断的消息必须真的变短", ContextWindowPolicy.messageTokens(cut) < before)
+        assertTrue("必须留下可找回完整原文的指针", cut.text.contains("history_read"))
+        assertSame("普通消息不得被改动", normal, result[1])
+    }
+
+    /** 未超线时必须原样返回（避免误伤正常会话）。 */
+    @Test
+    fun `truncation is a no-op when the projection already fits`() {
+        val messages = listOf(
+            UserMessage(id = "u1", createdAt = 1L, text = "短消息"),
+            UserMessage(id = "u2", createdAt = 2L, text = "另一条"),
+        )
+        val result = ContextWindowPolicy.truncateOversizedUserMessages(messages, 10_000)
+        assertEquals(messages, result)
+    }
+
+    /**
+     * 图片 token 估算必须是单一真相源：此前 ContextWindowPolicy 与 HarnessProviderRunner
+     * 各自内联 1_000，两处口径一旦分叉，"用量面板显示的值"与"引擎实际折叠的值"就再无关。
+     * 取 1600（Claude 实测 ~1600/图）：低估溢出 400，高估只是折叠稍早。
+     */
+    @Test
+    fun `image token estimate is the single source of truth`() {
+        assertEquals(1_600, ContextWindowPolicy.ESTIMATED_IMAGE_TOKENS)
+        val withImages = UserMessage(
+            id = "u1",
+            createdAt = 1L,
+            text = "看图",
+            imageUrls = listOf("a", "b"),
+        )
+        assertEquals(
+            ContextWindowPolicy.estimateTokens("看图") + 2 * ContextWindowPolicy.ESTIMATED_IMAGE_TOKENS,
+            ContextWindowPolicy.messageTokens(withImages),
+        )
     }
 }

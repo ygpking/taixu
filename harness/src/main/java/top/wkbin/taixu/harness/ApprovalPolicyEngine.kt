@@ -199,8 +199,23 @@ class ApprovalPolicyEngine @Inject constructor(
         }
 
         private val CD_PREFIX = Regex("""^cd\s+[^\s;&|<>`$()]+$""")
+
+        /**
+         * 管道过滤段白名单。只保留参数无法执行外部命令、也无法写文件的过滤命令：
+         * awk（system()/getline 是完整编程语言）、rg（--pre 可指定任意预处理器命令）、
+         * sort（-o/--output 可写任意路径）曾在此列，均因存在执行/写入面被移出——
+         * 出现在过滤段时一律需要审批。
+         */
         private val SAFE_READ_FILTER = Regex(
-            """^(head|tail|grep|rg|wc|cat|awk|sort|uniq|tr|cut)(\s|$)""",
+            """^(head|tail|grep|wc|cat|uniq|tr|cut)(\s|$)""",
+        )
+
+        /** "看似只读实则可执行"的特性黑名单：awk system()/getline、rg --pre 等（纵深防御）。 */
+        private val UNSAFE_EXEC_FEATURES = Regex("""system\s*\(|getline|popen|\|&|--pre\b""")
+
+        /** find 的落盘/交互执行原语：-fls/-fprint 系列写任意文件，-ok 系列交互执行。 */
+        private val FIND_WRITE_OR_EXEC = Regex(
+            "\\bfind\\b.*\\s(-delete|-exec|-execdir|-ok|-okdir|-fprint|-fprint0|-fprintf|-fls)\\b",
         )
         private val BLOCKED_NETWORK_OR_MUTATION = Regex(
             """\b(curl|wget|nc|ssh|scp|adb|taixu-host|mount|umount|kill|pkill|chmod|chown|apt(-get)?|apk|dnf|pacman|npm\s+(install|publish)|pip\s+install|git\s+(push|reset|clean))\b""",
@@ -289,13 +304,27 @@ class ApprovalPolicyEngine @Inject constructor(
     }
 
     private fun isRoutinePrimaryCommand(command: String): Boolean {
-        if (Regex("\\bfind\\b.*\\s(-delete|-exec|-execdir)\\b").containsMatchIn(command)) return false
+        if (FIND_WRITE_OR_EXEC.containsMatchIn(command)) return false
+        // rg --pre 可执行任意预处理器命令，rg 同时是白名单首选检索命令，必须单独拦。
+        if (matchesUnsafeExecFeature(command)) return false
         if (BLOCKED_NETWORK_OR_MUTATION.containsMatchIn(command)) return false
         return ROUTINE_PRIMARY.containsMatchIn(command)
     }
 
-    private fun isSafeReadFilter(command: String): Boolean =
-        SAFE_READ_FILTER.containsMatchIn(command) && !hasDynamicShellSyntax(command)
+    private fun isSafeReadFilter(command: String): Boolean {
+        if (!SAFE_READ_FILTER.containsMatchIn(command)) return false
+        if (hasDynamicShellSyntax(command)) return false
+        return !matchesUnsafeExecFeature(command)
+    }
+
+    /**
+     * 剥掉引号后再查执行特性：`rg "--""pre" cmd` 这类引号拼接在原文本上匹配不到 --pre，
+     * shell 却会把相邻引号段拼接还原成单个参数。
+     */
+    private fun matchesUnsafeExecFeature(command: String): Boolean {
+        val dequoted = command.replace("\"", "").replace("'", "")
+        return UNSAFE_EXEC_FEATURES.containsMatchIn(dequoted)
+    }
 
     /** File redirection (`>` / `<`) except fd-to-fd forms like `2>&1`. */
     private fun hasUnsafeFileRedirection(command: String): Boolean {

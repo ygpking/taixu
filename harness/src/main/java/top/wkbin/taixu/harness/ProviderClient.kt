@@ -1257,7 +1257,7 @@ class ProviderClient @Inject constructor(
             ApiToolDefinition(
                 function = ApiFunctionDefinition(
                     name = "history_search",
-                    description = "在当前会话的完整历史中按关键词检索旧消息。压缩摘要缺少关键细节时先用它定位消息，再用 history_read 读取原文。只读，不修改历史。",
+                    description = "在当前会话的完整历史中按关键词检索旧消息。结果中的 index 是活动分支的 0 起始消息索引，包含工具消息，可直接传给 history_read；message_id 更稳定。只读，不修改历史。",
                     parameters = Json.parseToJsonElement(
                         """{"type":"object","properties":{"query":{"type":"string","description":"要检索的关键词、文件名、错误信息或约束"},"limit":{"type":"integer","minimum":1,"maximum":20,"description":"最多返回命中条数，默认 8"}},"required":["query"]}""",
                     ).jsonObject,
@@ -1266,9 +1266,9 @@ class ProviderClient @Inject constructor(
             ApiToolDefinition(
                 function = ApiFunctionDefinition(
                     name = "history_read",
-                    description = "读取当前会话某条历史消息的原文。使用 history_search 返回的 message_id，或使用稳定的历史 index。单条返回有大小上限。只读。",
+                    description = "读取当前会话某条历史消息的原文。必须提供 history_search 返回的 message_id 或活动分支的 0 起始 index（包含工具消息），至少提供一个；两者都提供时优先使用 message_id。单条返回有大小上限。只读。",
                     parameters = Json.parseToJsonElement(
-                        """{"type":"object","properties":{"message_id":{"type":"string","description":"history_search 返回的消息 ID"},"index":{"type":"integer","minimum":0,"description":"历史消息的 0 起始索引；与 message_id 二选一"}},"anyOf":[{"required":["message_id"]},{"required":["index"]}]}""",
+                        """{"type":"object","properties":{"message_id":{"type":"string","description":"history_search 返回的消息 ID；与 index 至少提供一个"},"index":{"type":"integer","minimum":0,"description":"历史消息的 0 起始索引；与 message_id 至少提供一个"}},"anyOf":[{"required":["message_id"]},{"required":["index"]}]}""",
                     ).jsonObject,
                 ),
             ),
