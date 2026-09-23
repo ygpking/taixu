@@ -23,6 +23,7 @@ import top.wkbin.taixu.harness.subagent.SubagentLaneRunner
 import top.wkbin.taixu.harness.subagent.SubagentTermination
 import top.wkbin.taixu.harness.subagent.buildSubagentTimeoutSummary
 import top.wkbin.taixu.harness.subagent.declaresWriteIntent
+import top.wkbin.taixu.harness.subagent.detectSuspectedShellWrites
 import top.wkbin.taixu.harness.prompt.PromptAssetLoader
 import top.wkbin.taixu.harness.WorkspaceFileAccess
 
@@ -116,7 +117,8 @@ class SubagentOrchestrator @Inject constructor(
                 "task=${outcome.spec.taskName}, success=${outcome.isSuccess}, termination=${outcome.termination}, " +
                     "toolCalls=${outcome.toolCallCount}, pendingApprovals=${outcome.pendingApprovals.size}, " +
                     "blockedWrites=${outcome.blockedWrites.size}, " +
-                    "readOnlyWriteIntent=${outcome.readOnlyWriteIntent}"
+                    "readOnlyWriteIntent=${outcome.readOnlyWriteIntent}, " +
+                    "suspectedShellWrites=${outcome.suspectedShellWrites.joinToString("|")}"
             },
         )
         // 整批工具结果只有在每个子任务都确认完成时才算成功。用 anySuccess 会让"1 成功 5 失败"
@@ -206,6 +208,7 @@ class SubagentOrchestrator @Inject constructor(
             pendingApprovals = laneResult?.pendingApprovals.orEmpty(),
             blockedWrites = laneResult?.blockedWrites.orEmpty(),
             readOnlyWriteIntent = readOnlyWriteIntent,
+            suspectedShellWrites = detectSuspectedShellWrites(transcript, spec.writePaths),
         )
     }
 
@@ -328,6 +331,8 @@ class SubagentOrchestrator @Inject constructor(
         val blockedWrites: List<String> = emptyList(),
         /** 任务文字要求落盘但未声明 write_paths，本次按只读执行。 */
         val readOnlyWriteIntent: Boolean = false,
+        /** 疑似租约外 shell 写命令（软警告，无法静态核验范围）；整工作区租约恒为空。 */
+        val suspectedShellWrites: List<String> = emptyList(),
     )
 }
 
@@ -512,6 +517,11 @@ private fun subagentOutcomeHeader(
     }
     if (outcome.readOnlyWriteIntent) {
         append("- **写租约缺失**：任务要求落盘但未声明 write_paths，本次按只读执行；产物在正文中，未写入文件\n")
+    }
+    if (outcome.suspectedShellWrites.isNotEmpty()) {
+        append("- **疑似 shell 写入（仅提示，未自动判定越界）**：")
+        append(outcome.suspectedShellWrites.joinToString("；"))
+        append("；请由主智能体复核实际产物与写租约范围。\n")
     }
 }
 

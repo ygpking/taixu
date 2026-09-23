@@ -210,8 +210,9 @@ class ApprovalPolicyEngine @Inject constructor(
             """^(head|tail|grep|wc|cat|uniq|tr|cut)(\s|$)""",
         )
 
-        /** "看似只读实则可执行"的特性黑名单：awk system()/getline、rg --pre 等（纵深防御）。 */
-        private val UNSAFE_EXEC_FEATURES = Regex("""system\s*\(|getline|popen|\|&|--pre\b""")
+        /** "看似只读实则可执行"的特性黑名单：awk system()/getline、rg --pre 等（纵深防御）。
+         *  --pre 用 (\s|=|$) 而非 \b 结尾：`--pre-glob` 是无害旗标不应误伤，`--pre=`/`--pre x` 必须命中。 */
+        private val UNSAFE_EXEC_FEATURES = Regex("""system\s*\(|getline|popen|\|&|--pre(\s|=|$)""")
 
         /** find 的落盘/交互执行原语：-fls/-fprint 系列写任意文件，-ok 系列交互执行。 */
         private val FIND_WRITE_OR_EXEC = Regex(
@@ -304,27 +305,29 @@ class ApprovalPolicyEngine @Inject constructor(
     }
 
     private fun isRoutinePrimaryCommand(command: String): Boolean {
-        if (FIND_WRITE_OR_EXEC.containsMatchIn(command)) return false
+        // 黑名单匹配必须在去混淆文本上进行（见 [shellDeobfuscated]）；白名单正匹配仍用
+        // 原文——混淆形态的直接不自动放行，归一化只负责放大拦截面。
+        val deobfuscated = shellDeobfuscated(command)
+        if (FIND_WRITE_OR_EXEC.containsMatchIn(deobfuscated)) return false
         // rg --pre 可执行任意预处理器命令，rg 同时是白名单首选检索命令，必须单独拦。
-        if (matchesUnsafeExecFeature(command)) return false
-        if (BLOCKED_NETWORK_OR_MUTATION.containsMatchIn(command)) return false
+        if (UNSAFE_EXEC_FEATURES.containsMatchIn(deobfuscated)) return false
+        if (BLOCKED_NETWORK_OR_MUTATION.containsMatchIn(deobfuscated)) return false
         return ROUTINE_PRIMARY.containsMatchIn(command)
     }
 
     private fun isSafeReadFilter(command: String): Boolean {
         if (!SAFE_READ_FILTER.containsMatchIn(command)) return false
         if (hasDynamicShellSyntax(command)) return false
-        return !matchesUnsafeExecFeature(command)
+        return !UNSAFE_EXEC_FEATURES.containsMatchIn(shellDeobfuscated(command))
     }
 
     /**
-     * 剥掉引号后再查执行特性：`rg "--""pre" cmd` 这类引号拼接在原文本上匹配不到 --pre，
-     * shell 却会把相邻引号段拼接还原成单个参数。
+     * shell 词法近似：剥引号并折叠反斜杠转义（\c → c）。`find "-exec" rm`、`rg --p\re`
+     * 在原文上匹配不到旗标，shell 却会还原成实际 argv。归一化只用于黑名单匹配（宁可
+     * 多审批）；已知误伤：`grep -n "system()" f`（检索字面量）会被要求审批——安全方向。
      */
-    private fun matchesUnsafeExecFeature(command: String): Boolean {
-        val dequoted = command.replace("\"", "").replace("'", "")
-        return UNSAFE_EXEC_FEATURES.containsMatchIn(dequoted)
-    }
+    private fun shellDeobfuscated(command: String): String =
+        command.replace("\"", "").replace("'", "").replace("\\", "")
 
     /** File redirection (`>` / `<`) except fd-to-fd forms like `2>&1`. */
     private fun hasUnsafeFileRedirection(command: String): Boolean {
