@@ -7,6 +7,7 @@ import top.wkbin.taixu.harness.AssistantText
 import top.wkbin.taixu.harness.CapabilityEvent
 import top.wkbin.taixu.harness.ContextWindowPolicy
 import top.wkbin.taixu.harness.HarnessApiMapper
+import top.wkbin.taixu.harness.ImagePayloadCompressor
 import top.wkbin.taixu.harness.ModelConfig
 import top.wkbin.taixu.harness.ModelSwitchEvent
 import top.wkbin.taixu.harness.ProviderClient
@@ -82,7 +83,7 @@ class ApiContextAssembler @Inject constructor(
             ""
         }
         val systemPrompt = ContextWindowPolicy.fitSystemPrompt(rawSystemPrompt, budgetTokens)
-        return buildList {
+        val projected = buildList {
             if (systemPrompt.isNotEmpty()) {
                 add(ApiMessage(role = "system", content = systemPrompt))
             }
@@ -136,6 +137,11 @@ class ApiContextAssembler @Inject constructor(
                     msgs = ContextWindowPolicy.truncateStaleToolResults(msgs, toolCallDetails)
                 }
             }
+            // 图片下发前先降采样：相册原图会经 Base64 膨胀约 4/3，直接把请求体顶到 413。
+            msgs = ImagePayloadCompressor.downscaleHarness(msgs)
+            // Token 预算之外的第二道物理护栏：超 4MiB 先压当前轮超长工具输出、
+            // 再剥离历史图片（均附 history_read 指针，不丢可恢复性）。
+            msgs = ContextWindowPolicy.enforceRequestByteBudget(msgs, toolCallDetails)
             val summaryLayer = compactedContext.summaryLayer
             if (summaryLayer.isNotBlank()) {
                 add(
@@ -264,6 +270,11 @@ class ApiContextAssembler @Inject constructor(
                 }
             }
         }
+        // Provider 投影后再做一次体积治理：覆盖系统提示、压缩后残留的大 data URL，
+        // 以及投影阶段才成形的 tool_calls 参数。图片先降采样再兜底剥离。
+        return ContextWindowPolicy.shrinkApiMessagesToByteBudget(
+            ImagePayloadCompressor.downscale(projected),
+        )
     }
 
 }
