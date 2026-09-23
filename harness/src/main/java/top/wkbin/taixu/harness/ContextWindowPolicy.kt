@@ -140,6 +140,27 @@ object ContextWindowPolicy {
     private const val RESERVED_OUTPUT_TOKENS = 8_192
     private const val TOOL_SCHEMA_RESERVE_TOKENS = 4_096
 
+    /**
+     * 请求体物理体积硬上限（JSON 序列化后的实际字节数）。
+     *
+     * Token 预算看不见两类膨胀：UTF-8/JSON 转义（CJK 1 字符 = 3 字节，引号与反斜杠再翻倍）
+     * 与 Base64 图片（体积约为原图的 4/3）。两者都绕开 token 估算直接把请求体顶到
+     * provider 的 413 上限。此常量是 token 预算之外的**第二道物理护栏**。
+     */
+    const val REQUEST_BODY_HARD_LIMIT_BYTES = 4 * 1024 * 1024
+
+    /**
+     * 当前轮（尚未折叠）超长工具输出在体积治理时保留的头部/尾部字符数。
+     *
+     * 与 [KEEP_RECENT_TOOL_RESULTS] 的分工：后者决定"最近 N 条原样保留"，
+     * 本组常量决定"单条被压时保留多少可读上下文"——头部给结论、尾部给报错与退出码。
+     */
+    private const val ACTIVE_TOOL_KEEP_HEAD_CHARS = 6_000
+    private const val ACTIVE_TOOL_KEEP_TAIL_CHARS = 1_500
+
+    /** 每条消息在 JSON 中的固定开销（role/content 字段名、花括号、逗号）估算值。 */
+    private const val JSON_FRAMING_PER_MESSAGE = 64
+
     /** 按预算比例封顶后的输出预留（小窗口档位不再吃掉整个预算）。 */
     internal fun reservedOutputTokens(budget: Int): Int =
         minOf(RESERVED_OUTPUT_TOKENS, (budget * RESERVED_OUTPUT_FRACTION).toInt().coerceAtLeast(512))
@@ -749,6 +770,174 @@ object ContextWindowPolicy {
                 }
         } while (closed < previousBoundary)
         return closed
+    }
+
+    /**
+     * 请求体物理体积预检：Token 预算看不见 UTF-8/JSON 膨胀与 Base64 图片。
+     * 超限时先压缩当前轮超长工具输出（附 history_read 指针），再剥离历史图片。
+     * 不改变消息条数与顺序，只替换正文；落库 transcript 与 UI 不受影响。
+     */
+    fun enforceRequestByteBudget(
+        messages: List<HarnessMessage>,
+        toolCallDetails: Map<String, Pair<String, JsonObject>> = messages.filterIsInstance<ToolCall>().associate {
+            it.id to ((it.rawToolName ?: HarnessApiMapper.apiName(it.tool)) to it.args)
+        },
+        maxBytes: Int = REQUEST_BODY_HARD_LIMIT_BYTES,
+    ): List<HarnessMessage> {
+        if (messages.isEmpty() || maxBytes <= 0) return messages
+        if (estimateHarnessPayloadBytes(messages) <= maxBytes) return messages
+        val out = messages.toMutableList()
+        var changed = false
+        while (estimateHarnessPayloadBytes(out) > maxBytes) {
+            val idx = out.indices
+                .mapNotNull { index ->
+                    (out[index] as? ToolResult)
+                        ?.takeIf { it.output.length > ACTIVE_TOOL_KEEP_HEAD_CHARS + ACTIVE_TOOL_KEEP_TAIL_CHARS }
+                        ?.let { index to it }
+                }
+                .maxByOrNull { it.second.output.length }
+                ?.first
+            if (idx == null) break
+            val result = out[idx] as ToolResult
+            val (name, args) = toolCallDetails[result.toolCallId] ?: (null to null)
+            val compacted = compactActiveToolOutput(name, args, result.output, result.success) +
+                "\n[工具输出因请求体体积限制已压缩；全文在会话记录中，需要细节时调用 history_read(message_id=\"${result.id}\") 回读]"
+            if (compacted.length >= result.output.length) break
+            out[idx] = result.copy(output = compacted)
+            changed = true
+        }
+        if (estimateHarnessPayloadBytes(out) > maxBytes) {
+            for (index in out.indices) {
+                if (estimateHarnessPayloadBytes(out) <= maxBytes) break
+                val message = out[index] as? UserMessage ?: continue
+                if (message.imageUrls.isEmpty()) continue
+                out[index] = message.copy(
+                    imageUrls = emptyList(),
+                    text = message.text +
+                        "\n\n[…… 本消息携带的 ${message.imageUrls.size} 张图片因请求体体积限制已从模型上下文省略 ……]",
+                )
+                changed = true
+            }
+        }
+        return if (changed) out else messages
+    }
+
+    /** Provider 投影后再做一次体积治理，覆盖系统提示与压缩后仍过大的 data URL。 */
+    fun shrinkApiMessagesToByteBudget(
+        messages: List<ApiMessage>,
+        maxBytes: Int = REQUEST_BODY_HARD_LIMIT_BYTES,
+    ): List<ApiMessage> {
+        if (messages.isEmpty() || maxBytes <= 0) return messages
+        if (estimateApiPayloadBytes(messages) <= maxBytes) return messages
+        val out = messages.toMutableList()
+        var changed = false
+        while (estimateApiPayloadBytes(out) > maxBytes) {
+            val idx = out.indices
+                .filter { index ->
+                    val message = out[index]
+                    message.role != "system" &&
+                        message.content.orEmpty().length > ACTIVE_TOOL_KEEP_HEAD_CHARS + ACTIVE_TOOL_KEEP_TAIL_CHARS
+                }
+                .maxByOrNull { out[it].content.orEmpty().length }
+            if (idx == null) break
+            val message = out[idx]
+            val compacted = compactActiveText(message.content.orEmpty())
+            if (compacted.length >= message.content.orEmpty().length) break
+            out[idx] = message.copy(content = compacted)
+            changed = true
+        }
+        if (estimateApiPayloadBytes(out) > maxBytes) {
+            for (index in out.indices) {
+                if (estimateApiPayloadBytes(out) <= maxBytes) break
+                val message = out[index]
+                if (message.imageUrls.isEmpty()) continue
+                out[index] = message.copy(
+                    imageUrls = emptyList(),
+                    content = message.content.orEmpty() +
+                        "\n\n[…… ${message.imageUrls.size} 张图片因请求体体积限制已从模型上下文省略 ……]",
+                )
+                changed = true
+            }
+        }
+        return if (changed) out else messages
+    }
+
+    /** 估算 HarnessMessage 列表 JSON 序列化后的实际字节数（含图片 Base64）。 */
+    fun estimateHarnessPayloadBytes(messages: List<HarnessMessage>): Int {
+        var bytes = 0
+        messages.forEach { message ->
+            bytes += JSON_FRAMING_PER_MESSAGE
+            when (message) {
+                is UserMessage -> {
+                    bytes += jsonTextBytes(message.text)
+                    bytes += message.imageUrls.sumOf { it.length }
+                }
+                is AssistantText -> {
+                    bytes += jsonTextBytes(assistantTextForContext(message.text))
+                    bytes += jsonTextBytes(message.reasoning.orEmpty())
+                }
+                is ToolCall -> {
+                    bytes += jsonTextBytes(message.args.toString())
+                    bytes += jsonTextBytes(message.reasoning.orEmpty())
+                }
+                is ToolResult -> bytes += jsonTextBytes(message.output)
+                else -> Unit
+            }
+        }
+        return bytes
+    }
+
+    /** 估算 ApiMessage 列表 JSON 序列化后的实际字节数（含图片 Base64）。 */
+    fun estimateApiPayloadBytes(messages: List<ApiMessage>): Int {
+        var bytes = JSON_FRAMING_PER_MESSAGE
+        messages.forEach { message ->
+            bytes += JSON_FRAMING_PER_MESSAGE
+            bytes += jsonTextBytes(message.content.orEmpty())
+            bytes += jsonTextBytes(message.reasoning_content.orEmpty())
+            bytes += message.imageUrls.sumOf { it.length }
+            message.tool_calls.orEmpty().forEach { call ->
+                bytes += jsonTextBytes(call.function.name)
+                bytes += jsonTextBytes(call.function.arguments)
+                bytes += JSON_FRAMING_PER_MESSAGE
+            }
+        }
+        return bytes
+    }
+
+    private fun compactActiveToolOutput(
+        toolName: String?,
+        args: JsonObject?,
+        output: String,
+        success: Boolean,
+    ): String {
+        val status = if (success) "成功" else "失败"
+        val path = runCatching { args?.get("path")?.jsonPrimitive?.contentOrNull }.getOrNull()
+            ?: runCatching { args?.get("command")?.jsonPrimitive?.contentOrNull }.getOrNull()
+        val hint = buildString {
+            if (!toolName.isNullOrBlank()) append("工具:$toolName ")
+            if (!path.isNullOrBlank()) append("对象:${path.take(180)} ")
+        }.trim()
+        return "【当前轮执行结果·状态:$status】$hint\n${compactActiveText(output)}"
+    }
+
+    /** 头尾保留式压缩：头部给结论、尾部给报错与退出码。 */
+    private fun compactActiveText(output: String): String {
+        val keep = ACTIVE_TOOL_KEEP_HEAD_CHARS + ACTIVE_TOOL_KEEP_TAIL_CHARS
+        if (output.length <= keep + 80) return output
+        val omitted = output.length - ACTIVE_TOOL_KEEP_HEAD_CHARS - ACTIVE_TOOL_KEEP_TAIL_CHARS
+        return output.take(ACTIVE_TOOL_KEEP_HEAD_CHARS) +
+            "\n... [请求体体积限制，已省略 $omitted 字符] ...\n" +
+            output.takeLast(ACTIVE_TOOL_KEEP_TAIL_CHARS)
+    }
+
+    /** JSON 转义后的字节数：UTF-8 长度 + 需转义字符的额外开销。 */
+    private fun jsonTextBytes(text: String): Int {
+        if (text.isEmpty()) return 0
+        var extra = 0
+        text.forEach { ch ->
+            if (ch == '"' || ch == '\\' || ch < ' ') extra++
+        }
+        return text.toByteArray(Charsets.UTF_8).size + extra
     }
 
     /**
