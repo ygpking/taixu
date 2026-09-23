@@ -389,4 +389,55 @@ class SubagentLaneContractsTest {
         ToolCall("c3", 6L, HarnessTool.READ, buildJsonObject { put("path", "c.kt") }, rawToolName = "read"),
         ToolResult("r3", 7L, "c3", true, "z".repeat(resultChars)),
     )
+
+    // ---------- 疑似 shell 写软检测（对齐 Reasonix 的"运行后 host 对比凭据与租约"）----------
+
+    private fun baseCall(id: String, command: String, success: Boolean = true) = listOf(
+        ToolCall(id, 1L, HarnessTool.BASE, buildJsonObject { put("command", command) }, rawToolName = "base"),
+        ToolResult("r$id", 2L, id, success = success, output = "ok"),
+    )
+
+    /** 结构化写有租约闸门，唯一盲区是 base 的 shell 写；这里验证软检测能把它捞出来。 */
+    @Test
+    fun `suspected shell writes are detected for narrow claims`() {
+        val transcript = listOf(UserMessage("u1", 1L, "任务")) +
+            baseCall("c1", "echo done | tee /tmp/x.txt") +
+            baseCall("c2", "grep foo app/src/Main.kt") +
+            baseCall("c3", "sed -i 's/a/b/' docs/g.md")
+
+        val hits = detectSuspectedShellWrites(transcript, writePaths = listOf("docs/"))
+        // tee 与 sed -i 命中；grep 只读不命中
+        assertEquals(2, hits.size)
+    }
+
+    @Test
+    fun `readonly lane shell writes are flagged`() {
+        val transcript = baseCall("c1", "rm -rf build/") + baseCall("c2", "cat README.md")
+        val hits = detectSuspectedShellWrites(transcript, writePaths = emptyList())
+        assertEquals(1, hits.size)
+        assertTrue(hits.single().contains("rm -rf"))
+    }
+
+    /** 整工作区租约的 lane，shell 写本就在租约范围内，恒不检测（避免噪音淹没真告警）。 */
+    @Test
+    fun `whole workspace claim skips shell write detection`() {
+        val transcript = baseCall("c1", "echo x > out.txt")
+        assertTrue(detectSuspectedShellWrites(transcript, writePaths = listOf("*")).isEmpty())
+    }
+
+    /** 失败的命令没真正落盘，不应计入（否则用户重试的正常流程会被反复告警）。 */
+    @Test
+    fun `failed shell commands are not reported`() {
+        val transcript = baseCall("c1", "sed -i 's/a/b/' x.kt", success = false)
+        assertTrue(detectSuspectedShellWrites(transcript, writePaths = listOf("x.kt")).isEmpty())
+    }
+
+    /** 误伤对照：两侧加空格避免子串命中（"firm" 不应命中 "rm"）。 */
+    @Test
+    fun `substring lookalikes do not trigger the write hints`() {
+        assertFalse(looksLikeShellWrite("grep -n firm README.md"))
+        assertFalse(looksLikeShellWrite("cat build.log 2>/dev/null"))
+        assertTrue(looksLikeShellWrite("echo hi >> out.txt"))
+        assertTrue(looksLikeShellWrite("cp a b"))
+    }
 }

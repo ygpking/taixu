@@ -266,6 +266,25 @@ class ApprovalPolicyEngineTest {
     }
 
     @Test
+    fun `quoted or backslash-escaped flags cannot bypass the blacklists`() {
+        // shell 剥引号后 find 收到 -exec：原文上旗标前是引号不是空白，原文正则匹配不到
+        assertTrue(
+            policy.decide(ApprovalMode.ASSISTED, HarnessTool.BASE, args("command" to "find . \"-exec\" rm {} +"), workspace).required,
+        )
+        // 反斜杠转义：\r → r、\s → s，argv 实为 --pre / -fls
+        assertTrue(
+            policy.decide(ApprovalMode.ASSISTED, HarnessTool.BASE, args("command" to "rg --p\\re 'sh /data/local/tmp/evil.sh' pattern ."), workspace).required,
+        )
+        assertTrue(
+            policy.decide(ApprovalMode.ASSISTED, HarnessTool.BASE, args("command" to "find . -fl\\s /data/local/tmp/poc"), workspace).required,
+        )
+        // 正向对照：--pre-glob 是无害旗标，不得被 --pre 规则误伤
+        assertFalse(
+            policy.decide(ApprovalMode.ASSISTED, HarnessTool.BASE, args("command" to "rg --pre-glob '*.md' pattern ."), workspace).required,
+        )
+    }
+
+    @Test
     fun `plain read-only pipelines stay auto approved after filter hardening`() {
         assertFalse(
             policy.decide(

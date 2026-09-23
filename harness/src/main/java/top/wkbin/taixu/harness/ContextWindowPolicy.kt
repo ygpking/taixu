@@ -779,6 +779,22 @@ object ContextWindowPolicy {
             overage -= oldTokens - newTokens
             out[index] = message.copy(text = fittedText)
         }
+        // 图片兜底：多图消息的体积在图片而非文本，文本截断对它无效——仍超线时按从旧到新
+        // 剥离投影中的图片并留标记。图片本体仍在落库 transcript 与 UI 中可见。
+        if (overage > 0) {
+            for (index in out.indices) {
+                if (overage <= 0) break
+                val message = out[index] as? UserMessage ?: continue
+                if (message.imageUrls.isEmpty()) continue
+                val savedTokens = message.imageUrls.size * ESTIMATED_IMAGE_TOKENS
+                out[index] = message.copy(
+                    imageUrls = emptyList(),
+                    text = message.text +
+                        "\n\n[…… 本消息携带的 ${message.imageUrls.size} 张图片因上下文预算已从模型上下文省略 ……]",
+                )
+                overage -= savedTokens
+            }
+        }
         return out
     }
 

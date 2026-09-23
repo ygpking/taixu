@@ -13,6 +13,7 @@ import top.wkbin.taixu.harness.TextToolCallCodec
 import top.wkbin.taixu.harness.ToolCall
 import top.wkbin.taixu.harness.ToolResult
 import top.wkbin.taixu.harness.UserMessage
+import top.wkbin.taixu.harness.isWholeWorkspaceWritePath
 import top.wkbin.taixu.harness.normalizeWritePath
 
 /**
@@ -436,3 +437,54 @@ private const val HARD_TRUNCATED_RESULT_CHARS = 800
  * 又不让单条大文件读取独占整个 Lane 预算。
  */
 private const val PROTECTED_RESULT_MAX_CHARS = 16_000
+
+/**
+ * 疑似 shell 写命令检测（对齐 Reasonix 的"运行后 host 对比凭据与租约"）：
+ * 结构化写（write/edit/download）已有租约闸门，唯一盲区是 base/process 的 shell 写
+ * （重定向、sed -i、mv/rm 等无法静态判定路径范围）。这里做**保守的软检测**——
+ * 只为父智能体提供可见性（⚠️ 提示复核产物），绝不据此拦截或判失败。
+ *
+ * @return 命中写特征的命令首行列表（去重）。
+ */
+internal fun detectSuspectedShellWrites(
+    transcript: List<HarnessMessage>,
+    writePaths: List<String>,
+): List<String> {
+    // 整工作区租约的 lane，shell 写本来就在租约范围内，无需检测
+    if (writePaths.any(::isWholeWorkspaceWritePath)) return emptyList()
+    val succeededCallIds = transcript.filterIsInstance<ToolResult>()
+        .filter { it.success }
+        .mapTo(mutableSetOf()) { it.toolCallId }
+    val hits = mutableListOf<String>()
+    transcript.filterIsInstance<ToolCall>()
+        .filter { (it.tool == HarnessTool.BASE || it.tool == HarnessTool.PROCESS) && it.id in succeededCallIds }
+        .forEach { call ->
+            val command = call.args.stringOrNull("command") ?: return@forEach
+            if (looksLikeShellWrite(command)) {
+                val label = command.lineSequence().firstOrNull { it.isNotBlank() }?.trim()?.take(160).orEmpty()
+                if (label.isNotBlank() && label !in hits) hits += label
+            }
+        }
+    return hits
+}
+
+/** 命令是否带有写入特征。刻意高召回：软警告的代价远小于漏报一次越界写。 */
+internal fun looksLikeShellWrite(command: String): Boolean {
+    val normalized = " $command "
+    if (SHELL_WRITE_HINTS.any { normalized.contains(it) }) return true
+    REDIRECT_TARGET.findAll(command).forEach { match ->
+        val target = match.groupValues[2].trim()
+        // /dev/null 是错误流抑制的惯用目标，不算写
+        if (target.isNotBlank() && !target.startsWith("/dev/null")) return true
+    }
+    return false
+}
+
+// 常见写命令特征（两侧加空格避免子串误命中，如 "firm" 命中 "rm"）
+private val SHELL_WRITE_HINTS = listOf(
+    " >> ", "sed -i", " tee ", " mv ", " rm ", " cp ", " touch ", " mkdir ",
+    " wget ", " dd ", " chmod ", " chown ", " patch ", " truncate ", " rsync ",
+)
+
+// 重定向：> 或 >>，排除 2>/&>（错误流抑制）；目标是否 /dev/null 由调用方判读
+private val REDIRECT_TARGET = Regex("""(^|[^0-9>&])>{1,2}\s*([^\s;&|]+)""")
